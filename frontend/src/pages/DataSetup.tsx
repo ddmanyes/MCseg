@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
-import { scanData, applyData, getDataStatus } from '../api/client'
-import { FolderSearch, Check, AlertTriangle, HardDrive, FileSearch } from 'lucide-react'
+import { scanData, applyData, getDataStatus, browseDir } from '../api/client'
+import { FolderSearch, Check, AlertTriangle, HardDrive, FileSearch, FolderOpen, ChevronRight, ArrowUp, File, X } from 'lucide-react'
+
+// ── Types ──────────────────────────────────────────────────
 
 interface DiscoveredFile {
     path: string
@@ -24,12 +26,157 @@ interface PathStatus {
     configured: boolean
 }
 
+interface BrowseItem {
+    name: string
+    path: string
+    type: 'dir' | 'file'
+    children?: number
+    size?: number
+    size_human?: string
+}
+
+interface BrowseData {
+    current: string
+    parent: string | null
+    items: BrowseItem[]
+}
+
 const FILE_LABELS: Record<string, string> = {
     he_image: 'H&E 影像（BTF/TIFF）',
     binned_002: 'Visium HD 2µm（square_002um）',
     binned_008: 'Visium HD 8µm（square_008um）',
     xenium_outs: 'Xenium Outs（可選）',
 }
+
+// ── Folder Browser Modal ───────────────────────────────────
+
+function FolderBrowser({
+    onSelect,
+    onClose,
+}: {
+    onSelect: (path: string) => void
+    onClose: () => void
+}) {
+    const [browseData, setBrowseData] = useState<BrowseData | null>(null)
+    const [loading, setLoading] = useState(false)
+    const [error, setError] = useState('')
+
+    const navigate = async (path: string) => {
+        setLoading(true)
+        setError('')
+        try {
+            const r = await browseDir(path)
+            if (r.data.status === 'ok') {
+                setBrowseData(r.data.data)
+            } else {
+                setError(r.data.message)
+            }
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '連線失敗')
+        } finally {
+            setLoading(false)
+        }
+    }
+
+    useEffect(() => {
+        navigate('~')
+    }, [])
+
+    return (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-6">
+            <div className="bg-surface-card border border-surface-border rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl">
+                {/* Header */}
+                <div className="flex items-center justify-between px-5 py-3.5 border-b border-surface-border">
+                    <div className="flex items-center gap-2">
+                        <FolderOpen className="w-4 h-4 text-primary" />
+                        <h3 className="font-semibold text-gray-200 text-sm">選擇資料目錄</h3>
+                    </div>
+                    <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition-colors">
+                        <X className="w-4 h-4" />
+                    </button>
+                </div>
+
+                {/* Current path */}
+                {browseData && (
+                    <div className="px-5 py-2 border-b border-surface-border bg-surface/50">
+                        <p className="text-xs text-gray-400 font-mono truncate">{browseData.current}</p>
+                    </div>
+                )}
+
+                {/* Content */}
+                <div className="flex-1 overflow-y-auto p-2 min-h-[300px]">
+                    {loading && <div className="text-sm text-gray-500 p-4 text-center">載入中...</div>}
+                    {error && <div className="text-sm text-red-400 p-4 text-center">{error}</div>}
+
+                    {browseData && !loading && (
+                        <div className="space-y-0.5">
+                            {/* Go up */}
+                            {browseData.parent && (
+                                <button
+                                    onClick={() => navigate(browseData.parent!)}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-border/50 text-left transition-colors group"
+                                >
+                                    <ArrowUp className="w-4 h-4 text-gray-500 group-hover:text-primary" />
+                                    <span className="text-sm text-gray-400 group-hover:text-gray-200">..</span>
+                                </button>
+                            )}
+
+                            {browseData.items.map((item) => (
+                                <button
+                                    key={item.path}
+                                    onClick={() => item.type === 'dir' ? navigate(item.path) : undefined}
+                                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors ${item.type === 'dir'
+                                            ? 'hover:bg-surface-border/50 cursor-pointer group'
+                                            : 'opacity-50 cursor-default'
+                                        }`}
+                                >
+                                    {item.type === 'dir' ? (
+                                        <FolderOpen className="w-4 h-4 text-yellow-500/80 flex-shrink-0" />
+                                    ) : (
+                                        <File className="w-4 h-4 text-gray-600 flex-shrink-0" />
+                                    )}
+                                    <span className={`text-sm flex-1 truncate ${item.type === 'dir' ? 'text-gray-300 group-hover:text-gray-100' : 'text-gray-500'
+                                        }`}>
+                                        {item.name}
+                                    </span>
+                                    {item.type === 'dir' && item.children != null && (
+                                        <span className="text-xs text-gray-600">{item.children} 項</span>
+                                    )}
+                                    {item.type === 'file' && item.size_human && (
+                                        <span className="text-xs text-gray-600">{item.size_human}</span>
+                                    )}
+                                    {item.type === 'dir' && (
+                                        <ChevronRight className="w-3.5 h-3.5 text-gray-600 group-hover:text-gray-400" />
+                                    )}
+                                </button>
+                            ))}
+
+                            {browseData.items.length === 0 && (
+                                <p className="text-sm text-gray-600 text-center py-6">此目錄為空</p>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                {/* Footer */}
+                <div className="flex items-center justify-between px-5 py-3 border-t border-surface-border">
+                    <p className="text-xs text-gray-500 truncate max-w-[60%]">
+                        {browseData?.current ?? ''}
+                    </p>
+                    <button
+                        onClick={() => browseData && onSelect(browseData.current)}
+                        disabled={!browseData}
+                        className="px-5 py-1.5 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-dark transition-colors disabled:opacity-40"
+                    >
+                        選擇此目錄
+                    </button>
+                </div>
+            </div>
+        </div>
+    )
+}
+
+// ── Main Page ──────────────────────────────────────────────
 
 export default function DataSetup() {
     const [dataRoot, setDataRoot] = useState('')
@@ -38,10 +185,11 @@ export default function DataSetup() {
     const [applying, setApplying] = useState(false)
     const [applied, setApplied] = useState(false)
     const [pathStatus, setPathStatus] = useState<Record<string, PathStatus>>({})
+    const [showBrowser, setShowBrowser] = useState(false)
 
     // 載入目前配置狀態
     useEffect(() => {
-        getDataStatus().then(r => {
+        getDataStatus().then((r: { data: { status: string; data: Record<string, PathStatus> } }) => {
             if (r.data.status === 'ok') setPathStatus(r.data.data)
         }).catch(() => { })
     }, [applied])
@@ -54,8 +202,8 @@ export default function DataSetup() {
         try {
             const r = await scanData({ data_root: dataRoot })
             if (r.data.status === 'ok') setScanResult(r.data.data)
-        } catch (e: any) {
-            console.error(e)
+        } catch {
+            // noop
         } finally {
             setScanning(false)
         }
@@ -72,11 +220,16 @@ export default function DataSetup() {
             if (scanResult.xenium_outs) paths.xenium_outs = scanResult.xenium_outs.path
             await applyData(paths)
             setApplied(true)
-        } catch (e: any) {
-            console.error(e)
+        } catch {
+            // noop
         } finally {
             setApplying(false)
         }
+    }
+
+    const handleBrowseSelect = (path: string) => {
+        setDataRoot(path)
+        setShowBrowser(false)
     }
 
     const foundCount = scanResult
@@ -87,6 +240,14 @@ export default function DataSetup() {
 
     return (
         <div className="space-y-4">
+            {/* Folder Browser Modal */}
+            {showBrowser && (
+                <FolderBrowser
+                    onSelect={handleBrowseSelect}
+                    onClose={() => setShowBrowser(false)}
+                />
+            )}
+
             {/* 目前配置狀態 */}
             <div className="bg-surface-card rounded-xl border border-surface-border p-5 space-y-4">
                 <div className="flex items-center gap-2">
@@ -121,9 +282,17 @@ export default function DataSetup() {
                     <h3 className="font-semibold text-gray-200">自動掃描資料目錄</h3>
                 </div>
                 <p className="text-xs text-gray-400">
-                    輸入資料根目錄路徑，系統將自動尋找 SpaceRanger 和 Xenium 輸出檔案。
+                    選擇或輸入資料根目錄路徑，系統將自動尋找 SpaceRanger 和 Xenium 輸出檔案。
                 </p>
                 <div className="flex gap-2">
+                    <button
+                        onClick={() => setShowBrowser(true)}
+                        className="px-3 py-2 bg-surface border border-surface-border rounded-lg text-sm text-gray-300 hover:bg-surface-border hover:text-gray-100 transition-colors flex items-center gap-1.5 flex-shrink-0"
+                        title="瀏覽資料夾"
+                    >
+                        <FolderOpen className="w-4 h-4" />
+                        瀏覽
+                    </button>
                     <input
                         value={dataRoot}
                         onChange={e => setDataRoot(e.target.value)}
@@ -134,7 +303,7 @@ export default function DataSetup() {
                     <button
                         onClick={handleScan}
                         disabled={scanning || !dataRoot.trim()}
-                        className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${scanning || !dataRoot.trim()
+                        className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 flex-shrink-0 ${scanning || !dataRoot.trim()
                                 ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
                                 : 'bg-primary text-white hover:bg-primary-dark'
                             }`}

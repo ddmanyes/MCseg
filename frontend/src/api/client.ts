@@ -13,6 +13,7 @@ export const getConfig = () => api.get('/config')
 export const scanData = (body: { data_root: string }) => api.post('/data/scan', body)
 export const applyData = (paths: object) => api.post('/data/apply', paths)
 export const getDataStatus = () => api.get('/data/status')
+export const browseDir = (path: string) => api.get('/data/browse', { params: { path } })
 
 // Stage 0: ROI
 export const listRois = () => api.get('/roi/list')
