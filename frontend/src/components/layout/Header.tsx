@@ -1,6 +1,7 @@
 import { useLocation } from 'react-router-dom'
 
 const TITLES: Record<string, string> = {
+  '/data': '📂 資料設定',
   '/roi': 'Stage 0 — ROI 定義與裁切',
   '/segmentation': 'Stage 1 — 細胞分割（Cellpose）',
   '/zarr': 'Stage 2 — Zarr 建構',

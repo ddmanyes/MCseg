@@ -23,6 +23,7 @@ from backend.src.utils.logging import (
 from backend.src.api import (
     analysis,
     conditions,
+    data,
     export,
     proseg,
     roi,
@@ -60,6 +61,7 @@ app.add_middleware(
 )
 
 # ── REST API 路由 ────────────────────────────────────────────
+app.include_router(data.router,        prefix="/api/data",        tags=["Data Setup"])
 app.include_router(roi.router,         prefix="/api/roi",         tags=["Stage 0: ROI"])
 app.include_router(segmentation.router,prefix="/api/segmentation",tags=["Stage 1: Segmentation"])
 app.include_router(zarr_builder.router,prefix="/api/zarr",        tags=["Stage 2: Zarr"])

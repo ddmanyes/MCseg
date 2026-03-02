@@ -4,13 +4,14 @@ import { usePipelineStore } from '../../stores/pipelineStore'
 import type { StageStatus } from '../../types/pipeline'
 
 const STAGES = [
-  { path: '/roi',         label: 'Stage 0',   sub: 'ROI 裁切',        stage: 'roi' },
-  { path: '/segmentation',label: 'Stage 1',   sub: '細胞分割',         stage: 'segmentation' },
-  { path: '/zarr',        label: 'Stage 2',   sub: 'Zarr 建構',        stage: 'zarr' },
-  { path: '/conditions',  label: 'Stage 2.5', sub: '條件測試',         stage: 'conditions' },
-  { path: '/proseg',      label: 'Stage 3',   sub: 'Proseg 執行',      stage: 'proseg' },
-  { path: '/analysis',    label: 'Stage 4',   sub: '下游分析',         stage: 'analysis' },
-  { path: '/export',      label: 'Stage 5',   sub: 'Browser 匯出',     stage: 'export' },
+  { path: '/data', label: '📂', sub: '資料設定', stage: 'data' },
+  { path: '/roi', label: 'Stage 0', sub: 'ROI 裁切', stage: 'roi' },
+  { path: '/segmentation', label: 'Stage 1', sub: '細胞分割', stage: 'segmentation' },
+  { path: '/zarr', label: 'Stage 2', sub: 'Zarr 建構', stage: 'zarr' },
+  { path: '/conditions', label: 'Stage 2.5', sub: '條件測試', stage: 'conditions' },
+  { path: '/proseg', label: 'Stage 3', sub: 'Proseg 執行', stage: 'proseg' },
+  { path: '/analysis', label: 'Stage 4', sub: '下游分析', stage: 'analysis' },
+  { path: '/export', label: 'Stage 5', sub: 'Browser 匯出', stage: 'export' },
 ]
 
 function StatusDot({ status }: { status: StageStatus }) {

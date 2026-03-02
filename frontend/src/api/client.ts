@@ -9,6 +9,11 @@ export const getHealth = () => api.get('/health')
 // Config
 export const getConfig = () => api.get('/config')
 
+// Data Setup
+export const scanData = (body: { data_root: string }) => api.post('/data/scan', body)
+export const applyData = (paths: object) => api.post('/data/apply', paths)
+export const getDataStatus = () => api.get('/data/status')
+
 // Stage 0: ROI
 export const listRois = () => api.get('/roi/list')
 export const addRoi = (roi: RoiDefinition) => api.post('/roi/add', roi)

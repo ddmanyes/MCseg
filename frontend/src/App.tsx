@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import Sidebar from './components/layout/Sidebar'
 import Header from './components/layout/Header'
+import DataSetup from './pages/DataSetup'
 import Stage0_ROI from './pages/Stage0_ROI'
 import Stage1_Segmentation from './pages/Stage1_Segmentation'
 import Stage2_Zarr from './pages/Stage2_Zarr'
@@ -17,7 +18,8 @@ export default function App() {
         <Header />
         <main className="flex-1 overflow-y-auto p-6">
           <Routes>
-            <Route path="/" element={<Navigate to="/roi" replace />} />
+            <Route path="/" element={<Navigate to="/data" replace />} />
+            <Route path="/data" element={<DataSetup />} />
             <Route path="/roi" element={<Stage0_ROI />} />
             <Route path="/segmentation" element={<Stage1_Segmentation />} />
             <Route path="/zarr" element={<Stage2_Zarr />} />

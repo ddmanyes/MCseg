@@ -3,6 +3,7 @@ global:
   log_level: INFO
 
 paths:
+  data_root: ""                   # 資料根目錄（自動掃描用）
   he_image: ""                    # H&E BTF/TIFF 完整路徑
   binned_002: ""                  # SpaceRanger square_002um 目錄
   binned_008: ""                  # SpaceRanger square_008um 目錄
