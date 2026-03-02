@@ -1,0 +1,146 @@
+global:
+  project_name: VisiumHD Pipeline 2
+  log_level: INFO
+
+paths:
+  he_image: ""                    # H&E BTF/TIFF 完整路徑
+  binned_002: ""                  # SpaceRanger square_002um 目錄
+  binned_008: ""                  # SpaceRanger square_008um 目錄
+  xenium_outs: ""                 # Xenium outs 目錄（可選）
+  masks_dir: results/masks
+  zarr_dir: results/zarr
+  proseg_dir: results/proseg
+  conditions_dir: results/02b_conditions
+  output_dir: results/analysis
+  export_dir: results/export
+  figure_dir: figures
+  proseg_bin: ~/.cargo/bin/proseg
+
+# === Stage 0: ROI 定義 ===
+rois: []
+# 範例格式：
+# - name: "tumor_boundary"
+#   tissue: "CRC"
+#   # 格式 A：Visium HD fullres pixel
+#   x: 43490
+#   y: 12515
+#   width_px: 6569
+#   height_px: 4791
+#   pixel_size_um: 0.2737
+#   # 格式 B：Xenium 原生 µm（CRC Xenium 獨立切片時使用）
+#   # x_um: 4356
+#   # y_um: 856
+#   # width_um: 1800
+#   # height_um: 1800
+
+# === Stage 1: 細胞分割 ===
+segmentation:
+  cellpose_model:
+    model_type: nuclei
+    use_gpu: true
+    batch_size: 4
+  strategy:
+    name: LOGIC_A
+    dia_small: 10.0
+    dia_large: 25.0
+    flow_threshold: 0.8
+    cellprob_threshold: -1.0
+    fragment_threshold: 50
+  postprocessing:
+    enable_eosin_watershed: true
+    eosin_bg_threshold: 80
+  tiling:
+    block_size: 2048
+    overlap: 256
+  preprocessing:
+    normalize_stains: true
+    calibration_roi: null
+  output:
+    save_flows: false
+    mask_filename: segmentation_masks.npy
+    mask_tif_filename: segmentation_masks.tif
+
+# === Stage 2: Zarr 建構 ===
+zarr_builder:
+  files:
+    h5_matrix: filtered_feature_bc_matrix.h5
+    spatial_dir: spatial
+    tissue_positions: tissue_positions.parquet
+  parameters:
+    pixel_size_um: 0.2737
+    gene_scale_factor: 1.0
+    output_filename: proseg_integrated.zarr
+
+# === Stage 2.5: Proseg 條件測試 ===
+condition_test:
+  test_roi_um: 1000           # 測試 ROI 大小（µm，正方形）
+  max_parallel: 4             # 最大並行條件數
+  grid:
+    max_dist: [20, 30, 40]
+    compactness: [0.03, 0.06, 0.1]
+    dilation: [10, 20, 30]
+  # 快速模式（2x2x2）
+  quick_grid:
+    max_dist: [20, 40]
+    compactness: [0.03, 0.06]
+    dilation: [10, 20]
+  samples: 200                # 條件測試用較少 samples
+  recorded_samples: 50
+
+# === Stage 3: Proseg 完整執行 ===
+proseg:
+  golden_params:
+    dilation: 20
+    max_dist: 40.0
+    compactness: 0.06
+    samples: 500
+    recorded_samples: 150
+    use_watershed: true
+    enforce_connectivity: true
+  tiling:
+    grid_nx: 4
+    grid_ny: 3
+    padding: 200
+  qc:
+    background_threshold: 210
+    min_transcripts_per_cell: 5
+  constants:
+    scale_nm_px: 264.5833
+    scale_um_px: 0.2645833
+
+# === Stage 4: 下游分析 ===
+analysis:
+  preprocessing:
+    cellular:
+      min_genes: 200
+      max_genes: 8000
+      min_cells: 3
+      max_pct_mito: 20
+      mito_prefix: mt-
+    normalization:
+      target_sum: 10000
+      method: log1p
+    hvg:
+      n_top_genes: 2000
+      flavor: seurat_v3
+  clustering:
+    n_pcs: 50
+    n_neighbors: 15
+    metric: euclidean
+    method: leiden
+    resolution: 0.8
+    min_dist: 0.3
+  visualization:
+    figure_dpi: 300
+    save_format: png
+    color_palette: tab20
+
+# === Stage 5: Browser 匯出 ===
+export:
+  xenium:
+    pixel_size_um: 0.2645833    # Proseg 座標系的像素尺寸
+    smooth_polygons: true        # 多邊形平滑化
+    simplify_tolerance: 0.4
+  loupe:
+    whitelist_path: backend/src/export/10x_whitelist.txt
+    max_categories: 32000

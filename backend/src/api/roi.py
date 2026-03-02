@@ -1,0 +1,99 @@
+"""Stage 0: ROI 定義與裁切 API"""
+import asyncio
+import logging
+from typing import Optional
+from fastapi import APIRouter, BackgroundTasks
+from pydantic import BaseModel
+
+from backend.src.utils.config import load_config, save_config
+from backend.src.utils.logging import set_current_stage
+
+router = APIRouter()
+logger = logging.getLogger("pipeline.api.roi")
+
+# 任務狀態追蹤
+_task_status = {"status": "idle", "progress": 0.0, "message": ""}
+
+
+class RoiConfig(BaseModel):
+    name: str
+    tissue: str
+    # 格式 A：fullres pixel
+    x: Optional[int] = None
+    y: Optional[int] = None
+    width_px: Optional[int] = None
+    height_px: Optional[int] = None
+    pixel_size_um: float = 0.2737
+    # 格式 B：µm
+    x_um: Optional[float] = None
+    y_um: Optional[float] = None
+    width_um: Optional[float] = None
+    height_um: Optional[float] = None
+
+
+@router.get("/status")
+async def get_status():
+    return _task_status
+
+
+@router.get("/list")
+async def list_rois():
+    config = load_config()
+    return {"status": "ok", "data": config.get("rois", [])}
+
+
+@router.post("/add")
+async def add_roi(roi: RoiConfig):
+    config = load_config()
+    rois = config.get("rois", [])
+    rois = [r for r in rois if r.get("name") != roi.name]  # 去重
+    rois.append(roi.model_dump(exclude_none=True))
+    config["rois"] = rois
+    save_config(config)
+    return {"status": "ok", "message": f"ROI '{roi.name}' 已新增"}
+
+
+@router.delete("/{roi_name}")
+async def delete_roi(roi_name: str):
+    config = load_config()
+    rois = [r for r in config.get("rois", []) if r.get("name") != roi_name]
+    config["rois"] = rois
+    save_config(config)
+    return {"status": "ok", "message": f"ROI '{roi_name}' 已刪除"}
+
+
+@router.post("/preview")
+async def preview_roi(roi: RoiConfig):
+    """產生 ROI 預覽縮圖（回傳 base64 JPEG）"""
+    set_current_stage("roi")
+    config = load_config()
+    try:
+        from backend.src.roi.extractor import generate_preview
+        img_b64 = generate_preview(config, roi.model_dump(exclude_none=True))
+        return {"status": "ok", "data": {"image_b64": img_b64}}
+    except Exception as e:
+        logger.error(f"ROI 預覽失敗：{e}")
+        return {"status": "error", "message": str(e)}
+
+
+async def _run_extract(config: dict):
+    global _task_status
+    set_current_stage("roi")
+    _task_status = {"status": "running", "progress": 0.0, "message": "開始裁切..."}
+    try:
+        from backend.src.roi.extractor import RoiExtractor
+        extractor = RoiExtractor(config)
+        await asyncio.get_event_loop().run_in_executor(None, extractor.run_all)
+        _task_status = {"status": "done", "progress": 1.0, "message": "裁切完成"}
+    except Exception as e:
+        logger.error(f"ROI 裁切失敗：{e}")
+        _task_status = {"status": "error", "progress": 0.0, "message": str(e)}
+
+
+@router.post("/extract")
+async def run_extract(background_tasks: BackgroundTasks):
+    if _task_status["status"] == "running":
+        return {"status": "error", "message": "任務執行中"}
+    config = load_config()
+    background_tasks.add_task(_run_extract, config)
+    return {"status": "ok", "message": "ROI 裁切已啟動"}
