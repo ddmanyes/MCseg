@@ -1,13 +1,14 @@
 global:
   project_name: VisiumHD Pipeline 2
   log_level: INFO
+  tissue: CRC
 
 paths:
-  data_root: ""                   # 資料根目錄（自動掃描用）
-  he_image: ""                    # H&E BTF/TIFF 完整路徑
-  binned_002: ""                  # SpaceRanger square_002um 目錄
-  binned_008: ""                  # SpaceRanger square_008um 目錄
-  xenium_outs: ""                 # Xenium outs 目錄（可選）
+  data_root: "/Volumes/SSD/plan_a/tissue sample/CRC"
+  he_image: "/Volumes/SSD/plan_a/tissue sample/CRC/visium/official_v4/Visium_HD_Human_Colon_Cancer_tissue_image.btf"
+  binned_002: "/Volumes/SSD/plan_a/tissue sample/CRC/visium/official_v4/binned_outputs/binned_outputs/square_002um"
+  binned_008: "/Volumes/SSD/plan_a/tissue sample/CRC/visium/official_v4/binned_outputs/binned_outputs/square_008um"
+  xenium_outs: "/Volumes/SSD/plan_a/tissue sample/CRC/xenium/official_v1_addon/outs"
   masks_dir: results/masks
   zarr_dir: results/zarr
   proseg_dir: results/proseg
@@ -17,33 +18,36 @@ paths:
   figure_dir: figures
   proseg_bin: ~/.cargo/bin/proseg
 
-# === Stage 0: ROI 定義 ===
-rois: []
-# 範例格式：
-# - name: "tumor_boundary"
-#   tissue: "CRC"
-#   # 格式 A：Visium HD fullres pixel
-#   x: 43490
-#   y: 12515
-#   width_px: 6569
-#   height_px: 4791
-#   pixel_size_um: 0.2737
-#   # 格式 B：Xenium 原生 µm（CRC Xenium 獨立切片時使用）
-#   # x_um: 4356
-#   # y_um: 856
-#   # width_um: 1800
-#   # height_um: 1800
+# === Stage 0: ROI 定義（來自 xenium_visiumhd_comparison/config/rois.yaml）===
+rois:
+  - name: "CRC_tumor_boundary"
+    tissue: "CRC"
+    description: "Adenoma/HGIN 與 Invasive Carcinoma 交界帶 — 核心展示 ROI"
+    x: 43490
+    y: 12515
+    width_px: 6569
+    height_px: 4791
+    pixel_size_um: 0.2737
 
-# === Stage 1: 細胞分割 ===
+  - name: "CRC_normal_colon"
+    tissue: "CRC"
+    description: "正常結腸區 — 展示 Endo 和 SMC 辨識"
+    x: 43519
+    y: 18137
+    width_px: 6167
+    height_px: 4073
+    pixel_size_um: 0.2737
+
+# === Stage 1: 細胞分割（CRC 使用 cyto2）===
 segmentation:
   cellpose_model:
-    model_type: nuclei
+    model_type: cyto2             # CRC 狹長細胞需要 cyto2
     use_gpu: true
     batch_size: 4
   strategy:
     name: LOGIC_A
-    dia_small: 10.0
-    dia_large: 25.0
+    dia_small: 12.0               # CRC 細胞較大
+    dia_large: 30.0
     flow_threshold: 0.8
     cellprob_threshold: -1.0
     fragment_threshold: 50
@@ -74,18 +78,17 @@ zarr_builder:
 
 # === Stage 2.5: Proseg 條件測試 ===
 condition_test:
-  test_roi_um: 1000           # 測試 ROI 大小（µm，正方形）
-  max_parallel: 4             # 最大並行條件數
+  test_roi_um: 1000
+  max_parallel: 4
   grid:
     max_dist: [20, 30, 40]
     compactness: [0.03, 0.06, 0.1]
     dilation: [10, 20, 30]
-  # 快速模式（2x2x2）
   quick_grid:
     max_dist: [20, 40]
     compactness: [0.03, 0.06]
     dilation: [10, 20]
-  samples: 200                # 條件測試用較少 samples
+  samples: 200
   recorded_samples: 50
 
 # === Stage 3: Proseg 完整執行 ===
@@ -109,15 +112,15 @@ proseg:
     scale_nm_px: 264.5833
     scale_um_px: 0.2645833
 
-# === Stage 4: 下游分析 ===
+# === Stage 4: 下游分析（CRC 參數，from xenium_visiumhd_comparison）===
 analysis:
   preprocessing:
     cellular:
-      min_genes: 200
+      min_genes: 20               # 空間 bin 分析，稀疏區域 RNA 密度低
       max_genes: 8000
       min_cells: 3
       max_pct_mito: 20
-      mito_prefix: mt-
+      mito_prefix: MT-            # 人類資料用大寫
     normalization:
       target_sum: 10000
       method: log1p
@@ -125,11 +128,11 @@ analysis:
       n_top_genes: 2000
       flavor: seurat_v3
   clustering:
-    n_pcs: 50
+    n_pcs: 30                     # ROI 分析細胞數較少
     n_neighbors: 15
     metric: euclidean
     method: leiden
-    resolution: 0.8
+    resolution: 0.5
     min_dist: 0.3
   visualization:
     figure_dpi: 300
@@ -139,9 +142,24 @@ analysis:
 # === Stage 5: Browser 匯出 ===
 export:
   xenium:
-    pixel_size_um: 0.2645833    # Proseg 座標系的像素尺寸
-    smooth_polygons: true        # 多邊形平滑化
+    pixel_size_um: 0.2645833
+    smooth_polygons: true
     simplify_tolerance: 0.4
   loupe:
     whitelist_path: backend/src/export/10x_whitelist.txt
     max_categories: 32000
+
+# === 標記基因驗證（CRC）===
+marker_genes:
+  CRC_tumor_luminal:
+    genes: [MUC2, MUC5AC, TFF3, KRT20]
+    description: CRC 腔面（luminal）細胞
+  CRC_tumor_basal:
+    genes: [CDH1, EPCAM, KRT8, KRT18]
+    description: CRC 基底（basal）/上皮標記
+  CRC_endothelial:
+    genes: [PECAM1, CD34, VWF]
+    description: 內皮細胞
+  CRC_smooth_muscle:
+    genes: [ACTA2, MYH11, TAGLN]
+    description: 平滑肌細胞
