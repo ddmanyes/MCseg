@@ -19,7 +19,7 @@ export const browseDir = (path: string) => api.get('/data/browse', { params: { p
 export const listRois = () => api.get('/roi/list')
 export const addRoi = (roi: RoiDefinition) => api.post('/roi/add', roi)
 export const deleteRoi = (name: string) => api.delete(`/roi/${name}`)
-export const previewRoi = (roi: RoiDefinition) => api.post('/roi/preview', roi)
+export const getRoiOverview = () => api.get('/roi/overview')
 export const runRoiExtract = () => api.post('/roi/extract')
 export const getRoiStatus = () => api.get('/roi/status')
 

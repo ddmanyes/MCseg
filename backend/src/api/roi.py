@@ -62,17 +62,17 @@ async def delete_roi(roi_name: str):
     return {"status": "ok", "message": f"ROI '{roi_name}' 已刪除"}
 
 
-@router.post("/preview")
-async def preview_roi(roi: RoiConfig):
-    """產生 ROI 預覽縮圖（回傳 base64 JPEG）"""
+@router.get("/overview")
+async def get_overview():
+    """取得 ROI 預覽基礎縮圖與 metadata"""
     set_current_stage("roi")
     config = load_config()
     try:
-        from backend.src.roi.extractor import generate_preview
-        img_b64 = generate_preview(config, roi.model_dump(exclude_none=True))
-        return {"status": "ok", "data": {"image_b64": img_b64}}
+        from backend.src.roi.extractor import get_overview as ext_get_overview
+        data = ext_get_overview(config)
+        return {"status": "ok", "data": data}
     except Exception as e:
-        logger.error(f"ROI 預覽失敗：{e}")
+        logger.error(f"取得 overview 失敗：{e}")
         return {"status": "error", "message": str(e)}
 
 

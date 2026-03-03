@@ -1,0 +1,56 @@
+# Execution Trace
+
+[2026-03-03 08:37] - 步驟: 專案全面檢查 | 狀態: ✅ 成功
+
+---
+
+### Git 狀態
+
+- 分支: `master`
+- 工作目錄: clean
+- Commits:
+  - `d917430` — fix: PyTorch macOS ARM64 compatibility + README + folder browser verified
+  - `ebc090c` — feat: add folder browser for data directory selection
+  - `8955455` — feat: add data auto-discovery feature
+  - `00b7771` — feat: initial commit — backend + frontend complete
+
+[🔄 點擊恢復至此階段](command:antigravity.restore?{"hash":"d917430","step":"project_review"})
+
+[2026-03-03 09:16] - 步驟: 建立 CRC 測試套件與模型參數 | 狀態: ✅ 成功
+
+---
+
+### 工作摘要
+
+1. 建立 `backend/tests/` 測試框架 (5 種測試、共 54 項)：
+   - 基礎設施 (`test_01_infra.py`)
+   - CRC 資料完整性 (`test_02_data.py`)
+   - API 端點 (`test_03_api.py`)
+   - ROI metadata (`test_04_roi.py`)
+   - Xenium 格式 (`test_05_xenium.py`)
+2. `pytest` 54 項測試全部通過 (100% PASS in 6s)。
+3. 將 `pipeline.yaml` 的分割模型（cyto2）、CRC ROI 座標與相關變數從 `xenium_visiumhd_comparison` 轉移過來。
+
+[🔄 點擊恢復至此階段](command:antigravity.restore?{"hash":"2ae39dd","step":"pytest_suite_added"})
+
+[2026-03-03 09:33] - 步驟: 更新項目 README.md 文件 | 狀態: ✅ 成功
+
+---
+
+### 工作摘要
+
+- 編寫了詳細的 `README.md`，內容涵蓋：
+  1. 專案一站式從分析到匯出的全端定位 (FastAPI + React)。
+  2. 環境設置與自動化 `start.sh` 腳本的操作說明。
+  3. 各個操作介面的詳細流程與目的解釋：
+     - 📂 資料設定 (Data Setup)
+     - ✂️ Stage 0: ROI 裁切
+     - 🦠 Stage 1: 細胞分割
+     - 🧱 Stage 2: Zarr 建構
+     - ⚙️ Stage 2.5: 條件測試
+     - 🚀 Stage 3: Proseg 執行
+     - 📊 Stage 4: 下游分析
+     - 📤 Stage 5: Browser 匯出
+  4. 揭露了四個技術亮點：非同步處理 WebSocket Logs、PyArrow memory pushdown 節省鉅量 RAM、GPU Tile 分塊技術，以及針對 macOS 外接硬碟的自動化防護。
+
+[🔄 點擊恢復至此階段](command:antigravity.restore?{"hash":"f1ef34f","step":"update_readme_pages"})

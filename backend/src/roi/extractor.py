@@ -331,46 +331,43 @@ def rasterize_nucleus_mask(
 
 # ── 預覽產圖 ────────────────────────────────────────────────
 
-def generate_preview(config: dict, roi: dict) -> str:
+def get_overview(config: dict) -> dict:
     """
-    產生 H&E hires 縮圖 + ROI 矩形疊加，回傳 base64 JPEG。
+    取得 H&E hires 縮圖的 base64 與座標轉換參數 (scalef)，
+    供前端互動式選取 ROI。
     """
     import json as _json
     from pathlib import Path as _Path
+    import cv2
+    import base64
 
-    he_path = _Path(config["paths"]["he_image"])
-    if not he_path.exists():
-        raise FileNotFoundError(f"找不到 H&E 影像：{he_path}")
-
-    # 讀取 hires 縮圖（從 SpaceRanger spatial 目錄）
     binned_002 = _Path(config["paths"].get("binned_002", ""))
     scalef_path = binned_002 / "spatial" / "scalefactors_json.json"
     scalef = 0.1
+    mpp = 0.2737
     if scalef_path.exists():
         scalef_data = _json.loads(scalef_path.read_text())
         scalef = scalef_data.get("tissue_hires_scalef", 0.1)
+        mpp = scalef_data.get("microns_per_pixel", 0.2737)
 
     hires_path = binned_002 / "spatial" / "tissue_hires_image.png"
-    if hires_path.exists():
-        img = cv2.imread(str(hires_path))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    else:
-        # fallback: 從 BTF 讀取縮圖
-        x0, y0, w, h = roi_to_fullres_px(roi)
-        crop, _, _ = read_btf_crop(he_path, 0, 0, 2000, 2000)
-        img = crop
+    if not hires_path.exists():
+        raise FileNotFoundError(f"找不到 hires 縮圖：{hires_path}")
 
-    # 繪製 ROI 矩形
-    if "x" in roi:
-        rx0 = int(roi["x"] * scalef)
-        ry0 = int(roi["y"] * scalef)
-        rx1 = int((roi["x"] + roi["width_px"]) * scalef)
-        ry1 = int((roi["y"] + roi["height_px"]) * scalef)
-        cv2.rectangle(img, (rx0, ry0), (rx1, ry1), (255, 100, 0), 3)
-
+    img = cv2.imread(str(hires_path))
+    h_px, w_px = img.shape[:2]
+    
     # 編碼為 base64 JPEG
-    _, buf = cv2.imencode(".jpg", cv2.cvtColor(img, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
-    return base64.b64encode(buf.tobytes()).decode()
+    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    img_b64 = base64.b64encode(buf.tobytes()).decode()
+
+    return {
+        "image_b64": img_b64,
+        "width_hires": w_px,
+        "height_hires": h_px,
+        "scalef": scalef,
+        "microns_per_pixel": mpp
+    }
 
 
 # ── 主裁切執行器 ────────────────────────────────────────────
