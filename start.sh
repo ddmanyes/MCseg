@@ -2,19 +2,25 @@
 # VisiumHD Pipeline 2 — 一鍵啟動（開發模式）
 # 使用方式：bash start.sh
 
-set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 # 顏色
-GREEN='\033[0;32m'; BLUE='\033[0;34m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
 echo -e "${BLUE}VisiumHD Pipeline 2${NC}"
 echo "Root: $ROOT"
 
 # 檢查 uv
 if ! command -v uv &>/dev/null; then
-    echo "錯誤：找不到 uv，請先安裝：curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo -e "${RED}錯誤：找不到 uv，請先安裝：curl -LsSf https://astral.sh/uv/install.sh | sh${NC}"
     exit 1
+fi
+
+# 清理 ExFAT ._* 垃圾（避免 uv/zarr 安裝/解析錯誤）
+VENV_DIR="$ROOT/.venv"
+if [ -d "$VENV_DIR" ]; then
+    echo -e "${YELLOW}清理 ExFAT ._* 快取...${NC}"
+    find "$VENV_DIR" -name "._*" -delete 2>/dev/null || true
 fi
 
 # 啟動後端（背景）
@@ -23,7 +29,31 @@ cd "$ROOT"
 uv run uvicorn backend.main:app --reload --port 8000 &
 BACKEND_PID=$!
 
-sleep 2
+# 等待後端健康確認（最多 10 秒）
+echo -n "等待後端就緒"
+BACKEND_OK=false
+for i in $(seq 1 10); do
+    sleep 1
+    echo -n "."
+    if curl -sf http://localhost:8000/api/health &>/dev/null; then
+        BACKEND_OK=true
+        break
+    fi
+    # 如果進程已結束代表啟動失敗
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+        break
+    fi
+done
+echo ""
+
+if [ "$BACKEND_OK" = false ]; then
+    echo -e "${RED}❌ 後端啟動失敗！請嘗試手動修復：${NC}"
+    echo -e "${YELLOW}  find .venv -name '._*' -delete${NC}"
+    echo -e "${YELLOW}  UV_LINK_MODE=copy uv sync${NC}"
+    kill "$BACKEND_PID" 2>/dev/null || true
+    exit 1
+fi
+echo -e "${GREEN}✅ 後端已就緒${NC}"
 
 # 啟動前端（背景）
 echo -e "${GREEN}[2/2] 啟動前端（port 3000）...${NC}"
