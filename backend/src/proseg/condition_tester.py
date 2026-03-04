@@ -173,36 +173,38 @@ class ConditionTester:
             raise FileNotFoundError(f"Zarr 尚未建構：{zarr_dir}")
 
         # ── Step 1: 從 zarr 萃取 transcript CSV ──────────────────────
+        # 直接讀 zarr/points/transcripts/points.parquet/*.parquet
+        # 欄位已確認：x, y, gene（不需要 spatialdata API）
         csv_path = work_dir / "transcripts_for_proseg.csv"
         if not csv_path.exists():
             logger.info(f"  萃取 transcripts 至 CSV：{csv_path}")
             try:
-                import spatialdata as sd
-                sdata = sd.read_zarr(str(zarr_dir))
-                # 取得 transcripts（points layer）
-                pts_key = next(iter(sdata.points), None)
-                if pts_key is None:
-                    raise KeyError("zarr 中找不到 points layer（transcripts）")
-                df_pts = sdata.points[pts_key].compute() if hasattr(sdata.points[pts_key], "compute") else sdata.points[pts_key]
-                # 統一欄位名稱
-                col_map = {}
-                for c in df_pts.columns:
-                    cl = c.lower()
-                    if cl in ("x", "pxl_col_in_fullres"):
-                        col_map[c] = "x"
-                    elif cl in ("y", "pxl_row_in_fullres"):
-                        col_map[c] = "y"
-                    elif cl in ("feature_name", "gene_name", "gene"):
-                        col_map[c] = "gene"
-                df_pts = df_pts.rename(columns=col_map)
+                # 尋找 zarr 內的 parquet 分片
+                parquet_dir = zarr_dir / "points" / "transcripts" / "points.parquet"
+                parquet_files = sorted(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else []
+                if not parquet_files:
+                    raise FileNotFoundError(
+                        f"找不到 transcript parquet：{parquet_dir}\n"
+                        f"請確認 Stage 2 Zarr 建構已完成"
+                    )
+
+                dfs = [pd.read_parquet(p) for p in parquet_files]
+                df_pts = pd.concat(dfs, ignore_index=True)
+                logger.info(f"  讀取 {len(parquet_files)} 個 parquet 分片，共 {len(df_pts):,} 行")
+
+                # 確認欄位存在（x, y, gene）
+                for col in ("x", "y", "gene"):
+                    if col not in df_pts.columns:
+                        raise KeyError(f"parquet 缺少欄位：{col}（現有：{list(df_pts.columns)}）")
+
                 df_pts["cell_id"] = 0
                 df_pts["qv"] = 40
                 df_pts["z"] = 0.0
-                needed = [c for c in ["x", "y", "gene", "qv", "cell_id", "z"] if c in df_pts.columns]
-                df_pts[needed].to_csv(csv_path, index=False)
-                logger.info(f"  CSV 寫出完成：{len(df_pts):,} 行")
+                df_pts[["x", "y", "gene", "qv", "cell_id", "z"]].to_csv(csv_path, index=False)
+                logger.info(f"  CSV 寫出完成：{csv_path}")
             except Exception as e:
                 raise RuntimeError(f"萃取 transcript CSV 失敗：{e}") from e
+
 
         # ── Step 2: 定義輸出路徑 ──────────────────────────────────────
         out_counts   = work_dir / "counts.csv.gz"
