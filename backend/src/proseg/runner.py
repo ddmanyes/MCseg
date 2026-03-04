@@ -120,6 +120,8 @@ def run_tiled_proseg(config: dict) -> None:
                 coordinate_scale=scale_um_px,
                 padding=padding,
                 nucleus_label_name="cellpose_nuclei",
+                use_cyto_mask_from_zarr=True,       # 啟用細胞質遮罩 (Cyto Mask) 防護
+                cyto_label_name="eosin_cyto",
                 use_watershed=golden.get("use_watershed", True),
                 enforce_connectivity=golden.get("enforce_connectivity", True),
                 fixed_roi=roi_px

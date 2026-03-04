@@ -180,6 +180,8 @@ class ConditionTester:
             coordinate_scale=scale_um_px,
             padding=50,  # 稍微給 padding
             nucleus_label_name="cellpose_nuclei",
+            use_cyto_mask_from_zarr=True,       # 啟用細胞質遮罩 (Cyto Mask) 防護
+            cyto_label_name="eosin_cyto",
             use_watershed=condition.get("watershed", True),
             enforce_connectivity=condition.get("connectivity", True)
         )

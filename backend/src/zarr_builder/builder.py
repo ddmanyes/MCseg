@@ -1013,6 +1013,14 @@ def build_zarr(config: dict[str, Any]) -> Path:
                           physical_scale=physical_scale, roi_crop=roi_crop)
             _add_masks_to_zarr(root, roi_mask_path, physical_scale=physical_scale,
                                label_name="cellpose_nuclei")
+                               
+            # ✨ 加入細胞質遮罩 (新增防線)
+            cyto_mask_path = roi_base / roi_name / "cyto_mask.npy"
+            if cyto_mask_path.exists():
+                logger.info("  ✨ 偵測到 cyto_mask.npy，正在加入 Zarr labels/eosin_cyto")
+                _add_masks_to_zarr(root, cyto_mask_path, physical_scale=physical_scale,
+                                   label_name="eosin_cyto")
+                                   
             _write_shapes(root, datasets["square_008um"], store_path_str,
                           physical_scale=physical_scale, roi_crop=roi_crop)
             _clean_mac_junk(out_zarr)
@@ -1050,10 +1058,18 @@ def build_zarr(config: dict[str, Any]) -> Path:
     _write_table(root, "table", datasets["square_002um"], store_path_str)
     _write_points(root, datasets["square_002um"], store_path_str, physical_scale=physical_scale)
     _add_masks_to_zarr(root, mask_path, physical_scale=physical_scale, label_name="cellpose_nuclei")
+                       
+    # ✨ 加入細胞質遮罩 (新增防線)
+    cyto_mask_path = masks_dir / "cyto_mask.npy"
+    if cyto_mask_path.exists():
+        logger.info("  ✨ 偵測到 cyto_mask.npy，正在加入 Zarr labels/eosin_cyto")
+        _add_masks_to_zarr(root, cyto_mask_path, physical_scale=physical_scale,
+                           label_name="eosin_cyto")
+
     _write_shapes(root, datasets["square_008um"], store_path_str, physical_scale=physical_scale)
     _clean_mac_junk(out_zarr)
 
-    logger.info("=" * 60)
+    logger.info("✅ Zarr 建構完成（全圖）")
     logger.info("Zarr 建構完成")
     logger.info(f"  輸出：{out_zarr}")
     logger.info("=" * 60)

@@ -75,16 +75,33 @@ def get_best_tissue_patch(page_obj, step=50, grid_n=8):
     return full_y, full_x, full_h, full_w
 
 
-def run_eosin_watershed(nuclei_masks: np.ndarray, eosin_img: np.ndarray, bg_threshold: int):
-    """Use Eosin channel watershed to expand cytoplasm."""
+def run_eosin_watershed(nuclei_masks: np.ndarray, eosin_img: np.ndarray, bg_threshold: int, brightness_mode: bool = False):
+    """Use tissue detection to expand cytoplasm via watershed.
+    brightness_mode=True: tissue mask = max(R,G,B) < (255 - bg_threshold)
+    brightness_mode=False (legacy): tissue mask = R-B > bg_threshold
+    """
     markers = nuclei_masks.copy()
-    fg = (eosin_img > bg_threshold).astype(np.uint8)
-    fg_pct = fg.mean() * 100
-    if fg_pct < 1.0:
-        print(f"⚠️  Eosin watershed skipped: fg coverage {fg_pct:.1f}% < 1% (eosin max={eosin_img.max()}, threshold={bg_threshold})")
-        return nuclei_masks
-    print(f"  Eosin fg coverage: {fg_pct:.1f}%")
-    return watershed(-eosin_img, markers, mask=fg)
+    if brightness_mode:
+        if eosin_img.ndim == 3:
+            brightness = eosin_img[:, :, :3].astype(np.float32).max(axis=2)
+        else:
+            brightness = eosin_img.astype(np.float32)
+        fg = (brightness < (255 - bg_threshold)).astype(np.uint8)  # 亮度低 = 組織
+        fg_pct = fg.mean() * 100
+        if fg_pct < 1.0:
+            print(f"⚠️  Tissue mask skipped: coverage {fg_pct:.1f}% < 1%")
+            return nuclei_masks
+        print(f"  Tissue coverage: {fg_pct:.1f}%")
+        # 使用亮度反轉之後做 watershed marker
+        return watershed(brightness, markers, mask=fg.astype(bool))
+    else:
+        fg = (eosin_img > bg_threshold).astype(np.uint8)
+        fg_pct = fg.mean() * 100
+        if fg_pct < 1.0:
+            print(f"⚠️  Eosin watershed skipped: fg coverage {fg_pct:.1f}% < 1% (eosin max={eosin_img.max()}, threshold={bg_threshold})")
+            return nuclei_masks
+        print(f"  Eosin fg coverage: {fg_pct:.1f}%")
+        return watershed(-eosin_img, markers, mask=fg)
 
 
 def _merge_masks_logic_a(masks_small, masks_large, fragment_threshold=50):
@@ -276,20 +293,8 @@ def run_segmentation(config: dict):
 
     print(f"🔢 Total cells: {global_id}")
 
-    # Eosin Expansion
-    if pp_config.get("enable_eosin_watershed", False):
-        print("🔬 Running Eosin Watershed expansion...")
-        # Approximate Eosin from RGB
-        if is_grayscale:
-            # For grayscale H&E, tissue is DARK (low value), background is LIGHT (high value).
-            # We need to invert it so that tissue becomes the 'peak' for watershed.
-            eosin_approx = 255.0 - img_full.astype(np.float32)
-        else:
-            eosin_approx = img_full[:, :, 0].astype(np.float32) - img_full[:, :, 2].astype(np.float32)
-
-        eosin_approx = np.clip(eosin_approx, 0, 255).astype(np.uint8)
-        bg_thresh = pp_config.get("eosin_bg_threshold", 40)
-        final_masks = run_eosin_watershed(final_masks, eosin_approx, bg_thresh)
+    # ⚠️ 注意：Eosin Watershed 不修改 final_masks（分割結果應保持純 LOGIC_A 輸出）
+    # cyto_mask.npy 另外在下方獨立計算，供 Proseg 使用
 
     # Save
     npy_path = os.path.join(output_dir, mask_filename)
@@ -401,6 +406,7 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
 
     final_masks = np.zeros((h_full, w_full), dtype=np.int32)
     global_id   = 0
+    flow_canvas = None  # (2, H, W) float、空白區域 = 0
 
     # 小於 block_size 的影像直接以 1 tile 處理
     if h_full <= block_size and w_full <= block_size:
@@ -441,12 +447,19 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
             else:
                 input_img = np.stack([H, H, H], axis=-1)
 
-            masks_s, _, _ = model.eval(input_img, diameter=dia_small,
+            masks_s, flows_s, _ = model.eval(input_img, diameter=dia_small,
                 flow_threshold=flow_thresh, cellprob_threshold=cellprob_thresh,
                 batch_size=batch_size)
             masks_l, _, _ = model.eval(input_img, diameter=dia_large,
                 flow_threshold=flow_thresh, cellprob_threshold=cellprob_thresh,
                 batch_size=batch_size)
+
+            # 將 dP flows 拼接到全圖 canvas
+            if flows_s and len(flows_s) > 0:
+                dp = flows_s[0]  # (2, H_tile, W_tile)
+                if flow_canvas is None:
+                    flow_canvas = np.zeros((2, h_full, w_full), dtype=np.float32)
+                flow_canvas[:, y0:y1, x0:x1] = dp[:, :y1-y0, :x1-x0]
 
             merged = _merge_masks_logic_a(masks_s, masks_l, frag_thresh)
 
@@ -468,12 +481,45 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
 
     print(f"🔢 Total cells: {global_id}")
 
+    # ── Flow 視覺化（小尺寸 dP），用於分割品質檢查 ----------------------------------
+    if flow_canvas is not None:
+        try:
+            from PIL import Image as _Image
+            import io as _io
+            dY, dX = flow_canvas  # (2, H, W)
+            h_vis, w_vis = dY.shape
+            # HSV: hue = 方向， saturation = 強度， value = 1
+            angle = np.arctan2(dY, dX)  # -pi .. pi
+            magnitude = np.sqrt(dX**2 + dY**2)
+            mag_norm = np.clip(magnitude / (magnitude.max() + 1e-6), 0, 1)
+            hue = ((angle + np.pi) / (2 * np.pi) * 179).astype(np.uint8)  # 0-179
+            sat = (mag_norm * 255).astype(np.uint8)
+            val = np.full_like(hue, 255)
+            hsv = np.stack([hue, sat, val], axis=-1)
+            flow_rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+            # 剪裁至原圖大小
+            flow_rgb = flow_rgb[:h_full, :w_full]
+            # 增益對比度
+            flow_u8 = Image.fromarray(flow_rgb)
+            flow_buf = _io.BytesIO()
+            flow_u8.save(flow_buf, "JPEG", quality=85)
+            flows_preview_path = output_dir / "flows_preview.jpg"
+            flows_preview_path.write_bytes(flow_buf.getvalue())
+            print(f"💾 Saved Flow Preview: {flows_preview_path}")
+        except Exception as e:
+            print(f"⚠️ Flow visualization failed: {e}")
+
     if pp_config.get("enable_eosin_watershed", False) and not is_grayscale:
-        print("🔬 Running Eosin Watershed expansion...")
-        eosin_approx = img_full[:, :, 0].astype(np.float32) - img_full[:, :, 2].astype(np.float32)
-        eosin_approx = np.clip(eosin_approx, 0, 255).astype(np.uint8)
+        print("🔬 Generating Eosin Cytoplasm Mask (Brightness Method)...")
         bg_thresh = pp_config.get("eosin_bg_threshold", 40)
-        final_masks = run_eosin_watershed(final_masks, eosin_approx, bg_thresh)
+        # 亮度法：白色空直背景被排除，組織區域保留
+        brightness = img_full[:, :, :3].astype(np.float32).max(axis=2)
+        is_background = (brightness > (255 - bg_thresh))
+        # 產生純細胞質遮罩 (Cyto Mask) 供 Proseg 約束使用 (0=背景, 1=組織)
+        cyto_mask = (~is_background).astype(np.int32)
+        cyto_npy_path = output_dir / "cyto_mask.npy"
+        np.save(str(cyto_npy_path), cyto_mask)
+        print(f"💾 Saved Cyto Mask: {cyto_npy_path}")
 
     npy_path = output_dir / mask_filename
     tif_path = output_dir / mask_tif_filename

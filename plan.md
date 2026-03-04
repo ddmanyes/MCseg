@@ -237,6 +237,20 @@ results/02b_conditions/
 - 分塊執行、合併、背景過濾
 - 輸出：`processed_proseg_cyto.h5ad` + GeoJSON 多邊形
 
+#### 核心優化：Nuclear Shield (核保護器) 演算法
+
+**背景問題**：Proseg 本質為純機率模型 (Gaussian Mixture Model)，給定 RNA 座標與初始分配種子後，它有可能因為局部 RNA 濃度分佈，導致預測的細胞多邊形（Polygon）**越界吞噬**相鄰的細胞核，或延伸至無組織的背景區域。
+
+**解決方案**：結合 **硬約束 (Hard Constraint)**、**邊界調停 (Watershed)** 與 **柔性引導 (Soft Prior)** 的三重防護體系：
+
+1. **防線一（Watershed 邊界調停與細胞質約束）**：
+   - *Watershed 分配*：在處理重疊或緊密相連的擴張核遮罩時，透過距離轉換（Distance Transform）建立細胞間的絕對等距中線（楚河漢界），確保初始餵給 Proseg 的每個 RNA 點都有公平且不重疊的歸屬。
+   - *細胞質過濾 (Cytoplasm Constraint)*：利用 Stage 1 獨有的 **Eosin BG Threshold** 機制。透過 Macenko 演算法將 H&E 影像中的 Eosin (粉紅色細胞質) 訊號分離轉為灰階後，設定閥值將影像「二值化」，產生一張非黑即白的「細胞質實體遮罩」。**在送入 Proseg 之前，將超出該實體遮罩（即背景空腔與無組織區）的擴張種子與游離轉錄點強制剃除（設定為 Background / Unassigned）**，從物理底層防堵模型演算法向空腔區域無限延伸多邊形的可能。
+2. **防線二（Python 核心硬約束）**：在資料前處理階段分配初始 `cell_id` 時，無論分水嶺 (Watershed/Dilation) 如何擴張，只要 RNA 點絕對落在「原始未擴張的細胞核遮罩」內，代碼將強制覆寫並鎖死其原始 ID，不容任何擴張或分水嶺計算的誤差污染。
+3. **防線三（Proseg 模型封印）**：執行 Proseg 時強制加入 CLI 參數 `--nuclear-reassignment-prob 0.01`（系統預設為 0.2），將演算法在內部迭代中「擅自重新分配核內 RNA 歸屬」的機率降至最低的 1%，徹底封印 Proseg 越界搶奪相鄰核的能力。
+
+**最終效果**：完美確保每一個細胞核範圍皆為「神聖不可侵犯」，而在細胞核以外的細胞質區間，又能透過 Eosin 遮罩防堵空腔蔓延，並讓邊界根據真實的 RNA 濃度與 Watershed 的公平劃分自由探索（透過調整 `max_dist` 與 `compactness`），達到既不重疊又高度吻合細胞形態的精準分割。
+
 ---
 
 ### Stage 4：下游分析（沿用 visiumhd_pipeline）
@@ -261,12 +275,14 @@ results/02b_conditions/
 | `cell_boundaries/` | Zarr | 細胞多邊形向量 |
 
 **關鍵處理步驟**：
+
 1. 多邊形座標：µm → px（÷ 0.2645833）
 2. Shapely 簡化 + 平滑（去除 Watershed 毛邊）
 3. 修補 `experiment.xenium` pixel_size Bug（`spatialdata_xenium_explorer` 硬編碼 0.2125）
 4. 轉錄點 ID 重映射（Proseg global ID → AnnData local index）
 
 **Bug 修復**（必須保留）：
+
 ```python
 # spatialdata_xenium_explorer.write() 後強制修補
 exp_data["pixel_size"] = PROSEG_SCALE_UM_PX  # 0.2645833
@@ -282,6 +298,7 @@ exp_data["pixel_size"] = PROSEG_SCALE_UM_PX  # 0.2645833
 | `.geojson` | 細胞邊界（空間疊圖用） |
 
 **關鍵限制**：
+
 - 細胞條碼必須符合 10X Genomics 白名單（16 bp）
 - 分類欄位唯一值 ≤ 32,768
 - 使用 `loupepy.create_loupe_from_anndata()`

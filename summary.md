@@ -1,118 +1,29 @@
-# visiumHD_pipeline_2 — 進度摘要
+# Visium HD Pipeline 2 - Stage 1 Segmentation 功能開發與修復進度總結
 
-> 最後更新：2026-03-03（Session UI 升級）
+## 1. Eosin 細胞質遮罩 (Cyto Mask) 邏輯重構與修復
 
-## 專案定位
+- **問題**：原本使用的 `R - B` (Red 減 Blue) 通道相減法來判斷 Eosin 組織分佈，對於判定組織與空腔背景的準確率極低。且在正式分割 `run_segmentation_rois` 中，Watershed 結果錯誤覆寫了原本 Cellpose 辛苦算出的細胞核/膜成果，導致偵測出的細胞數量從數百顆掉到 77 顆以內。
+- **解法**：
+    1. **改用「亮度」判斷 (Brightness Method)**：對於影像中所有像素取 RGB 最大值 $max(R, G, B)$，大於 `(255 - Eosin_BG_Threshold)` 的視為純空腔背景，其餘保留為組織細胞質。
+    2. **分離最終遮罩**：取消對 `final_masks` (即 `segmentation_masks.npy`) 的覆寫與破壞。Cellpose / Logic A 產出的 `final_masks` 僅負責傳遞高品質細胞邊界，而 Eosin 亮度判斷另外生成二元矩陣並獨立儲存為 `cyto_mask.npy`，專供下游 Proseg 定位使用。
 
-基於 `visiumhd_pipeline`（PyQt6）重構的 **Web 版空間轉錄組分析平台**。
-整合 `xenium_visiumhd_comparison`（ROI 裁切）與 `Proseg-Zarr-Integration`（Browser 匯出），並新增 Stage 2.5 Proseg 條件測試。
+## 2. 預覽介面 (Preview UI) 大幅擴充
 
-**後端**：FastAPI + uvicorn（port 8000）
-**前端**：React 18 + Vite + Tailwind CSS（port 3000）
+- **快速 Patch 預覽整合**：在 512x512 小塊預覽中，統一以 Tab 切換顯示：
+  - H&E + 綠色邊界
+  - Macenko 前處理影像 (Cellpose 真實輸入)
+  - 光流方向圖 (Flows dP)
+  - Cyto 遮罩
+- **完整分割結果預覽支援多圖**：在正式跑完全圖/全 ROI 的任務後，除了能在「完整分割結果預覽」查看 H&E 疊圖外，現在新增：
+  - Eosin 細胞質背景圖 (cyto_mask)
+  - 小尺寸光流方向圖 (Flows dP)
+- **前後端快取機制**：更新 Backend GET `/preview` 端點，支援自動偵測與讀取 `cyto_mask.npy` 與 `flows_preview.jpg` 轉為 base64 傳回給前端切換。
 
----
+## 3. 面板參數 UI 體驗優化
 
-## 已完成功能
+- **新增滑鼠懸停提示 (Tooltips)**：對所有的 `NumberInput` 與 `Toggle` 元件加上說明支援。
+- **翻譯與定義**：為每一個 segmentation 參數補齊繁體中文的實戰意義與調整建議（例如 Batch Size, Flow Threshold, Eosin BG Threshold, Logic A 雙尺寸設計等）。這在實驗與參數調整的過程中，幫助釐清各數值的增減邏輯。
 
-### 後端模組（34 個 Python 檔）
+## 下一步/注意事項
 
-| Stage | 模組路徑 | 功能 | 狀態 |
-|-------|---------|------|------|
-| Setup | `backend/src/utils/discovery.py` | 資料目錄自動掃描 | ✅ |
-| Setup | `backend/src/api/data.py` | /api/data 掃描與設定 | ✅ |
-| 0 | `backend/src/roi/extractor.py` | BTF tile 讀取 + AnnData ROI 裁切 | ✅ |
-| 0 | `backend/src/roi/tile_server.py` | **DZI tile server（OpenSeadragon 用）** | ✅ |
-| 0 | `backend/src/api/roi.py` | ROI CRUD + 預覽 + 萃取 + **/dzi + /tiles 端點** | ✅ |
-| 1 | `backend/src/segmentation/cellpose_runner.py` | Cellpose + Logic A + Eosin Watershed | ✅ |
-| 1 | `backend/src/segmentation/macenko.py` | Macenko 色彩標準化 | ✅ |
-| 1 | `backend/src/api/segmentation.py` | 分割 API（含前端參數覆寫）| ✅ |
-| 2 | `backend/src/zarr_builder/builder.py` | Zarr 建構（含 macOS 汙染防護）| ✅ |
-| 2 | `backend/src/api/zarr_builder.py` | Zarr API | ✅ |
-| 2.5 | `backend/src/proseg/condition_tester.py` | 網格搜尋 + HE 疊圖縮圖生成 | ✅ |
-| 2.5 | `backend/src/api/conditions.py` | 條件測試 API + /thumbnail/{idx} | ✅ |
-| 3 | `backend/src/proseg/pipeline.py` | Proseg 完整 pipeline | ✅ |
-| 3 | `backend/src/api/proseg.py` | Proseg API | ✅ |
-| 4 | `backend/src/analysis/preprocessing.py` | QC + 正規化 + HVG | ✅ |
-| 4 | `backend/src/analysis/clustering.py` | PCA + UMAP + Leiden | ✅ |
-| 4 | `backend/src/analysis/pipeline.py` | 分析串流 + 圖表輸出 | ✅ |
-| 5 | `backend/src/export/xenium_exporter.py` | Xenium Explorer 格式（含 pixel_size bug 修補）| ✅ |
-| 5 | `backend/src/export/loupe_exporter.py` | Loupe Browser 格式（ijson 串流）| ✅ |
-| 5 | `backend/src/api/export.py` | 匯出 API | ✅ |
-
-### 前端頁面（8 個 React 頁面）
-
-| 路由 | 頁面 | 功能 |
-|------|------|------|
-| `/data` | DataSetup | 資料路徑掃描與設定 |
-| `/roi` | Stage0_ROI | ROI 定義（CRUD）+ **OpenSeadragon gigapixel 互動式選取** |
-| `/segmentation` | Stage1_Segmentation | **完整參數面板**（模型/雙尺寸/前後處理/分塊 + 3 個快速預設）|
-| `/zarr` | Stage2_Zarr | Zarr 建構進度 |
-| `/conditions` | Stage2b_ConditionTest | **Top 3 疊圖縮圖 + 完整排序表格 + 散點圖**|
-| `/proseg` | Stage3_Proseg | Proseg 執行（自動載入推薦參數）|
-| `/analysis` | Stage4_Analysis | UMAP 視覺化 |
-| `/export` | Stage5_Export | Xenium Explorer + Loupe Browser 雙格式匯出 |
-
-### 本 Session UI 升級（Priority 1–4 全完成）
-
-| 功能 | 改動 |
-| --- | --- |
-| TanStack Query | 所有 stage 移除 `setInterval`，改用 `useStageStatus` hook |
-| PipelineStepper | 頂部水平 8 步進度條 + Sidebar 鎖定邏輯 |
-| xterm.js Terminal | ANSI 顏色（ERROR/WARNING/DEBUG/INFO）+ 增量寫入 |
-| OpenSeadragon ROI | BTF DZI tile server + OSD viewer + Pan/Draw 模式切換 |
-
-### 測試套件（5 個模組）
-
-- `test_01_infra.py` — config、constants、discovery
-- `test_02_data.py` — BTF、binned 目錄、xenium outs
-- `test_03_api.py` — FastAPI 端點健康檢查
-- `test_04_roi.py` — BTF tiled TIFF、extractor
-- `test_05_xenium.py` — transcripts/cells parquet schema
-
-### 已產出的真實資料
-
-```
-results/analysis/roi/
-├── CRC_tumor_boundary/
-│   ├── adata_002um.h5ad   ← 2µm Visium HD ROI AnnData
-│   ├── adata_008um.h5ad   ← 8µm 聚合 ROI AnnData
-│   └── he_crop.tif        ← H&E 裁切影像
-└── CRC_normal_colon/
-    ├── adata_002um.h5ad
-    ├── adata_008um.h5ad
-    └── he_crop.tif
-```
-
----
-
-## 關鍵技術備忘
-
-| 項目 | 說明 |
-|------|------|
-| 物理常數 | `XENIUM=0.2125`, `VISIUM=0.2737`, `PROSEG=0.2645833` µm/px |
-| Proseg 黃金參數 | `dilation=20, max_dist=40, compactness=0.06` |
-| Xenium pixel_size bug | `_patch_experiment_xenium()` 必須在每次 write 後執行 |
-| BTF 讀取 | tile-by-tile，禁止全圖載入 |
-| macOS 汙染防護 | `rglob("._*")` 在所有 zarr 操作前執行 |
-| Dask monkey-patch | `dask.config.set({"dataframe.query-planning": True})` |
-| Loupe 條碼限制 | 16bp ATCG + "-1"，類別數 < 32,768 |
-
----
-
-## 啟動方式
-
-```bash
-cd /Volumes/SSD/plan_a/visiumHD_pipeline_2
-bash start.sh
-# 後端：http://localhost:8000  (API Docs: /docs)
-# 前端：http://localhost:3000
-```
-
----
-
-## 下一步（選擇性）
-
-- [ ] 執行 `uv run pytest backend/tests/` 確認測試全通過
-- [ ] 在 Stage 0 測試真實 BTF tile 讀取流程
-- [ ] 補充 Stage 2.5 縮圖：有真實 Proseg 輸出後驗證 GeoJSON 讀取路徑
-- [ ] 加入 Stage 4 marker gene 視覺化
+由於移除了破壞性 Watershed 邏輯，目前 `segmentation_masks.npy` 細胞數量恢復正常。可以利用新增的 `Flows` 預覽來判斷 Cellpose 找核的品質，並觀察 `Eosin Cytoplasm Mask` 是否能精準框出深粉紅色組織並濾掉背景。確認滿意參數後即可推進到 Proseg 分子指派階段。
