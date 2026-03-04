@@ -423,9 +423,9 @@ class ProsegPipeline:
             logger.info("應用細胞質遮罩約束...")
 
             # 約束邏輯: 只保留在對應 cyto 區域內的擴張
-            # 對於每個像素,如果擴張後有值且在對應的 cyto 內,則保留
+            # 對於每個像素,如果擴張後有值且在對應的 cyto 內 (大於 0),則保留
             lookup_mask = np.where(
-                (dilated_mask > 0) & (cyto_constraint == dilated_mask),
+                (dilated_mask > 0) & (cyto_constraint > 0),
                 dilated_mask,
                 0
             ).astype(np.int32)

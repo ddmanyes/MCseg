@@ -406,7 +406,7 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
 
     final_masks = np.zeros((h_full, w_full), dtype=np.int32)
     global_id   = 0
-    flow_canvas = None  # (2, H, W) float、空白區域 = 0
+    flow_canvas = None  # (H, W, 3) uint8
 
     # 小於 block_size 的影像直接以 1 tile 處理
     if h_full <= block_size and w_full <= block_size:
@@ -454,12 +454,14 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
                 flow_threshold=flow_thresh, cellprob_threshold=cellprob_thresh,
                 batch_size=batch_size)
 
-            # 將 dP flows 拼接到全圖 canvas
+            # 將 dP flows 拼接到全圖 canvas (flows_s[0] is (H, W, 3) RGB uint8 or float)
             if flows_s and len(flows_s) > 0:
-                dp = flows_s[0]  # (2, H_tile, W_tile)
+                dp = flows_s[0]  
                 if flow_canvas is None:
-                    flow_canvas = np.zeros((2, h_full, w_full), dtype=np.float32)
-                flow_canvas[:, y0:y1, x0:x1] = dp[:, :y1-y0, :x1-x0]
+                    flow_canvas = np.zeros((h_full, w_full, 3), dtype=np.uint8)
+                if dp.ndim == 3 and dp.shape[-1] == 3:
+                    dp_u8 = np.clip(dp, 0, 255).astype(np.uint8)
+                    flow_canvas[y0:y1, x0:x1, :] = dp_u8[:y1-y0, :x1-x0, :]
 
             merged = _merge_masks_logic_a(masks_s, masks_l, frag_thresh)
 
@@ -486,21 +488,8 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
         try:
             from PIL import Image as _Image
             import io as _io
-            dY, dX = flow_canvas  # (2, H, W)
-            h_vis, w_vis = dY.shape
-            # HSV: hue = 方向， saturation = 強度， value = 1
-            angle = np.arctan2(dY, dX)  # -pi .. pi
-            magnitude = np.sqrt(dX**2 + dY**2)
-            mag_norm = np.clip(magnitude / (magnitude.max() + 1e-6), 0, 1)
-            hue = ((angle + np.pi) / (2 * np.pi) * 179).astype(np.uint8)  # 0-179
-            sat = (mag_norm * 255).astype(np.uint8)
-            val = np.full_like(hue, 255)
-            hsv = np.stack([hue, sat, val], axis=-1)
-            flow_rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
-            # 剪裁至原圖大小
-            flow_rgb = flow_rgb[:h_full, :w_full]
-            # 增益對比度
-            flow_u8 = Image.fromarray(flow_rgb)
+            flow_rgb = flow_canvas
+            flow_u8 = _Image.fromarray(flow_rgb)
             flow_buf = _io.BytesIO()
             flow_u8.save(flow_buf, "JPEG", quality=85)
             flows_preview_path = output_dir / "flows_preview.jpg"
