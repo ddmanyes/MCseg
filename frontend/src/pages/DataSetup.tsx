@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { scanData, applyData, getDataStatus, browseDir } from '../api/client'
 import { FolderSearch, Check, AlertTriangle, HardDrive, FileSearch, FolderOpen, ChevronRight, ArrowUp, File, X } from 'lucide-react'
 
@@ -63,7 +63,7 @@ function FolderBrowser({
     const [editingPath, setEditingPath] = useState(false)
     const [pathInput, setPathInput] = useState('')
 
-    const navigate = async (path: string) => {
+    const navigate = useCallback(async (path: string) => {
         setLoading(true)
         setError('')
         try {
@@ -79,15 +79,16 @@ function FolderBrowser({
         } finally {
             setLoading(false)
         }
-    }
+    }, [])
 
     useEffect(() => {
         navigate('~')
-    }, [])
+    }, [navigate])
 
     const handlePathSubmit = () => {
         if (pathInput.trim()) navigate(pathInput.trim())
     }
+
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-6">

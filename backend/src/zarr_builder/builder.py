@@ -28,6 +28,17 @@ from backend.src.utils.constants import VISIUM_UM_PX
 logger = logging.getLogger("pipeline.zarr")
 
 CHUNK_SIZE = 1024
+_LARGE_BTF_THRESHOLD = 10000  # px — BTF 超過此尺寸時改用 hires PNG（應移至 constants.py）
+
+
+def _decode_bytes(v) -> str:
+    """將 10x H5 中常見的 bytes gene/barcode 安全解碼為 str。"""
+    if isinstance(v, bytes):
+        try:
+            return v.decode("utf-8")
+        except UnicodeDecodeError:
+            return v.decode("latin-1")
+    return v
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +57,9 @@ def _patch_zarr_for_exfat() -> None:
     try:
         import os as _os
         import zarr.storage as _zs
+
+        # 備份原始函數，方便測試環境還原
+        _zs.DirectoryStore._keys_fast_original = _zs.DirectoryStore._keys_fast  # type: ignore[attr-defined]
 
         @staticmethod  # type: ignore[misc]
         def _filtered_keys_fast(path, walker=_os.walk):
@@ -370,6 +384,12 @@ def _write_table(root, table_name: str, config: dict, store_path: str, roi_crop=
     if roi_crop is not None:
         coords[:, 0] -= roi_crop["x0"]
         coords[:, 1] -= roi_crop["y0"]
+        neg_mask = (coords[:, 0] < 0) | (coords[:, 1] < 0)
+        if neg_mask.any():
+            logger.warning(
+                f"  ⚠️ ROI 偏移後出現 {neg_mask.sum()} 個負座標，"
+                f"請確認 roi_crop 設定（x0={roi_crop['x0']}, y0={roi_crop['y0']}\uff09"
+            )
 
     adata.obsm["spatial"] = coords * sf
 
@@ -382,7 +402,9 @@ def _write_table(root, table_name: str, config: dict, store_path: str, roi_crop=
 
     # Pre-delete existing table dir to avoid ExFAT shutil.rmtree fd-unlink failures
     if os.path.exists(table_path):
-        subprocess.run(["rm", "-rf", table_path], check=False)
+        result = subprocess.run(["rm", "-rf", table_path], check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning(f"  rm -rf 回傳非零（{result.returncode}）：{result.stderr.strip()}")
         logger.info(f"  已清除舊 table：{table_path}")
 
     adata.uns["spatialdata_attrs"] = {
@@ -395,16 +417,7 @@ def _write_table(root, table_name: str, config: dict, store_path: str, roi_crop=
     adata.obs["region"] = adata.obs["region"].astype("category")
     adata.obs["instance_id"] = np.arange(adata.shape[0])
 
-    # Sanitize bytes→str to prevent zarr UTF-8 decode errors
-    # (10x H5 files sometimes store gene names/barcodes as raw bytes)
-    def _decode_bytes(v):
-        if isinstance(v, bytes):
-            try:
-                return v.decode("utf-8")
-            except UnicodeDecodeError:
-                return v.decode("latin-1")
-        return v
-
+    # Sanitize bytes→str（10x H5 有時以 raw bytes 儲存 gene/barcode）
     adata.var_names = pd.Index([_decode_bytes(v) for v in adata.var_names])
     adata.obs_names = pd.Index([_decode_bytes(v) for v in adata.obs_names])
     for _col in list(adata.var.columns):
@@ -588,16 +601,9 @@ def _write_points(root, config: dict, store_path: str, physical_scale: float = 1
         warnings.simplefilter("ignore", UserWarning)
         adata = sc.read_10x_h5(matrix_path)
     adata.var_names_make_unique()
-    # Sanitize bytes→str (same as _write_table)
-    def _dec(v):
-        if isinstance(v, bytes):
-            try:
-                return v.decode("utf-8")
-            except UnicodeDecodeError:
-                return v.decode("latin-1")
-        return v
-    adata.var_names = pd.Index([_dec(v) for v in adata.var_names])
-    adata.obs_names = pd.Index([_dec(v) for v in adata.obs_names])
+    # Sanitize bytes→str（與 _write_table 相同，使用模組層級 _decode_bytes）
+    adata.var_names = pd.Index([_decode_bytes(v) for v in adata.var_names])
+    adata.obs_names = pd.Index([_decode_bytes(v) for v in adata.obs_names])
 
     common = adata.obs_names.intersection(df_pos.index)
     if len(common) == 0:
@@ -821,7 +827,7 @@ def _write_shapes(root, config: dict, store_path: str, physical_scale: float = 1
 # H&E image resolution helper
 # ---------------------------------------------------------------------------
 
-_LARGE_BTF_THRESHOLD = 10000  # pixels — above this, prefer hires PNG
+# _LARGE_BTF_THRESHOLD 已移至模組頂部（見 CHUNK_SIZE 後）
 
 
 def _resolve_he_image(

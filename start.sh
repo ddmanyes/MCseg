@@ -67,6 +67,23 @@ fi
 npm run dev &
 FRONTEND_PID=$!
 
+# 等待前端就緒（最多 8 秒，Vite 通常 2-3 秒）
+echo -n "等待前端就緒"
+for i in $(seq 1 8); do
+    sleep 1
+    echo -n "."
+    if curl -sf http://localhost:3000 &>/dev/null; then
+        echo ""
+        echo -e "${GREEN}✅ 前端已就緒${NC}"
+        break
+    fi
+    if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
+        echo ""
+        echo -e "${RED}❌ 前端啟動失敗！請確認 node_modules 與 vite 設定${NC}"
+        break
+    fi
+done
+
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  後端 API:  http://localhost:8000${NC}"

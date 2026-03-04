@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from backend.src.utils.config import load_config, save_config
+from backend.src.utils.config import load_config, resolve_path, save_config
 from backend.src.utils.discovery import scan_data_root
 
 router = APIRouter()
@@ -73,6 +73,52 @@ async def get_data_status():
     return {"status": "ok", "data": status}
 
 
+@router.get("/disk-status")
+async def get_disk_status():
+    """
+    掃描磁碟，回傳各 Stage 實際完成狀態（重啟後前端可據此恢復 UI 狀態）。
+    """
+    config = load_config()
+    paths = config.get("paths", {})
+    output_dir = resolve_path(paths.get("output_dir", "results/analysis"))
+    zarr_dir   = resolve_path(paths.get("zarr_dir",   "results/zarr"))
+
+    roi_base = output_dir / "roi"
+
+    # Stage 0: ROI — 有任何 he_crop.tif
+    roi_dirs = [d for d in roi_base.iterdir() if d.is_dir() and not d.name.startswith(".")] \
+               if roi_base.exists() else []
+    roi_done = any((d / "he_crop.tif").exists() for d in roi_dirs)
+    roi_names = [d.name for d in roi_dirs if (d / "he_crop.tif").exists()]
+
+    # Stage 1: Segmentation — 有任何 segmentation_masks.npy
+    seg_done = any((d / "segmentation_masks.npy").exists() for d in roi_dirs)
+
+    # Stage 2: Zarr — zarr 目錄下有 *.zarr
+    zarr_files = list(zarr_dir.glob("*.zarr")) if zarr_dir.exists() else []
+    zarr_done = len(zarr_files) > 0
+
+    # Stage 3: Proseg — 有任何 proseg_cells.h5ad 或 cells.geojson
+    proseg_done = any(
+        (d / "proseg_cells.h5ad").exists() or (d / "cells.geojson").exists()
+        for d in roi_dirs
+    )
+
+    # Stage 4: Analysis — 有任何 clustering.h5ad
+    analysis_done = any((d / "clustering.h5ad").exists() for d in roi_dirs)
+
+    return {
+        "status": "ok",
+        "data": {
+            "roi":         {"done": roi_done,      "roi_names": roi_names},
+            "segmentation":{"done": seg_done},
+            "zarr":        {"done": zarr_done,     "files": [str(f) for f in zarr_files]},
+            "proseg":      {"done": proseg_done},
+            "analysis":    {"done": analysis_done},
+        },
+    }
+
+
 @router.get("/browse")
 async def browse_directory(path: str = Query("~", description="要瀏覽的目錄路徑")):
     """
@@ -88,7 +134,12 @@ async def browse_directory(path: str = Query("~", description="要瀏覽的目�
 
         items = []
         try:
-            for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+            entries = sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+        except PermissionError:
+            return {"status": "error", "message": f"無權限存取：{target}"}
+
+        for entry in entries:
+            try:
                 # 跳過隱藏檔案和系統目錄
                 if entry.name.startswith(".") or entry.name.startswith("._"):
                     continue
@@ -96,7 +147,6 @@ async def browse_directory(path: str = Query("~", description="要瀏覽的目�
                     continue
 
                 if entry.is_dir():
-                    # 計算子項目數量（淺層）
                     try:
                         child_count = sum(1 for c in entry.iterdir() if not c.name.startswith("."))
                     except PermissionError:
@@ -112,7 +162,6 @@ async def browse_directory(path: str = Query("~", description="要瀏覽的目�
                         size = entry.stat().st_size
                     except OSError:
                         size = 0
-                    # 只列出可能相關的大型檔案或特定格式
                     ext = entry.suffix.lower()
                     if ext in (".btf", ".tif", ".tiff", ".h5", ".h5ad", ".parquet", ".zarr", ".yaml", ".json"):
                         units = ["B", "KB", "MB", "GB"]
@@ -128,8 +177,10 @@ async def browse_directory(path: str = Query("~", description="要瀏覽的目�
                             "size": size,
                             "size_human": f"{s:.1f} {units[u]}",
                         })
-        except PermissionError:
-            return {"status": "error", "message": f"無權限存取：{target}"}
+            except (PermissionError, OSError) as entry_err:
+                logger.warning(f"跳過無法存取的項目 {entry.name}：{entry_err}")
+                continue
+
 
         return {
             "status": "ok",

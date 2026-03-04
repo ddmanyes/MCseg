@@ -54,3 +54,27 @@
   4. 揭露了四個技術亮點：非同步處理 WebSocket Logs、PyArrow memory pushdown 節省鉅量 RAM、GPU Tile 分塊技術，以及針對 macOS 外接硬碟的自動化防護。
 
 [🔄 點擊恢復至此階段](command:antigravity.restore?{"hash":"f1ef34f","step":"update_readme_pages"})
+
+---
+
+### [2026-03-04 12:55] 🤖 Code Review 紀錄 (v3.0)
+
+- **路由路徑**: Gemini | **評分**: 5/10（低於閾值 6，走 General 路徑）
+- **規範檢查**: ⚠️ 發現 2 項違規（H-1 DRY 違規、L-2 常數未集中）
+- **判定理由**: 涉及 AnnData/zarr 生物資訊核心工具（+2）、API 架構變動（+2）、環境配置（+1）；無 CUDA/安全性問題
+- **審查狀態**: ✅ 已完成並全數修復
+
+**修復清單（本次 session）**：
+
+| 等級 | 問題 | 狀態 |
+|:---:|---|:---:|
+| 🔴 H-1 | `_decode_bytes` 在 2 個函數內重複定義 → 提升為模組層級 | ✅ |
+| 🔴 H-2 | `subprocess.run(check=False)` 靜默失敗 → 加入 stderr 警告 | ✅ |
+| 🟡 M-1 | ROI 座標偏移後無負座標保護 → 加入 warning + 計數 | ✅ |
+| 🟡 M-3 | `start.sh` 前端啟動無健康確認 → 加入 8 秒 curl check | ✅ |
+| 🟡 M-4 | `useEffect` deps 缺少 `navigate` → 改用 `useCallback` | ✅ |
+| 🟢 L-1 | monkey patch 無法還原 → 備份 `_keys_fast_original` | ✅ |
+| 🟢 L-3 | browse API 單一 entry 錯誤導致整個請求失敗 → 改為 entry 層級 try/except | ✅ |
+| 🟢 L-2 | `_LARGE_BTF_THRESHOLD` 未在 constants.py | ⏳ 待後續移入 |
+
+[🔄 點擊恢復至審查前狀態](command:antigravity.restore?{"hash":"f7aef07cd6dc779f2717b5e229b1ebeb1bf18b76"})
