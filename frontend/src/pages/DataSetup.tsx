@@ -60,6 +60,8 @@ function FolderBrowser({
     const [browseData, setBrowseData] = useState<BrowseData | null>(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
+    const [editingPath, setEditingPath] = useState(false)
+    const [pathInput, setPathInput] = useState('')
 
     const navigate = async (path: string) => {
         setLoading(true)
@@ -68,6 +70,7 @@ function FolderBrowser({
             const r = await browseDir(path)
             if (r.data.status === 'ok') {
                 setBrowseData(r.data.data)
+                setEditingPath(false)
             } else {
                 setError(r.data.message)
             }
@@ -81,6 +84,10 @@ function FolderBrowser({
     useEffect(() => {
         navigate('~')
     }, [])
+
+    const handlePathSubmit = () => {
+        if (pathInput.trim()) navigate(pathInput.trim())
+    }
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-6">
@@ -96,14 +103,46 @@ function FolderBrowser({
                     </button>
                 </div>
 
-                {/* Current path */}
-                {browseData && (
-                    <div className="px-5 py-2 border-b border-surface-border bg-surface/50">
-                        <p className="text-xs text-gray-400 font-mono truncate">{browseData.current}</p>
-                    </div>
-                )}
+                {/* Current path bar — 點擊可直接輸入路徑 */}
+                <div className="px-5 py-2 border-b border-surface-border bg-surface/50">
+                    {editingPath ? (
+                        <div className="flex items-center gap-2">
+                            <input
+                                autoFocus
+                                value={pathInput}
+                                onChange={e => setPathInput(e.target.value)}
+                                onKeyDown={e => {
+                                    if (e.key === 'Enter') handlePathSubmit()
+                                    if (e.key === 'Escape') setEditingPath(false)
+                                }}
+                                placeholder="/Volumes/SSD/plan_a/tissue sample/CRC"
+                                className="flex-1 px-2 py-0.5 bg-surface border border-primary/50 rounded text-xs text-gray-200 font-mono focus:outline-none focus:border-primary"
+                            />
+                            <button
+                                onClick={handlePathSubmit}
+                                className="px-2 py-0.5 bg-primary text-white rounded text-xs hover:bg-primary-dark transition-colors"
+                            >跳轉</button>
+                            <button
+                                onClick={() => setEditingPath(false)}
+                                className="text-gray-500 hover:text-gray-300 text-xs"
+                            >✕</button>
+                        </div>
+                    ) : (
+                        <button
+                            onClick={() => { setPathInput(browseData?.current ?? ''); setEditingPath(true) }}
+                            className="w-full text-left group flex items-center gap-1"
+                            title="點擊直接輸入路徑"
+                        >
+                            <p className="text-xs text-gray-400 font-mono truncate group-hover:text-gray-200 transition-colors">
+                                {browseData?.current ?? '載入中...'}
+                            </p>
+                            <span className="text-xs text-gray-600 group-hover:text-primary transition-colors ml-1 flex-shrink-0">✎</span>
+                        </button>
+                    )}
+                </div>
 
                 {/* Content */}
+
                 <div className="flex-1 overflow-y-auto p-2 min-h-[300px]">
                     {loading && <div className="text-sm text-gray-500 p-4 text-center">載入中...</div>}
                     {error && <div className="text-sm text-red-400 p-4 text-center">{error}</div>}
@@ -126,8 +165,8 @@ function FolderBrowser({
                                     key={item.path}
                                     onClick={() => item.type === 'dir' ? navigate(item.path) : undefined}
                                     className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors ${item.type === 'dir'
-                                            ? 'hover:bg-surface-border/50 cursor-pointer group'
-                                            : 'opacity-50 cursor-default'
+                                        ? 'hover:bg-surface-border/50 cursor-pointer group'
+                                        : 'opacity-50 cursor-default'
                                         }`}
                                 >
                                     {item.type === 'dir' ? (
@@ -304,8 +343,8 @@ export default function DataSetup() {
                         onClick={handleScan}
                         disabled={scanning || !dataRoot.trim()}
                         className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 flex-shrink-0 ${scanning || !dataRoot.trim()
-                                ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
-                                : 'bg-primary text-white hover:bg-primary-dark'
+                            ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                            : 'bg-primary text-white hover:bg-primary-dark'
                             }`}
                     >
                         <FileSearch className="w-4 h-4" />
@@ -326,10 +365,10 @@ export default function DataSetup() {
                                 onClick={handleApply}
                                 disabled={applying || applied}
                                 className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${applied
-                                        ? 'bg-green-900/40 text-green-400 cursor-default'
-                                        : applying
-                                            ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
-                                            : 'bg-primary text-white hover:bg-primary-dark'
+                                    ? 'bg-green-900/40 text-green-400 cursor-default'
+                                    : applying
+                                        ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                                        : 'bg-primary text-white hover:bg-primary-dark'
                                     }`}
                             >
                                 {applied ? '✓ 已套用' : applying ? '套用中...' : '套用至 Config'}
