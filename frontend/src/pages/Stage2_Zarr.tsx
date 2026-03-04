@@ -3,20 +3,18 @@ import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
 import { buildZarr, getZarrStatus } from '../api/client'
 import useStageLog from '../hooks/useStageLog'
+import { useStageStatus } from '../hooks/useStageStatus'
 
 export default function Stage2_Zarr() {
   useStageLog('zarr')
   const { stages, updateStage } = usePipelineStore()
   const stage = stages['zarr']
+  const { refetch: refetchStatus } = useStageStatus('zarr', getZarrStatus, 3000)
 
   const handleRun = async () => {
     updateStage('zarr', { status: 'running', progress: 0, message: '建構 Zarr...' })
     await buildZarr()
-    const poll = setInterval(async () => {
-      const s = await getZarrStatus()
-      updateStage('zarr', s.data)
-      if (s.data.status !== 'running') clearInterval(poll)
-    }, 3000)
+    refetchStatus()
   }
 
   return (

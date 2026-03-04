@@ -14,6 +14,7 @@ export const scanData = (body: { data_root: string }) => api.post('/data/scan', 
 export const applyData = (paths: object) => api.post('/data/apply', paths)
 export const getDataStatus = () => api.get('/data/status')
 export const browseDir = (path: string) => api.get('/data/browse', { params: { path } })
+export const getDiskStatus = () => api.get('/data/disk-status')
 
 // Stage 0: ROI
 export const listRois = () => api.get('/roi/list')
@@ -24,9 +25,10 @@ export const runRoiExtract = () => api.post('/roi/extract')
 export const getRoiStatus = () => api.get('/roi/status')
 
 // Stage 1: Segmentation
-export const runSegmentation = () => api.post('/segmentation/run')
+export const runSegmentation = (params?: object) => api.post('/segmentation/run', params ?? {})
 export const getSegmentationStatus = () => api.get('/segmentation/status')
-export const getSegmentationPreview = () => api.get('/segmentation/preview')
+export const getSegmentationPreview = (roi?: string) => api.get('/segmentation/preview', { params: roi ? { roi_name: roi } : {} })
+export const runSegmentationPreview = (body: object) => api.post('/segmentation/run_preview', body)
 
 // Stage 2: Zarr
 export const buildZarr = () => api.post('/zarr/build')
@@ -37,6 +39,7 @@ export const runConditions = (body: object) => api.post('/conditions/run', body)
 export const getConditionsStatus = () => api.get('/conditions/status')
 export const getConditionsResults = () => api.get('/conditions/results')
 export const getConditionsRecommend = () => api.get('/conditions/recommend')
+export const getConditionThumbnail = (idx: number) => api.get(`/conditions/thumbnail/${idx}`)
 
 // Stage 3: Proseg
 export const runProseg = () => api.post('/proseg/run')

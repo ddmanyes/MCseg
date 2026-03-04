@@ -1,8 +1,11 @@
 """Stage 0: ROI 定義與裁切 API"""
 import asyncio
+import json
 import logging
+from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks
+from fastapi.responses import Response as FastAPIResponse
 from pydantic import BaseModel
 
 from backend.src.utils.config import load_config, save_config
@@ -13,6 +16,27 @@ logger = logging.getLogger("pipeline.api.roi")
 
 # 任務狀態追蹤
 _task_status = {"status": "idle", "progress": 0.0, "message": ""}
+
+# DZI tile server singleton（避免重複開啟 BTF）
+_tile_server = None
+
+
+def _get_tile_server():
+    global _tile_server
+    if _tile_server is None:
+        from backend.src.roi.tile_server import DZITileServer
+        config   = load_config()
+        he_path  = config.get('paths', {}).get('he_image', '')
+        b002     = config.get('paths', {}).get('binned_002', '')
+        hires    = str(Path(b002) / 'spatial' / 'tissue_hires_image.png') if b002 else None
+        scalef   = 0.1
+        if b002:
+            sf_file = Path(b002) / 'spatial' / 'scalefactors_json.json'
+            if sf_file.exists():
+                with open(sf_file) as f:
+                    scalef = json.load(f).get('tissue_hires_scalef', 0.1)
+        _tile_server = DZITileServer(he_path, hires, scalef)
+    return _tile_server
 
 
 class RoiConfig(BaseModel):
@@ -97,3 +121,41 @@ async def run_extract(background_tasks: BackgroundTasks):
     config = load_config()
     background_tasks.add_task(_run_extract, config)
     return {"status": "ok", "message": "ROI 裁切已啟動"}
+
+
+# ── OpenSeadragon DZI tile server ─────────────────────────────────────────────
+
+@router.get("/dzi")
+async def roi_dzi():
+    """DZI XML descriptor for OpenSeadragon viewer."""
+    try:
+        ts = _get_tile_server()
+        return FastAPIResponse(content=ts.get_dzi(), media_type='application/xml')
+    except Exception as e:
+        logger.error(f"DZI descriptor 失敗：{e}")
+        return FastAPIResponse(content=f"<error>{e}</error>", status_code=500,
+                               media_type='application/xml')
+
+
+@router.get("/tiles/{level}/{tile_name}")
+async def roi_tile(level: int, tile_name: str):
+    """Serve a single DZI tile as JPEG (tile_name format: '{tx}_{ty}.jpg')."""
+    try:
+        ts  = _get_tile_server()
+        xy  = tile_name.replace('.jpg', '').replace('.jpeg', '').split('_')
+        tx, ty = int(xy[0]), int(xy[1])
+        jpg = ts.get_tile(level, tx, ty)
+        return FastAPIResponse(
+            content=jpg,
+            media_type='image/jpeg',
+            headers={'Cache-Control': 'public, max-age=3600'},
+        )
+    except Exception as e:
+        logger.error(f"Tile {level}/{tile_name} 失敗：{e}")
+        return FastAPIResponse(content=b'', status_code=500, media_type='image/jpeg')
+
+
+@router.get("/dzi_files/{level}/{tile_name}")
+async def roi_dzi_files(level: int, tile_name: str):
+    """OSD derives tile URL as '{dzi_url}_files/{level}/{tx}_{ty}.jpeg' — alias to roi_tile."""
+    return await roi_tile(level, tile_name)

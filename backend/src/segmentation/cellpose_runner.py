@@ -79,6 +79,11 @@ def run_eosin_watershed(nuclei_masks: np.ndarray, eosin_img: np.ndarray, bg_thre
     """Use Eosin channel watershed to expand cytoplasm."""
     markers = nuclei_masks.copy()
     fg = (eosin_img > bg_threshold).astype(np.uint8)
+    fg_pct = fg.mean() * 100
+    if fg_pct < 1.0:
+        print(f"⚠️  Eosin watershed skipped: fg coverage {fg_pct:.1f}% < 1% (eosin max={eosin_img.max()}, threshold={bg_threshold})")
+        return nuclei_masks
+    print(f"  Eosin fg coverage: {fg_pct:.1f}%")
     return watershed(-eosin_img, markers, mask=fg)
 
 
@@ -142,11 +147,11 @@ def run_segmentation(config: dict):
     use_gpu = model_config.get("use_gpu", True) and core.use_gpu()
     batch_size = model_config.get("batch_size", 16)
 
-    dia_small = strategy.get("dia_small", 10.0)
-    dia_large = strategy.get("dia_large", 25.0)
-    flow_thresh = strategy.get("flow_threshold", 0.8)
-    cellprob_thresh = strategy.get("cellprob_threshold", -4.0)
-    frag_thresh = strategy.get("fragment_threshold", 50)
+    dia_small = strategy.get("dia_small", 30.0)
+    dia_large = strategy.get("dia_large", 60.0)
+    flow_thresh = strategy.get("flow_threshold", 0.4)
+    cellprob_thresh = strategy.get("cellprob_threshold", -1.0)
+    frag_thresh = strategy.get("fragment_threshold", 200)
 
     block_size = tile_config.get("block_size", 2048)
     overlap = tile_config.get("overlap", 256)
@@ -298,5 +303,173 @@ def run_segmentation(config: dict):
 
     if save_flows:
         print("ℹ️ Flow saving skipped in pipeline mode (available in original script)")
+
+    return final_masks
+
+
+# ── Per-ROI segmentation (Stage 1 主要執行路徑) ──────────────────────────────
+
+
+def run_segmentation_rois(config: dict, progress_callback=None):
+    """對所有 ROI 的 he_crop.tif 執行分割，結果分別存至各 ROI 目錄。"""
+    paths      = config.get("paths", {})
+    output_dir = paths.get("output_dir", "results/analysis")
+    rois       = config.get("rois", [])
+    seg_cfg    = config.get("segmentation", {})
+    roi_base   = Path(output_dir) / "roi"
+
+    # 按 config rois 順序收集
+    roi_paths: list[tuple[str, Path]] = []
+    for roi in rois:
+        roi_name = roi.get("name", "")
+        he_crop  = roi_base / roi_name / "he_crop.tif"
+        if he_crop.exists():
+            roi_paths.append((roi_name, he_crop))
+
+    # 掃描目錄補充未在 config 的 ROI
+    known = {r[0] for r in roi_paths}
+    if roi_base.exists():
+        for d in sorted(roi_base.iterdir()):
+            if d.is_dir() and d.name not in known:
+                he_crop = d / "he_crop.tif"
+                if he_crop.exists():
+                    roi_paths.append((d.name, he_crop))
+
+    if not roi_paths:
+        raise ValueError("找不到 he_crop.tif，請先在 Stage 0 執行 ROI 裁切")
+
+    n = len(roi_paths)
+    print(f"🗂️ 找到 {n} 個 ROI 待分割")
+
+    for i, (roi_name, he_crop_path) in enumerate(roi_paths):
+        if progress_callback:
+            progress_callback(i / n, f"ROI {i+1}/{n}: {roi_name}")
+        print(f"\n{'='*50}")
+        print(f"📂 處理 ROI: {roi_name} ({i+1}/{n})")
+        _run_single_roi_segmentation(he_crop_path, roi_name, seg_cfg)
+
+    print(f"\n✅ 所有 {n} 個 ROI 分割完成")
+
+
+def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dict):
+    """對單一 he_crop.tif 執行 Cellpose 分割，結果存至同目錄。"""
+    model_config      = seg_cfg.get("cellpose_model", {})
+    strategy          = seg_cfg.get("strategy", {})
+    pp_config         = seg_cfg.get("postprocessing", {})
+    tile_config       = seg_cfg.get("tiling", {})
+    prep_config       = seg_cfg.get("preprocessing", {})
+    out_config        = seg_cfg.get("output", {})
+
+    model_type        = model_config.get("model_type", "cyto2")
+    use_gpu           = model_config.get("use_gpu", True) and core.use_gpu()
+    batch_size        = model_config.get("batch_size", 4)
+    dia_small         = strategy.get("dia_small", 30.0)
+    dia_large         = strategy.get("dia_large", 60.0)
+    flow_thresh       = strategy.get("flow_threshold", 0.4)
+    cellprob_thresh   = strategy.get("cellprob_threshold", -1.0)
+    frag_thresh       = strategy.get("fragment_threshold", 200)
+    block_size        = tile_config.get("block_size", 2048)
+    overlap           = tile_config.get("overlap", 256)
+    normalize_stains  = prep_config.get("normalize_stains", True)
+    mask_filename     = out_config.get("mask_filename", "masks.npy")
+    mask_tif_filename = out_config.get("mask_tif_filename", "masks.tif")
+
+    output_dir = he_crop_path.parent
+
+    print(f"🔬 Loading: {he_crop_path}")
+    img_full = tifffile.imread(str(he_crop_path))
+    if img_full.ndim == 3 and img_full.shape[-1] == 4:
+        img_full = img_full[..., :3]
+
+    is_grayscale = img_full.ndim == 2 or (img_full.ndim == 3 and img_full.shape[-1] == 1)
+    if is_grayscale:
+        normalize_stains = False
+        if img_full.ndim == 3:
+            img_full = img_full[..., 0]
+
+    h_full, w_full = img_full.shape[:2]
+    print(f"  Image size: {w_full} x {h_full}")
+
+    normalizer = MacenkoNormalizer()
+    if normalize_stains:
+        success = normalizer.fit(img_full)
+        print("✅ Macenko calibration successful" if success else "⚠️ Macenko fallback to grayscale")
+
+    model = models.CellposeModel(gpu=use_gpu, pretrained_model=model_type)
+    print(f"🧠 Model: {model_type}, GPU: {use_gpu}")
+
+    final_masks = np.zeros((h_full, w_full), dtype=np.int32)
+    global_id   = 0
+
+    # 小於 block_size 的影像直接以 1 tile 處理
+    if h_full <= block_size and w_full <= block_size:
+        ny, nx = 1, 1
+    else:
+        ny = max(1, (h_full - overlap) // (block_size - overlap) + 1)
+        nx = max(1, (w_full - overlap) // (block_size - overlap) + 1)
+
+    print(f"🧩 Processing {ny * nx} tiles ({nx}x{ny})")
+
+    for iy in tqdm(range(ny), desc=roi_name):
+        for ix in range(nx):
+            y0 = iy * (block_size - overlap) if ny > 1 else 0
+            x0 = ix * (block_size - overlap) if nx > 1 else 0
+            y1 = min(y0 + block_size, h_full)
+            x1 = min(x0 + block_size, w_full)
+
+            tile = img_full[y0:y1, x0:x1]
+
+            if normalize_stains and normalizer.stain_matrix is not None:
+                gray = normalizer.extract_hematoxylin(tile)
+            elif tile.ndim == 3 and tile.shape[-1] >= 3:
+                gray = cv2.cvtColor(tile[..., :3], cv2.COLOR_RGB2GRAY)
+            else:
+                gray = tile.squeeze()
+
+            gray = apply_clahe(gray)
+            input_img = np.stack([gray, gray, gray], axis=-1)
+
+            masks_s, _, _ = model.eval(input_img, diameter=dia_small,
+                flow_threshold=flow_thresh, cellprob_threshold=cellprob_thresh,
+                batch_size=batch_size)
+            masks_l, _, _ = model.eval(input_img, diameter=dia_large,
+                flow_threshold=flow_thresh, cellprob_threshold=cellprob_thresh,
+                batch_size=batch_size)
+
+            merged = _merge_masks_logic_a(masks_s, masks_l, frag_thresh)
+
+            inner_y0 = overlap // 2 if iy > 0 else 0
+            inner_x0 = overlap // 2 if ix > 0 else 0
+            inner_y1 = merged.shape[0] - (overlap // 2 if iy < ny - 1 else 0)
+            inner_x1 = merged.shape[1] - (overlap // 2 if ix < nx - 1 else 0)
+
+            inner_mask = merged[inner_y0:inner_y1, inner_x0:inner_x1]
+            ids = np.unique(inner_mask)
+            ids = ids[ids > 0]
+
+            for old_id in ids:
+                global_id += 1
+                final_masks[
+                    y0+inner_y0:y0+inner_y1,
+                    x0+inner_x0:x0+inner_x1
+                ][inner_mask == old_id] = global_id
+
+    print(f"🔢 Total cells: {global_id}")
+
+    if pp_config.get("enable_eosin_watershed", False) and not is_grayscale:
+        print("🔬 Running Eosin Watershed expansion...")
+        eosin_approx = img_full[:, :, 0].astype(np.float32) - img_full[:, :, 2].astype(np.float32)
+        eosin_approx = np.clip(eosin_approx, 0, 255).astype(np.uint8)
+        bg_thresh = pp_config.get("eosin_bg_threshold", 40)
+        final_masks = run_eosin_watershed(final_masks, eosin_approx, bg_thresh)
+
+    npy_path = output_dir / mask_filename
+    tif_path = output_dir / mask_tif_filename
+
+    np.save(str(npy_path), final_masks)
+    print(f"💾 Saved: {npy_path}")
+
+    tifffile.imwrite(str(tif_path), final_masks.astype(np.uint16), compression='zlib')
+    print(f"💾 Saved: {tif_path}")
 
     return final_masks

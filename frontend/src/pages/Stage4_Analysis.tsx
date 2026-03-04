@@ -1,27 +1,29 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
 import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
 import { runAnalysis, getAnalysisStatus, getUmap } from '../api/client'
 import useStageLog from '../hooks/useStageLog'
+import { useStageStatus } from '../hooks/useStageStatus'
 
 export default function Stage4_Analysis() {
   useStageLog('analysis')
   const { stages, updateStage } = usePipelineStore()
   const stage = stages['analysis']
+  const { refetch: refetchStatus } = useStageStatus('analysis', getAnalysisStatus, 5000)
   const [umapImg, setUmapImg] = useState<string | null>(null)
+
+  // 分析完成後自動載入 UMAP
+  useEffect(() => {
+    if (stage.status === 'done') {
+      getUmap().then(r => { if (r.data.data) setUmapImg(r.data.data.image_b64) })
+    }
+  }, [stage.status])
 
   const handleRun = async () => {
     updateStage('analysis', { status: 'running', progress: 0, message: '執行聚類...' })
     await runAnalysis()
-    const poll = setInterval(async () => {
-      const s = await getAnalysisStatus()
-      updateStage('analysis', s.data)
-      if (s.data.status !== 'running') {
-        clearInterval(poll)
-        getUmap().then(r => { if (r.data.data) setUmapImg(r.data.data.image_b64) })
-      }
-    }, 5000)
+    refetchStatus()
   }
 
   return (

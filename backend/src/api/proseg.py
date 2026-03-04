@@ -20,14 +20,18 @@ async def get_status():
 async def _run_proseg(config: dict):
     global _task_status
     set_current_stage("proseg")
-    _task_status = {"status": "running", "progress": 0.0, "message": "啟動 Proseg..."}
+    _task_status = {"status": "running", "progress": 0.0, "message": "啟動 Proseg (分塊運算模式)..."}
     try:
-        from backend.src.proseg.pipeline import ProsegPipeline
-        pipeline = ProsegPipeline(config)
-        await asyncio.get_event_loop().run_in_executor(None, pipeline.run_full)
-        _task_status = {"status": "done", "progress": 1.0, "message": "Proseg 完成"}
+        from backend.src.proseg.runner import run_tiled_proseg
+        import dask
+        # 強制在此套用新版 Dask-expr 防護
+        dask.config.set({"dataframe.query-planning": True})
+        
+        await asyncio.get_event_loop().run_in_executor(None, run_tiled_proseg, config)
+        _task_status = {"status": "done", "progress": 1.0, "message": "Proseg Tiling 完成"}
     except Exception as e:
-        logger.error(f"Proseg 失敗：{e}")
+        import traceback
+        logger.error(f"Proseg 失敗：{e}\n{traceback.format_exc()}")
         _task_status = {"status": "error", "progress": 0.0, "message": str(e)}
 
 

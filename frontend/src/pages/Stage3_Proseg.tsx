@@ -3,20 +3,18 @@ import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
 import { runProseg, getProsegStatus } from '../api/client'
 import useStageLog from '../hooks/useStageLog'
+import { useStageStatus } from '../hooks/useStageStatus'
 
 export default function Stage3_Proseg() {
   useStageLog('proseg')
   const { stages, updateStage, recommendedCondition } = usePipelineStore()
   const stage = stages['proseg']
+  const { refetch: refetchStatus } = useStageStatus('proseg', getProsegStatus, 5000)
 
   const handleRun = async () => {
     updateStage('proseg', { status: 'running', progress: 0, message: '啟動 Proseg...' })
     await runProseg()
-    const poll = setInterval(async () => {
-      const s = await getProsegStatus()
-      updateStage('proseg', s.data)
-      if (s.data.status !== 'running') clearInterval(poll)
-    }, 5000)
+    refetchStatus()
   }
 
   const params = recommendedCondition ?? { max_dist: 40, compactness: 0.06, dilation: 20 }

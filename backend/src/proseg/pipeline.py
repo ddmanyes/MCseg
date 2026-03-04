@@ -18,6 +18,10 @@ import cv2  # Add OpenCV for fast dilation
 # Configure logger
 logger = logging.getLogger("pipeline.proseg")
 
+import dask
+dask.config.set({"dataframe.query-planning": True})
+import dask.dataframe as dd
+
 import numpy as np
 import pandas as pd
 import spatialdata as sd

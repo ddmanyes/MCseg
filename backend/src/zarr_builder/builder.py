@@ -18,9 +18,11 @@ from typing import Any, Optional, Tuple
 
 import dask
 dask.config.set({"dataframe.query-planning": True})
+import dask.dataframe as dd
 
 import dask.array as da
 import numpy as np
+import spatialdata as sd
 
 from backend.src.utils.config import resolve_path
 from backend.src.utils.constants import VISIUM_UM_PX

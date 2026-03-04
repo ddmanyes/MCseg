@@ -26,7 +26,8 @@ async def _run_zarr(config: dict):
         await asyncio.get_event_loop().run_in_executor(None, build_zarr, config)
         _task_status = {"status": "done", "progress": 1.0, "message": "Zarr 建構完成"}
     except Exception as e:
-        logger.error(f"Zarr 建構失敗：{e}")
+        import traceback
+        logger.error(f"Zarr 建構失敗：{e}\n{traceback.format_exc()}")
         _task_status = {"status": "error", "progress": 0.0, "message": str(e)}
 
 

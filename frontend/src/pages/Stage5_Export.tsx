@@ -4,6 +4,7 @@ import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
 import { exportXenium, exportLoupe, getXeniumStatus, getLoupeStatus } from '../api/client'
 import useStageLog from '../hooks/useStageLog'
+import { useStageStatus } from '../hooks/useStageStatus'
 
 export default function Stage5_Export() {
   useStageLog('export')
@@ -11,25 +12,19 @@ export default function Stage5_Export() {
   const xenium = stages['xenium']
   const loupe  = stages['loupe']
   const [outDir, setOutDir] = useState('')
+  const { refetch: refetchXenium } = useStageStatus('xenium', getXeniumStatus, 3000)
+  const { refetch: refetchLoupe }  = useStageStatus('loupe',  getLoupeStatus,  3000)
 
   const handleXenium = async () => {
     updateStage('xenium', { status: 'running', progress: 0, message: '匯出至 Xenium Explorer...' })
     await exportXenium({ output_dir: outDir })
-    const poll = setInterval(async () => {
-      const s = await getXeniumStatus()
-      updateStage('xenium', s.data)
-      if (s.data.status !== 'running') clearInterval(poll)
-    }, 3000)
+    refetchXenium()
   }
 
   const handleLoupe = async () => {
     updateStage('loupe', { status: 'running', progress: 0, message: '匯出至 Loupe Browser...' })
     await exportLoupe({ output_dir: outDir })
-    const poll = setInterval(async () => {
-      const s = await getLoupeStatus()
-      updateStage('loupe', s.data)
-      if (s.data.status !== 'running') clearInterval(poll)
-    }, 3000)
+    refetchLoupe()
   }
 
   return (
