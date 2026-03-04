@@ -61,10 +61,10 @@ function ThumbnailCard({
       <div className="relative rounded overflow-hidden bg-gray-900 aspect-[3/2]">
         {thumbnail
           ? <img src={`data:image/jpeg;base64,${thumbnail}`} alt={result.label}
-                 className="w-full h-full object-cover" />
+            className="w-full h-full object-cover" />
           : <div className="absolute inset-0 flex items-center justify-center">
-              <span className="text-xs text-gray-600 animate-pulse">載入縮圖...</span>
-            </div>
+            <span className="text-xs text-gray-600 animate-pulse">載入縮圖...</span>
+          </div>
         }
       </div>
 
@@ -188,7 +188,7 @@ function ResultsTable({
 export default function Stage2b_ConditionTest() {
   useStageLog('conditions')
   const { stages, updateStage, conditionResults, setConditionResults,
-          recommendedCondition, setRecommendedCondition } = usePipelineStore()
+    recommendedCondition, setRecommendedCondition } = usePipelineStore()
   const stage = stages['conditions']
   const { refetch: refetchStatus } = useStageStatus('conditions', getConditionsStatus, 3000)
 
@@ -261,9 +261,9 @@ export default function Stage2b_ConditionTest() {
       >
         <div className="grid grid-cols-3 gap-6 mt-2 text-sm">
           {([
-            { label: 'max_dist (µm)', val: maxDist, set: setMaxDist, options: [20, 30, 40, 50] },
-            { label: 'compactness',   val: compactness, set: setCompactness, options: [0.03, 0.06, 0.1] },
-            { label: 'dilation (px)', val: dilation,    set: setDilation,    options: [10, 20, 30] },
+            { label: 'max_dist (µm)', val: maxDist, set: setMaxDist, options: [10, 15, 20, 30, 40, 50] },
+            { label: 'compactness', val: compactness, set: setCompactness, options: [0.03, 0.06, 0.1, 0.2, 0.3] },
+            { label: 'dilation (px)', val: dilation, set: setDilation, options: [5, 10, 20, 30] },
           ] as const).map(({ label, val, set, options }) => (
             <div key={label}>
               <p className="text-xs text-gray-400 mb-2 font-medium">{label}</p>

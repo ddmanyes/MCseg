@@ -475,12 +475,26 @@ class ProsegPipeline:
         cell_ids = np.zeros(len(df), dtype=self.mask.dtype)
 
         # 4. 直接索引查找
-        # 使用可能已擴張的 lookup_mask 進行查找
-        # local_x, local_y 需轉為 int
         valid_loc_x = local_x[valid_mask].astype(int)
         valid_loc_y = local_y[valid_mask].astype(int)
 
+        # 先用可能已擴張的 lookup_mask (包含 Watershed / Cyto 邊界) 進行查找填寫
         cell_ids[valid_mask] = lookup_mask[valid_loc_y, valid_loc_x]
+
+        # 🎯【核心突破】：強制恢復「不可被侵犯」的核心核區域
+        # 為什麼？因為 lookup_mask 經過擴張/分水嶺後，可能會誤把 B 細胞的某些轉錄點「分配」給 A。
+        # 如果一開始餵錯，Proseg 就會順理成章吃掉 B 的核。
+        # 我們在這裡做「硬重置」：只要轉錄點落在最原始、沒有擴張過的細胞核 (self.mask) 裡，
+        # 它就絕對必須屬於這個核！
+        pure_nuc_ids = self.mask[valid_loc_y, valid_loc_x]
+        pure_nuc_mask = (pure_nuc_ids > 0)
+        
+        # 只取有落在純核中的 df indices，並強制覆寫回最真實的 cell ID
+        if pure_nuc_mask.sum() > 0:
+            # np.where(valid_mask)[0] 能把 valid 的子集 mapping 回原本 df 的 index
+            global_indices = np.where(valid_mask)[0][pure_nuc_mask]
+            cell_ids[global_indices] = pure_nuc_ids[pure_nuc_mask]
+
 
 
         # 5. Smart Filtering (記憶體優化)
@@ -658,6 +672,7 @@ class ProsegPipeline:
             "--samples", str(self.samples),
             "--burnin-samples", str(self.burnin_samples),
             "--recorded-samples", str(self.recorded_samples),
+            "--nuclear-reassignment-prob", "0.01",  # 新增：嚴格保護核區域，防止越界擴張
         ]
 
         if self.enforce_connectivity:

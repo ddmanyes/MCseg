@@ -86,3 +86,19 @@
 - **審查狀態**: ✅ 已完成
 ---
 🔄 [🔄 點擊恢復至審查前狀態](command:antigravity.restore?{"hash":"81cc9e79cb3066e8297e4b56f2f9a03420a1614f"})
+
+### [2026-03-04 13:45:00] 🤖 Code Review 紀錄 (v3.0)
+- **路由路徑**: Gemini (Analysis & Refactoring) | **評分**: 5/10
+- **規範檢查**: ✅ 符合 CLAUDE.md
+- **判定理由**: 本次主要實作大尺度空間分塊 (zarr tiling) 與記憶體極限防禦。牽涉到核心空間組學套件 Dask-Expr 查詢規劃錯誤的排除 (NotImplementedError fix) 以及 React `setInterval` 掛載卸載重構。不直連 GPU 底層或安全風險，故採 Gemini 優化審查路由。
+- **審查狀態**: ✅ 已完成封存與文檔更新
+---
+🔄 [🔄 點擊恢復至審查前狀態](command:antigravity.restore?{"hash":"c6fcdae457ad6a4ddd0eb8f253aebccfdb9d4856"})
+
+## [2026-03-04 20:05] Autonomous Pilot: Proseg Boundary Shield Implementation
+- **Goal:** Implement soft/hard constraints for Proseg boundaries to prevent polygons from invading neighboring nuclei.
+- **Implementation:** 
+  1. Add `--nuclear-reassignment-prob 0.01` to Proseg CLI (default 0.2) to strictly enforce Python-defined nuclei boundaries.
+  2. Implement smart `cyto_constraint` unassignment: RNA points outside Eosin cyto foreground are set to `cell_id = 0` instead of dropping them, allowing Proseg to claim them only if statistical probability is overwhelming.
+- **Status:** Done
+- [🔄 恢復至此階段](command:antigravity.restore?{"hash":"TBD"})
