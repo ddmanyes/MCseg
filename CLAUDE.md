@@ -341,6 +341,64 @@ const logs = useStageLog("proseg");  // 自動連接 /ws/log/proseg
 - **`results/` 目錄**：存放分析輸出，不納入 git
 - **macOS 清理**：提交前執行 `find . -name "._*" -delete && find . -name ".DS_Store" -delete`
 
+### Code Review 衍生規則（2026-03-04 更新）
+
+#### DRY 原則：公用函數必須定義於模組層級
+
+跨函數重複使用的邏輯（如型別轉換、解碼、格式化）**必須提升至模組層級定義，禁止在函數內部重複定義**。
+
+```python
+# ✅ 正確：模組層級定義，所有函數共用
+def _decode_bytes(v) -> str:
+    """將 10x H5 的 bytes 安全解碼為 str。"""
+    if isinstance(v, bytes):
+        try:
+            return v.decode("utf-8")
+        except UnicodeDecodeError:
+            return v.decode("latin-1")
+    return v
+
+# ❌ 錯誤：在每個函數內分別定義 _decode_bytes / _dec / _decode...
+```
+
+#### subprocess 安全使用
+
+所有 `subprocess.run()` 呼叫**禁止單獨使用 `check=False`**，必須搭配 returncode 檢查或 stderr 捕捉：
+
+```python
+# ✅ 正確
+result = subprocess.run(["rm", "-rf", path], check=False, capture_output=True, text=True)
+if result.returncode != 0:
+    logger.warning(f"rm -rf 失敗：{result.stderr.strip()}")
+
+# ❌ 錯誤：靜默失敗
+subprocess.run(["rm", "-rf", path], check=False)
+```
+
+#### ROI 座標偏移後必須驗證
+
+座標偏移後若出現負值代表 `roi_crop` 設定錯誤，需 warning：
+
+```python
+coords[:, 0] -= roi_crop["x0"]
+neg_mask = coords[:, 0] < 0
+if neg_mask.any():
+    logger.warning(f"⚠️ ROI 偏移後出現 {neg_mask.sum()} 個負座標")
+```
+
+#### API 容錯：entry 層級 try/except
+
+遍歷目錄或列表時，**單一項目的錯誤不應導致整個請求失敗**，應在 entry 層級 catch 並 continue：
+
+```python
+for entry in entries:
+    try:
+        ...
+    except (PermissionError, OSError) as e:
+        logger.warning(f"跳過 {entry.name}：{e}")
+        continue
+```
+
 ---
 
 ## 11. 測試規範
