@@ -169,6 +169,18 @@ class ConditionTester:
 
         scale_um_px = self.config.get("proseg", {}).get("constants", {}).get("scale_um_px", 0.2645833)
 
+        # 自動探測外部 cyto_mask.npy (如果 roi 下有)
+        cyto_npy = None
+        output_dir_base = Path(self.config["paths"].get("output_dir", "results/analysis"))
+        roi_base = output_dir_base / "roi"
+        if roi_base.exists():
+            for d in roi_base.iterdir():
+                cm = d / "cyto_mask.npy"
+                if cm.exists():
+                    cyto_npy = str(cm)
+                    logger.info(f"自動探測到外部細胞質遮罩：{cm}")
+                    break
+
         pipeline = ProsegPipeline(
             zarr_path=str(zarr_dir),
             output_dir=str(work_dir),
@@ -180,7 +192,8 @@ class ConditionTester:
             coordinate_scale=scale_um_px,
             padding=50,  # 稍微給 padding
             nucleus_label_name="cellpose_nuclei",
-            use_cyto_mask_from_zarr=True,       # 啟用細胞質遮罩 (Cyto Mask) 防護
+            use_cyto_mask_from_zarr=True,       # 優先從 Zarr，失敗則退回 cyto_mask_path
+            cyto_mask_path=cyto_npy,            # [新增] 自動探測的外部遮罩
             cyto_label_name="eosin_cyto",
             use_watershed=condition.get("watershed", True),
             enforce_connectivity=condition.get("connectivity", True)

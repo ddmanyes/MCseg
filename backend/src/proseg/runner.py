@@ -108,6 +108,12 @@ def run_tiled_proseg(config: dict) -> None:
                 logger.info(f"⏩ 略過 {tile_id} (已完成)")
                 continue
                 
+            # 自動尋找 cyto_mask.npy 如果 Zarr 沒有重新建構
+            cyto_npy = None
+            cyto_npy_path = roi_out_dir / "cyto_mask.npy"
+            if cyto_npy_path.exists():
+                cyto_npy = str(cyto_npy_path)
+
             logger.info(f"\n📦 處理 {tile_id} | 範圍: {roi_px}")
             pipeline = ProsegPipeline(
                 zarr_path=str(zarr_path),
@@ -120,7 +126,8 @@ def run_tiled_proseg(config: dict) -> None:
                 coordinate_scale=scale_um_px,
                 padding=padding,
                 nucleus_label_name="cellpose_nuclei",
-                use_cyto_mask_from_zarr=True,       # 啟用細胞質遮罩 (Cyto Mask) 防護
+                use_cyto_mask_from_zarr=True,       # 優先從 Zarr，失敗則退回 cyto_mask_path
+                cyto_mask_path=cyto_npy,            # [新增] 自動探測的外部遮罩
                 cyto_label_name="eosin_cyto",
                 use_watershed=golden.get("use_watershed", True),
                 enforce_connectivity=golden.get("enforce_connectivity", True),

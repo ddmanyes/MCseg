@@ -530,10 +530,16 @@ class ProsegPipeline:
             # 1. 取出所有 > 0 的區域 (細胞)
             cell_mask_binary = (lookup_mask > 0).astype(np.uint8)
 
-            # 2. 擴張
+            # 2. 擴張 (將背景納入以供估計)
             kernel_size = 2 * filter_radius_px + 1
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
             valid_bg_mask = cv2.dilate(cell_mask_binary, kernel, iterations=1)
+            
+            # 🛑 核心防禦：如果存在 Cyto 物理圍牆，連被擴張的有效背景範圍都必須被斬斷
+            # 絕對禁止將空腔中的游離轉錄點送給 Proseg，否則它會為了吞噬那些點而盲目畫出巨大的越界多邊形
+            if cyto_constraint is not None:
+                logger.info("  🛡️ 將細胞質約束 (Cyto Mask) 應用於背景游離點過濾...")
+                valid_bg_mask = (valid_bg_mask > 0) & (cyto_constraint > 0)
 
             # 3. 篩選 DataFrame
             # 使用 valid_loc 檢查每個點是否在 valid_bg_mask 內
@@ -672,7 +678,7 @@ class ProsegPipeline:
             "--samples", str(self.samples),
             "--burnin-samples", str(self.burnin_samples),
             "--recorded-samples", str(self.recorded_samples),
-            "--nuclear-reassignment-prob", "0.01",  # 新增：嚴格保護核區域，防止越界擴張
+            "--nuclear-reassignment-prob", "0",  # 新增：嚴格保護核區域，防止越界擴張
         ]
 
         if self.enforce_connectivity:
