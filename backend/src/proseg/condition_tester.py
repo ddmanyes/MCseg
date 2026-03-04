@@ -231,6 +231,7 @@ class ConditionTester:
             "--min-qv",                 "0",
             "--max-transcript-nucleus-distance", str(condition["max_dist"]),
             "--cell-compactness",        str(condition["compactness"]),
+            "--expand-initialized-cells", str(int(condition["dilation"])),
             "--samples",                str(int(condition["samples"])),
             "--recorded-samples",       str(int(condition["recorded"])),
         ]
