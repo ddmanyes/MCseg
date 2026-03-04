@@ -29,6 +29,7 @@ export const runSegmentation = (params?: object) => api.post('/segmentation/run'
 export const getSegmentationStatus = () => api.get('/segmentation/status')
 export const getSegmentationPreview = (roi?: string) => api.get('/segmentation/preview', { params: roi ? { roi_name: roi } : {} })
 export const runSegmentationPreview = (body: object) => api.post('/segmentation/run_preview', body)
+export const previewPreproc = (body: object) => api.post('/segmentation/preview_preproc', body)
 
 // Stage 2: Zarr
 export const buildZarr = () => api.post('/zarr/build')

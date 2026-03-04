@@ -28,6 +28,7 @@ class SegmentationParams(BaseModel):
     cellprob_threshold: Optional[float] = None
     fragment_threshold: Optional[int] = None
     normalize_stains: Optional[bool] = None
+    clahe_clip_limit: Optional[float] = None
     enable_eosin_watershed: Optional[bool] = None
     eosin_bg_threshold: Optional[int] = None
     block_size: Optional[int] = None
@@ -49,6 +50,7 @@ class PreviewRequest(BaseModel):
     cellprob_threshold: Optional[float] = None
     fragment_threshold: Optional[int] = None
     normalize_stains: Optional[bool] = None
+    clahe_clip_limit: Optional[float] = None  # 即時 CLAHE 預覽
 
 
 def _apply_overrides(config: dict, p: SegmentationParams) -> dict:
@@ -78,6 +80,8 @@ def _apply_overrides(config: dict, p: SegmentationParams) -> dict:
     preproc = seg.setdefault("preprocessing", {})
     if p.normalize_stains is not None:
         preproc["normalize_stains"] = p.normalize_stains
+    if p.clahe_clip_limit is not None:
+        preproc["clahe_clip_limit"] = p.clahe_clip_limit
 
     postproc = seg.setdefault("postprocessing", {})
     if p.enable_eosin_watershed is not None:
@@ -139,7 +143,9 @@ def _run_preview_sync(he_crop_path: Path, req: PreviewRequest, config: dict) -> 
             gray = cv2.cvtColor(patch[..., :3], cv2.COLOR_RGB2GRAY)
     else:
         gray = cv2.cvtColor(patch[..., :3], cv2.COLOR_RGB2GRAY) if patch.ndim == 3 else patch.squeeze()
-    gray = apply_clahe(gray)
+    # 優先使用 req 傳入值，fallback 到 config
+    clip_limit = float(req.clahe_clip_limit if req.clahe_clip_limit is not None else prep.get("clahe_clip_limit", 2.0))
+    gray = apply_clahe(gray, clip_limit=clip_limit)
     input_img = np.stack([gray, gray, gray], axis=-1)
 
     # ── Cellpose 雙尺寸推論 + LOGIC_A 合併 ────────────────────────────────────
@@ -231,6 +237,115 @@ async def run_segmentation(background_tasks: BackgroundTasks, params: Segmentati
     config["_mode"] = params.mode
     background_tasks.add_task(_run_segmentation, config)
     return {"status": "ok", "message": "細胞分割已啟動"}
+
+
+@router.post("/preview_preproc")
+async def preview_preproc(req: PreviewRequest):
+    """
+    ⚡ 極速前處理預覽（不跑 Cellpose）
+    只執行 Macenko + CLAHE，回傳原始 H&E 與前處理後灰階圖並排比較。
+    通常 < 1 秒完成，適合快速調整 clip_limit 參數。
+    """
+    import io
+    import numpy as np
+    import cv2
+    import tifffile
+    from PIL import Image
+
+    config = load_config()
+    output_dir = config.get("paths", {}).get("output_dir", "results/analysis")
+    rois = config.get("rois", [])
+
+    # 找 he_crop.tif（與 run_preview 相同邏輯）
+    he_crop_path: Optional[Path] = None
+    if req.roi_name:
+        candidate = Path(output_dir) / "roi" / req.roi_name / "he_crop.tif"
+        if candidate.exists():
+            he_crop_path = candidate
+    if he_crop_path is None:
+        for roi in rois:
+            candidate = Path(output_dir) / "roi" / roi["name"] / "he_crop.tif"
+            if candidate.exists():
+                he_crop_path = candidate
+                break
+    if he_crop_path is None:
+        roi_base = Path(output_dir) / "roi"
+        if roi_base.exists():
+            for d in sorted(roi_base.iterdir()):
+                candidate = d / "he_crop.tif"
+                if candidate.exists():
+                    he_crop_path = candidate
+                    break
+    if he_crop_path is None:
+        return {"status": "error", "message": "找不到 he_crop.tif"}
+
+    try:
+        from backend.src.segmentation.macenko import MacenkoNormalizer, apply_clahe
+
+        seg_cfg = config.get("segmentation", {})
+        prep = seg_cfg.get("preprocessing", {})
+
+        img_full = tifffile.imread(str(he_crop_path))
+        if img_full.ndim == 3 and img_full.shape[-1] == 4:
+            img_full = img_full[..., :3]
+        h, w = img_full.shape[:2]
+
+        # 取 patch
+        x0 = max(0, req.x);  x1 = min(w, x0 + req.patch_size)
+        y0 = max(0, req.y);  y1 = min(h, y0 + req.patch_size)
+        patch = img_full[y0:y1, x0:x1]
+        if patch.size == 0:
+            return {"status": "error", "message": f"座標超出影像範圍（{w}×{h}）"}
+
+        # Macenko + CLAHE
+        normalize = req.normalize_stains if req.normalize_stains is not None else prep.get("normalize_stains", True)
+        clip_limit = float(req.clahe_clip_limit if req.clahe_clip_limit is not None else prep.get("clahe_clip_limit", 2.0))
+
+        normalizer = MacenkoNormalizer()
+        if normalize and patch.ndim == 3 and patch.shape[-1] == 3:
+            success = normalizer.fit(patch)
+            if success:
+                gray = normalizer.extract_hematoxylin(patch)
+                method = f"Macenko + CLAHE({clip_limit})"
+            else:
+                gray = cv2.cvtColor(patch[..., :3], cv2.COLOR_RGB2GRAY)
+                method = f"Grayscale fallback + CLAHE({clip_limit})"
+        else:
+            gray = cv2.cvtColor(patch[..., :3], cv2.COLOR_RGB2GRAY) if patch.ndim == 3 else patch.squeeze()
+            method = f"Grayscale + CLAHE({clip_limit})"
+
+        gray_clahe = apply_clahe(gray, clip_limit=clip_limit)
+
+        # 建立並排比較圖（原始 H&E | 前處理灰階）
+        ph, pw = patch.shape[:2]
+        he_rgb = patch[..., :3] if patch.ndim == 3 else np.stack([patch] * 3, axis=-1)
+        gray_rgb = np.stack([gray_clahe, gray_clahe, gray_clahe], axis=-1)
+
+        # 分隔線
+        sep = np.full((ph, 4, 3), 80, dtype=np.uint8)
+        combined = np.concatenate([he_rgb, sep, gray_rgb], axis=1)
+
+        # 標注文字
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(combined, "H&E 原始", (8, 22), font, 0.55, (255,255,80), 1)
+        cv2.putText(combined, method, (pw + 12, 22), font, 0.45, (80,255,160), 1)
+
+        buf = io.BytesIO()
+        Image.fromarray(combined.astype(np.uint8)).save(buf, "JPEG", quality=88)
+
+        return {
+            "status": "ok",
+            "data": {
+                "image_b64": base64.b64encode(buf.getvalue()).decode(),
+                "roi_name":  he_crop_path.parent.name,
+                "patch_info": f"x={x0},y={y0} size={x1-x0}×{y1-y0}",
+                "clip_limit": clip_limit,
+                "method": method,
+            }
+        }
+    except Exception as e:
+        logger.error(f"前處理預覽失敗：{e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
 
 
 @router.post("/run_preview")

@@ -371,6 +371,7 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
     block_size        = tile_config.get("block_size", 2048)
     overlap           = tile_config.get("overlap", 256)
     normalize_stains  = prep_config.get("normalize_stains", True)
+    clahe_clip_limit  = float(prep_config.get("clahe_clip_limit", 2.0))
     mask_filename     = out_config.get("mask_filename", "masks.npy")
     mask_tif_filename = out_config.get("mask_tif_filename", "masks.tif")
 
@@ -420,14 +421,25 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
             tile = img_full[y0:y1, x0:x1]
 
             if normalize_stains and normalizer.stain_matrix is not None:
-                gray = normalizer.extract_hematoxylin(tile)
+                H, E = normalizer.extract_he_channels(tile)
             elif tile.ndim == 3 and tile.shape[-1] >= 3:
-                gray = cv2.cvtColor(tile[..., :3], cv2.COLOR_RGB2GRAY)
+                H = cv2.cvtColor(tile[..., :3], cv2.COLOR_RGB2GRAY)
+                E = H  # 無法分離時退化為灰階
             else:
-                gray = tile.squeeze()
+                H = tile.squeeze()
+                E = H
 
-            gray = apply_clahe(gray)
-            input_img = np.stack([gray, gray, gray], axis=-1)
+            H = apply_clahe(H, clip_limit=clahe_clip_limit)
+            E = apply_clahe(E, clip_limit=clahe_clip_limit)
+
+            # 根據模型類型選擇通道策略：
+            #   nuclei          → [H, H, H]（僅核）
+            #   cyto / cyto2 / cyto3 → [E, H, 0]（細胞質 + 核雙通道）
+            if model_type in ("cyto", "cyto2", "cyto3"):
+                zeros = np.zeros_like(H)
+                input_img = np.stack([E, H, zeros], axis=-1)
+            else:
+                input_img = np.stack([H, H, H], axis=-1)
 
             masks_s, _, _ = model.eval(input_img, diameter=dia_small,
                 flow_threshold=flow_thresh, cellprob_threshold=cellprob_thresh,

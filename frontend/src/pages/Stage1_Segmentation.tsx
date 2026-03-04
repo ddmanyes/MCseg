@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
 import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
-import { runSegmentation, getSegmentationStatus, getSegmentationPreview, runSegmentationPreview } from '../api/client'
+import { runSegmentation, getSegmentationStatus, getSegmentationPreview, runSegmentationPreview, previewPreproc } from '../api/client'
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
 
@@ -17,6 +17,7 @@ interface SegParams {
   cellprob_threshold: number
   fragment_threshold: number
   normalize_stains: boolean
+  clahe_clip_limit: number
   enable_eosin_watershed: boolean
   eosin_bg_threshold: number
   block_size: number
@@ -34,6 +35,7 @@ const DEFAULT_PARAMS: SegParams = {
   cellprob_threshold: -1.0,
   fragment_threshold: 200,
   normalize_stains: true,
+  clahe_clip_limit: 1.0,
   enable_eosin_watershed: true,
   eosin_bg_threshold: 80,
   block_size: 2048,
@@ -77,13 +79,11 @@ function Toggle({ label, value, onChange, hint }: {
       </div>
       <button
         onClick={() => onChange(!value)}
-        className={`relative w-10 h-5 rounded-full transition-colors ${
-          value ? 'bg-blue-600' : 'bg-gray-600'
-        }`}
+        className={`relative w-10 h-5 rounded-full transition-colors ${value ? 'bg-blue-600' : 'bg-gray-600'
+          }`}
       >
-        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-          value ? 'translate-x-5' : 'translate-x-0.5'
-        }`} />
+        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${value ? 'translate-x-5' : 'translate-x-0.5'
+          }`} />
       </button>
     </div>
   )
@@ -104,23 +104,26 @@ export default function Stage1_Segmentation() {
   const stage = stages['segmentation']
   const { refetch: refetchStatus } = useStageStatus('segmentation', getSegmentationStatus, 3000)
   const [params, setParams] = useState<SegParams>(DEFAULT_PARAMS)
-  const [previewSrc, setPreviewSrc]         = useState<string | null>(null)
-  const [previewRoi, setPreviewRoi]         = useState('')
-  const [previewAvail, setPreviewAvail]     = useState<string[]>([])
-  const [previewNCells, setPreviewNCells]   = useState<number | null>(null)
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null)
+  const [previewRoi, setPreviewRoi] = useState('')
+  const [previewAvail, setPreviewAvail] = useState<string[]>([])
+  const [previewNCells, setPreviewNCells] = useState<number | null>(null)
 
   // ── Quick preview state ─────────────────────────────────────────────────
-  const [prevRoi, setPrevRoi]            = useState('')
-  const [prevX, setPrevX]                = useState(0)
-  const [prevY, setPrevY]                = useState(0)
+  const [prevRoi, setPrevRoi] = useState('')
+  const [prevX, setPrevX] = useState(0)
+  const [prevY, setPrevY] = useState(0)
   const [prevPatchSize, setPrevPatchSize] = useState(512)
-  const [prevLoading, setPrevLoading]    = useState(false)
-  const [quickSrc, setQuickSrc]          = useState<string | null>(null)
-  const [quickMacenko, setQuickMacenko]  = useState<string | null>(null)
-  const [quickFlows, setQuickFlows]      = useState<string | null>(null)
-  const [quickTab, setQuickTab]          = useState<'overlay' | 'macenko' | 'flows'>('overlay')
-  const [quickInfo, setQuickInfo]        = useState<{ n_cells: number; roi_name: string; patch_info: string } | null>(null)
-  const [quickError, setQuickError]      = useState<string | null>(null)
+  const [prevLoading, setPrevLoading] = useState(false)
+  const [quickSrc, setQuickSrc] = useState<string | null>(null)
+  const [quickMacenko, setQuickMacenko] = useState<string | null>(null)
+  const [quickFlows, setQuickFlows] = useState<string | null>(null)
+  const [quickTab, setQuickTab] = useState<'overlay' | 'macenko' | 'flows'>('overlay')
+  const [quickInfo, setQuickInfo] = useState<{ n_cells: number; roi_name: string; patch_info: string } | null>(null)
+  const [quickError, setQuickError] = useState<string | null>(null)
+  const [preprocSrc, setPreprocSrc] = useState<string | null>(null)
+  const [preprocInfo, setPreprocInfo] = useState<string | null>(null)
+  const [preprocLoading, setPreprocLoading] = useState(false)
 
   const set = <K extends keyof SegParams>(key: K, value: SegParams[K]) =>
     setParams(prev => ({ ...prev, [key]: value }))
@@ -137,7 +140,7 @@ export default function Stage1_Segmentation() {
     if (d?.image_b64) {
       setPreviewSrc(`data:image/jpeg;base64,${d.image_b64}`)
       if (d.available_rois) setPreviewAvail(d.available_rois)
-      if (d.roi)            setPreviewRoi(d.roi)
+      if (d.roi) setPreviewRoi(d.roi)
       if (d.n_cells != null) setPreviewNCells(d.n_cells)
     }
   }
@@ -146,29 +149,31 @@ export default function Stage1_Segmentation() {
     setPrevLoading(true)
     setQuickError(null)
     setQuickSrc(null)
+    setPreprocSrc(null)
     setQuickMacenko(null)
     setQuickFlows(null)
     setQuickInfo(null)
     try {
       const res = await runSegmentationPreview({
-        roi_name:           prevRoi || undefined,
-        x:                  prevX,
-        y:                  prevY,
-        patch_size:         prevPatchSize,
-        model_type:         params.model_type,
-        use_gpu:            params.use_gpu,
-        dia_small:          params.dia_small,
-        dia_large:          params.dia_large,
-        flow_threshold:     params.flow_threshold,
+        roi_name: prevRoi || undefined,
+        x: prevX,
+        y: prevY,
+        patch_size: prevPatchSize,
+        model_type: params.model_type,
+        use_gpu: params.use_gpu,
+        dia_small: params.dia_small,
+        dia_large: params.dia_large,
+        flow_threshold: params.flow_threshold,
         cellprob_threshold: params.cellprob_threshold,
         fragment_threshold: params.fragment_threshold,
-        normalize_stains:   params.normalize_stains,
+        normalize_stains: params.normalize_stains,
+        clahe_clip_limit: params.clahe_clip_limit,
       })
       const d = res.data
       if (d?.status === 'ok' && d.data?.image_b64) {
         setQuickSrc(`data:image/jpeg;base64,${d.data.image_b64}`)
         if (d.data.macenko_b64) setQuickMacenko(`data:image/jpeg;base64,${d.data.macenko_b64}`)
-        if (d.data.flows_b64)   setQuickFlows(`data:image/jpeg;base64,${d.data.flows_b64}`)
+        if (d.data.flows_b64) setQuickFlows(`data:image/jpeg;base64,${d.data.flows_b64}`)
         setQuickTab('overlay')
         setQuickInfo({ n_cells: d.data.n_cells, roi_name: d.data.roi_name, patch_info: d.data.patch_info })
       } else {
@@ -178,6 +183,34 @@ export default function Stage1_Segmentation() {
       setQuickError(e?.response?.data?.message ?? e.message ?? '請求錯誤')
     } finally {
       setPrevLoading(false)
+    }
+  }
+
+  const handlePreprocPreview = async () => {
+    setPreprocLoading(true)
+    setQuickError(null)
+    setPreprocSrc(null)
+    setPreprocInfo(null)
+    try {
+      const res = await previewPreproc({
+        roi_name: prevRoi || undefined,
+        x: prevX,
+        y: prevY,
+        patch_size: prevPatchSize,
+        normalize_stains: params.normalize_stains,
+        clahe_clip_limit: params.clahe_clip_limit,
+      })
+      const d = res.data
+      if (d?.status === 'ok' && d.data?.image_b64) {
+        setPreprocSrc(`data:image/jpeg;base64,${d.data.image_b64}`)
+        setPreprocInfo(`${d.data.method} · ${d.data.patch_info}`)
+      } else {
+        setQuickError(d?.message ?? '前處理預覽失敗')
+      }
+    } catch (e: any) {
+      setQuickError(e?.response?.data?.message ?? e.message ?? '請求錯誤')
+    } finally {
+      setPreprocLoading(false)
     }
   }
 
@@ -207,15 +240,13 @@ export default function Stage1_Segmentation() {
                 <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
                   <button
                     onClick={() => set('mode', 'roi')}
-                    className={`px-3 py-1 transition-colors ${
-                      params.mode === 'roi' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                    }`}
+                    className={`px-3 py-1 transition-colors ${params.mode === 'roi' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                      }`}
                   >ROI</button>
                   <button
                     onClick={() => set('mode', 'full')}
-                    className={`px-3 py-1 transition-colors ${
-                      params.mode === 'full' ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                    }`}
+                    className={`px-3 py-1 transition-colors ${params.mode === 'full' ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                      }`}
                   >全圖</button>
                 </div>
               </div>
@@ -256,6 +287,9 @@ export default function Stage1_Segmentation() {
             <Section title="前處理">
               <Toggle label="Macenko 色彩標準化" value={params.normalize_stains}
                 onChange={v => set('normalize_stains', v)} />
+              <NumberInput label="CLAHE Clip Limit" value={params.clahe_clip_limit}
+                onChange={v => set('clahe_clip_limit', v)} step={0.5} min={0.5} max={8}
+                hint="細長/破碎核用1.0，一般細胞用2.0" />
             </Section>
 
             <Section title="後處理">
@@ -306,18 +340,27 @@ export default function Stage1_Segmentation() {
           <div>
             <h3 className="text-sm font-semibold text-gray-200">快速 Patch 預覽</h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              從 he_crop.tif 取一小塊跑 Cellpose，不需先執行完整分割 · 使用上方當前參數
+              從 he_crop.tif 取一小塊國 Cellpose，不需先執行完整分割 · 使用上方當前參數
             </p>
           </div>
-          <button
-            onClick={handleQuickPreview}
-            disabled={prevLoading}
-            className="px-4 py-1.5 text-sm rounded bg-primary text-black font-medium
-                       hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed
-                       transition-colors"
-          >
-            {prevLoading ? '執行中...' : '執行預覽'}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handlePreprocPreview}
+              disabled={preprocLoading}
+              className="px-4 py-1.5 text-sm rounded bg-gray-600 text-gray-200 font-medium
+                         hover:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {preprocLoading ? '處理中...' : '⚡ 前處理預覽'}
+            </button>
+            <button
+              onClick={handleQuickPreview}
+              disabled={prevLoading}
+              className="px-4 py-1.5 text-sm rounded bg-primary text-black font-medium
+                         hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {prevLoading ? '執行中...' : '🔬 分割預覽'}
+            </button>
+          </div>
         </div>
 
         {/* 參數列 */}
@@ -372,6 +415,17 @@ export default function Stage1_Segmentation() {
           </div>
         </div>
 
+        {/* 前處理預覽結果（並排比較圖）*/}
+        {preprocSrc && (
+          <div className="space-y-1.5">
+            <p className="text-xs text-yellow-400 font-medium">⚡ 前處理效果（左：原始 H&E | 右：Macenko+CLAHE 灰階）</p>
+            {preprocInfo && <p className="text-xs text-gray-500">{preprocInfo}</p>}
+            <div className="rounded-lg overflow-hidden border border-surface-border">
+              <img src={preprocSrc} alt="preproc preview" className="w-full" />
+            </div>
+          </div>
+        )}
+
         {/* 錯誤訊息 */}
         {quickError && (
           <p className="text-xs text-red-400 bg-red-900/20 rounded px-3 py-2">{quickError}</p>
@@ -393,7 +447,7 @@ export default function Stage1_Segmentation() {
                     const labels: Record<typeof tab, string> = {
                       overlay: 'H&E + 邊界',
                       macenko: 'Macenko 前處理',
-                      flows:   'Flow 方向圖',
+                      flows: 'Flow 方向圖',
                     }
                     const available = tab === 'overlay' || (tab === 'macenko' && !!quickMacenko) || (tab === 'flows' && !!quickFlows)
                     return (
@@ -401,11 +455,10 @@ export default function Stage1_Segmentation() {
                         key={tab}
                         disabled={!available}
                         onClick={() => setQuickTab(tab)}
-                        className={`px-3 py-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
-                          quickTab === tab
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                        }`}
+                        className={`px-3 py-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${quickTab === tab
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                          }`}
                       >
                         {labels[tab]}
                       </button>
@@ -416,17 +469,17 @@ export default function Stage1_Segmentation() {
             )}
             {/* 說明文字 */}
             <p className="text-xs text-gray-500">
-              {quickTab === 'overlay'  && 'H&E 原圖 + 綠色細胞邊界（LOGIC_A 合併）'}
-              {quickTab === 'macenko'  && 'Macenko Hematoxylin 萃取 → CLAHE 增強（Cellpose 實際輸入）'}
-              {quickTab === 'flows'    && 'Cellpose 小尺寸 dP 光流方向圖（色相 = 方向，飽和度 = 強度）；白線 = 細胞邊界'}
+              {quickTab === 'overlay' && 'H&E 原圖 + 綠色細胞邊界（LOGIC_A 合併）'}
+              {quickTab === 'macenko' && 'Macenko Hematoxylin 萃取 → CLAHE 增強（Cellpose 實際輸入）'}
+              {quickTab === 'flows' && 'Cellpose 小尺寸 dP 光流方向圖（色相 = 方向，飽和度 = 強度）；白線 = 細胞邊界'}
             </p>
             <div className="rounded-lg overflow-hidden border border-surface-border"
-                 style={{ imageRendering: 'pixelated' }}>
+              style={{ imageRendering: 'pixelated' }}>
               <img
                 src={
                   quickTab === 'macenko' ? (quickMacenko ?? quickSrc) :
-                  quickTab === 'flows'   ? (quickFlows   ?? quickSrc) :
-                  quickSrc
+                    quickTab === 'flows' ? (quickFlows ?? quickSrc) :
+                      quickSrc
                 }
                 alt={quickTab}
                 className="w-full"

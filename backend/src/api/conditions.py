@@ -37,9 +37,13 @@ async def get_results():
 async def recommend():
     if not _results:
         return {"status": "error", "message": "尚無結果，請先執行測試"}
+    import math
     # 簡單啟發式：最大化 n_cells * median_genes
     best = max(_results, key=lambda r: r.get("n_cells", 0) * r.get("median_genes", 0))
-    return {"status": "ok", "data": best}
+    # 清除 NaN/inf 以符合 JSON 規範
+    safe_best = {k: (None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v)
+                 for k, v in best.items()}
+    return {"status": "ok", "data": safe_best}
 
 
 async def _run_conditions(config: dict, request: ConditionGridRequest):

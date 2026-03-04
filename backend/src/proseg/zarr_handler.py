@@ -83,17 +83,14 @@ def load_zarr(zarr_path: str) -> SpatialData:
         
         return sdata
     
-    except ValueError as e:
-        # 如果 spatialdata.read_zarr 失敗，嘗試手動載入
-        # "len(nodes) = 0" 錯誤通常是因為缺少 OME-NGFF metadata
-        if "len(nodes) = 0" in str(e):
-            logger.warning(f"⚠️  標準載入失敗 ({e})，嘗試容錯模式...")
-            return _load_zarr_fallback(zarr_path)
-        else:
-            raise ValueError(f"無法讀取 Zarr 檔案: {e}")
-            
     except Exception as e:
-        raise ValueError(f"無法讀取 Zarr 檔案: {e}")
+        # 如果 spatialdata.read_zarr 失敗（例如 ValueError 或 metadata assertion failure）
+        # 一旦失敗，我們就嘗試手動容錯載入，因為本專案的萃取函數支援 _load_zarr_fallback 的資料結構
+        logger.warning(f"⚠️  標準載入失敗 ({type(e).__name__}: {e})，嘗試容錯模式...")
+        try:
+            return _load_zarr_fallback(zarr_path)
+        except Exception as fallback_e:
+            raise ValueError(f"無法讀取 Zarr 檔案: {fallback_e}")
 
 
 def _load_zarr_fallback(zarr_path: str) -> SpatialData:

@@ -45,6 +45,7 @@ segmentation:
   preprocessing:
     normalize_stains: true
     calibration_roi: null
+    clahe_clip_limit: 1.0   # CLAHE 對比上限；細長型/破碎核降低至 1.0，一般細胞用 2.0
   output:
     save_flows: false
     mask_filename: segmentation_masks.npy

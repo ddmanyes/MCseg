@@ -124,6 +124,15 @@ class ProsegPipeline:
         self.coordinate_scale = coordinate_scale
         self.padding = padding
         self.force_scale = force_scale
+        
+        # 強制修正邏輯 (防禦 um/px 對齊災難)
+        if self.force_scale == 1.0:
+            import traceback
+            caller = "".join(traceback.format_stack()[-2:-1])
+            logger.warning(f"  🔍 偵測到強制 Scale 1.0 (呼叫源：{caller.strip()})")
+            logger.warning("  ⚠️  自動修復：將 force_scale 設回 None 以防止對齊漂移！ (如果要保持 1.0 請改設定為 1.000001)")
+            self.force_scale = None
+            
         self.cyto_mask_path = cyto_mask_path
         self.use_cyto_mask_from_zarr = use_cyto_mask_from_zarr
         self.nucleus_label_name = nucleus_label_name
@@ -162,7 +171,7 @@ class ProsegPipeline:
         # ROI 資訊
         self.roi_offset = (0, 0) # (min_x, min_y) pixel coordinates
         self.roi_shape = None # (h, w)
-        self.scale_factors = (1.0, 1.0) # (y, x)
+        self.scale_factors = (None, None) # (y, x)
 
 
         # 建立輸出目錄
@@ -484,16 +493,19 @@ class ProsegPipeline:
 
         # 計算擴張半徑 (像素)
         max_dist_um = self.max_dist
-        # 使用平均 scale
-        scale_avg = (scale_x + scale_y) / 2
+        # 若被 force_scale 覆蓋為 1.0（處理 pixel space 時），應改用真實的 self.coordinate_scale 計算物理半徑
+        if self.force_scale is not None and self.force_scale == 1.0:
+            scale_in_um = self.coordinate_scale
+            logger.info(f"  🔍 偵測到 force_scale=1.0，改採自定義物理比例計算濾波: {scale_in_um} um/px")
+        else:
+            scale_avg = (scale_x + scale_y) / 2
+            scale_in_um = scale_avg
 
         # Scale 單位判斷 (Heuristic)
         # 如果 scale > 50, 假設是 nm/px，轉為 um/px
-        if scale_avg > 50:
-            logger.info(f"  🔍 偵測到 Scale 為 nm 單位 ({scale_avg:.2f})，轉換為 um ({scale_avg/1000:.4f})")
-            scale_in_um = scale_avg / 1000.0
-        else:
-            scale_in_um = scale_avg
+        if scale_in_um > 50:
+            logger.info(f"  🔍 偵測到 Scale 為 nm 單位 ({scale_in_um:.2f})，轉換為 um ({scale_in_um/1000:.4f})")
+            scale_in_um = scale_in_um / 1000.0
 
         filter_radius_px = int((max_dist_um / scale_in_um) * 1.5)
 

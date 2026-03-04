@@ -87,39 +87,55 @@ class MacenkoNormalizer:
         Extract Hematoxylin channel from RGB image using fitted stain matrix.
         Fallback to fit on the fly if not fitted, or grayscale if that fails.
         """
-        # If already grayscale, just return as is (normalized to 8-bit if needed)
+        H, _ = self._extract_both_channels(I, Io, beta)
+        return H
+
+    def extract_eosin(self, I: np.ndarray, Io: int = 240, beta: float = 0.15) -> np.ndarray:
+        """Extract Eosin channel from RGB image using fitted stain matrix."""
+        _, E = self._extract_both_channels(I, Io, beta)
+        return E
+
+    def extract_he_channels(self, I: np.ndarray, Io: int = 240, beta: float = 0.15):
+        """
+        同時回傳 (Hematoxylin, Eosin) 兩個 uint8 灰階圖。
+        供 cyto2 模式使用：input_img = [Eosin, Hematoxylin, 0]
+        """
+        return self._extract_both_channels(I, Io, beta)
+
+    def _extract_both_channels(self, I: np.ndarray, Io: int = 240, beta: float = 0.15):
+        """內部共用：回傳 (H_uint8, E_uint8)"""
+        fallback_gray = None
+
         if I.ndim == 2:
-            if I.dtype == np.uint8: return I
-            return cv2.normalize(I, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            g = I if I.dtype == np.uint8 else cv2.normalize(I, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            return g, g
 
         h, w = I.shape[:2]
 
         if self.stain_matrix is None:
             success = self.fit(I, Io, beta)
             if not success:
-               print("⚠️ Macenko normalization not fitted and fit failed. Falling back to grayscale conversion.")
-               if I.ndim == 3:
-                   if I.shape[-1] == 4: I = I[..., :3]
-                   if I.shape[-1] == 3: return cv2.cvtColor(I, cv2.COLOR_RGB2GRAY)
-                   return I[..., 0]
-               return I
+                if I.ndim == 3 and I.shape[-1] >= 3:
+                    gray = cv2.cvtColor(I[..., :3], cv2.COLOR_RGB2GRAY)
+                else:
+                    gray = I[..., 0]
+                return gray, gray
 
         if I.ndim == 3 and I.shape[-1] == 4:
-             I = I[..., :3]
+            I = I[..., :3]
 
         try:
             OD = -np.log((I.reshape((-1, 3)).astype(np.float64) + 1) / (Io + 1))
             C = np.linalg.lstsq(self.stain_matrix.T, OD.T, rcond=None)[0].T
             H_conc = C[:, 0].reshape(h, w)
-            H_norm = cv2.normalize(H_conc, None, 0, 255, cv2.NORM_MINMAX)
-            return H_norm.astype(np.uint8)
-
+            E_conc = C[:, 1].reshape(h, w)
+            H_norm = cv2.normalize(H_conc, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            E_norm = cv2.normalize(E_conc, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            return H_norm, E_norm
         except Exception as e:
-             print(f"❌ Error extracting concentration: {e}. Falling back to grayscale.")
-             if I.ndim == 3:
-                if I.shape[-1] == 3: return cv2.cvtColor(I, cv2.COLOR_RGB2GRAY)
-                return I[..., 0]
-             return I
+            print(f"❌ Error extracting H/E channels: {e}. Falling back to grayscale.")
+            gray = cv2.cvtColor(I, cv2.COLOR_RGB2GRAY) if I.ndim == 3 else I
+            return gray, gray
 
 
 def apply_clahe(img: np.ndarray, clip_limit: float = 2.0, grid_size: tuple = (8, 8)) -> np.ndarray:

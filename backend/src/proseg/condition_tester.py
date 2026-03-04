@@ -139,23 +139,22 @@ class ConditionTester:
 
         # 生成 HE + 輪廓縮圖
         self._generate_thumbnail(condition, cond_dir, result)
+        
+        import gc
+        gc.collect()
 
         return result
 
     def _run_proseg_minimal(self, condition: dict, work_dir: Path, zarr_dir: Path) -> dict:
         """
         執行最小化的 Proseg 測試。
-        採用 Proseg-Zarr-Integration 的架構：
-          1. 從 zarr store 萃取 transcripts CSV（含核遮罩 cell_id 初始化）
-          2. 以官方 CLI 正確旗標執行 proseg
-          3. 讀取 cells.csv + counts 計算指標
-
-        若 proseg 二進位不存在則回傳模擬指標（開發模式）。
+        改以 ProsegPipeline 原生呼叫，確保引入正規 nucleus mask 避免 MCMC 無引導爆炸記憶體。
         """
+        from backend.src.proseg.pipeline import ProsegPipeline
+        
+        # 開發模式：無可執行檔則模擬
         proseg_bin = Path(self.proseg_bin)
-
         if not proseg_bin.exists():
-            # 開發模式：回傳隨機模擬指標
             logger.warning(f"Proseg 二進位不存在：{proseg_bin}，使用模擬指標")
             rng = np.random.default_rng(seed=hash(str(condition)) % (2**32))
             base_cells = int(500 + condition.get("max_dist", 40) * 10 - condition.get("compactness", 0.06) * 1000)
@@ -168,104 +167,46 @@ class ConditionTester:
                 "cell_area_cv": float(0.3 + condition.get("compactness", 0.06) * 2),
             }
 
-        # 真實模式
-        if not zarr_dir.exists():
-            raise FileNotFoundError(f"Zarr 尚未建構：{zarr_dir}")
+        scale_um_px = self.config.get("proseg", {}).get("constants", {}).get("scale_um_px", 0.2645833)
 
-        # ── Step 1: 從 zarr 萃取 transcript CSV ──────────────────────
-        # 直接讀 zarr/points/transcripts/points.parquet/*.parquet
-        # 欄位已確認：x, y, gene（不需要 spatialdata API）
+        pipeline = ProsegPipeline(
+            zarr_path=str(zarr_dir),
+            output_dir=str(work_dir),
+            max_dist=condition.get("max_dist", 40.0),
+            compactness=condition.get("compactness", 0.06),
+            dilation_radius=condition.get("dilation", 20),
+            samples=condition.get("samples", 200),
+            recorded_samples=condition.get("recorded", 50),
+            coordinate_scale=scale_um_px,
+            padding=50,  # 稍微給 padding
+            nucleus_label_name="cellpose_nuclei",
+            use_watershed=condition.get("watershed", True),
+            enforce_connectivity=condition.get("connectivity", True)
+        )
+        
+        pipeline.run_full_pipeline()
+        
+        out_counts = work_dir / "counts.csv.gz"
+        out_cells = work_dir / "cells.csv"
         csv_path = work_dir / "transcripts_for_proseg.csv"
-        if not csv_path.exists():
-            logger.info(f"  萃取 transcripts 至 CSV：{csv_path}")
-            try:
-                # 尋找 zarr 內的 parquet 分片
-                parquet_dir = zarr_dir / "points" / "transcripts" / "points.parquet"
-                parquet_files = sorted(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else []
-                if not parquet_files:
-                    raise FileNotFoundError(
-                        f"找不到 transcript parquet：{parquet_dir}\n"
-                        f"請確認 Stage 2 Zarr 建構已完成"
-                    )
-
-                dfs = [pd.read_parquet(p) for p in parquet_files]
-                df_pts = pd.concat(dfs, ignore_index=True)
-                logger.info(f"  讀取 {len(parquet_files)} 個 parquet 分片，共 {len(df_pts):,} 行")
-
-                # 確認欄位存在（x, y, gene）
-                for col in ("x", "y", "gene"):
-                    if col not in df_pts.columns:
-                        raise KeyError(f"parquet 缺少欄位：{col}（現有：{list(df_pts.columns)}）")
-
-                df_pts["cell_id"] = 0
-                df_pts["qv"] = 40
-                df_pts["z"] = 0.0
-                df_pts[["x", "y", "gene", "qv", "cell_id", "z"]].to_csv(csv_path, index=False)
-                logger.info(f"  CSV 寫出完成：{csv_path}")
-            except Exception as e:
-                raise RuntimeError(f"萃取 transcript CSV 失敗：{e}") from e
-
-
-        # ── Step 2: 定義輸出路徑 ──────────────────────────────────────
-        out_counts   = work_dir / "counts.csv.gz"
-        out_cells    = work_dir / "cells.csv"
-        out_genes    = work_dir / "genes.csv"
-        out_polygons = work_dir / "cells.geojson"
-
-        # ── Step 3: 建立官方 CLI 指令 ─────────────────────────────────
-        cmd = [
-            str(proseg_bin),
-            "--overwrite",
-            "--output-cell-polygons",   str(out_polygons),
-            "--output-counts",          str(out_counts),
-            "--output-counts-fmt",      "csv-gz",
-            "--output-cell-metadata",   str(out_cells),
-            "--output-cell-metadata-fmt", "csv",
-            "--output-gene-metadata",   str(out_genes),
-            "--output-gene-metadata-fmt", "csv",
-            "--gene-column",            "gene",
-            "--x-column",               "x",
-            "--y-column",               "y",
-            "--z-column",               "z",
-            "--cell-id-column",         "cell_id",
-            "--cell-id-unassigned",     "0",
-            "--ignore-z-coord",
-            "--min-qv",                 "0",
-            "--max-transcript-nucleus-distance", str(condition["max_dist"]),
-            "--cell-compactness",        str(condition["compactness"]),
-            "--expand-initialized-cells", str(int(condition["dilation"])),
-            "--samples",                str(int(condition["samples"])),
-            "--recorded-samples",       str(int(condition["recorded"])),
-        ]
-        if condition.get("connectivity", True):
-            cmd.append("--enforce-connectivity")
-        cmd.append(str(csv_path))
-
-        logger.debug(f"執行：{' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if result.returncode != 0:
-            raise RuntimeError(f"Proseg 失敗（exit {result.returncode}）：{result.stderr[:500]}")
-
-        # ── Step 4: 讀取結果並計算指標 ───────────────────────────────
+        
         if not out_cells.exists():
             raise FileNotFoundError(f"找不到 cells.csv：{out_cells}")
 
         cells_df = pd.read_csv(out_cells)
         n_cells = len(cells_df)
 
-        # 從 counts 讀取基因數與 UMI
         try:
             import gzip as _gz
             from scipy.io import mmread
             with _gz.open(out_counts, "rt") as f:
                 X = mmread(f).tocsr()
-            median_genes  = float(np.median(np.diff(X.indptr)))   # nnz per cell
+            median_genes  = float(np.median(np.diff(X.indptr)))
             median_counts = float(np.median(np.array(X.sum(axis=1)).flatten()))
         except Exception:
             median_genes  = 0.0
             median_counts = 0.0
 
-        # fraction_assigned（若 cells.csv 有 n_transcripts 欄位）
         frac = 0.0
         if "n_transcripts" in cells_df.columns:
             total = cells_df["n_transcripts"].sum()
@@ -289,121 +230,136 @@ class ConditionTester:
     # ──────────────────────────────────────────
 
     def _generate_thumbnail(self, condition: dict, cond_dir: Path, metrics: dict) -> None:
-        """生成 HE + 細胞輪廓疊圖，儲存至 cond_dir/preview.jpg"""
+        """生成 HE + 細胞輪廓疊圖（以 ROI crop TIF 為背景），儲存至 cond_dir/preview.jpg"""
         try:
             import cv2
-            W, H = 480, 320
 
-            he_img = self._load_he_background(W, H)
-            polygons = self._load_cell_polygons(cond_dir, W, H)
-            if polygons is None:
-                polygons = self._synthesize_cell_contours(metrics, condition, W, H)
+            # 讀取 ROI crop TIF（正確的局部 H&E）
+            he_img = self._load_roi_crop_background()
+            orig_h, orig_w = he_img.shape[:2]
 
-            overlay = he_img.copy()
-            for pts in polygons:
-                cv2.polylines(overlay, [pts.reshape(-1, 1, 2)], True, (0, 230, 90), 1)
+            # 讀取 Proseg 真實多邊形（um 座標），轉換到原始 ROI pixel 空間
+            polygons = self._load_proseg_polygons_px(cond_dir, orig_w, orig_h)
 
+            # 等比例縮放 H&E 至顯示尺寸
+            DISPLAY_W = 686
+            DISPLAY_H = 398
+            scale_x = DISPLAY_W / max(orig_w, 1)
+            scale_y = DISPLAY_H / max(orig_h, 1)
+            he_disp = cv2.resize(he_img.astype(np.uint8), (DISPLAY_W, DISPLAY_H))
+
+            overlay = he_disp.copy()
+            if polygons:
+                for pts in polygons:
+                    # 縮放多邊形座標
+                    pts_scaled = pts.copy().astype(np.float32)
+                    pts_scaled[:, 0] = pts_scaled[:, 0] * scale_x
+                    pts_scaled[:, 1] = pts_scaled[:, 1] * scale_y
+                    pts_int = pts_scaled.astype(np.int32)
+                    cv2.polylines(overlay, [pts_int.reshape(-1, 1, 2)], True, (0, 230, 90), 1)
+            else:
+                # 無真實多邊形時合成圓形示意
+                synth = self._synthesize_cell_contours(metrics, condition, DISPLAY_W, DISPLAY_H)
+                for pts in synth:
+                    cv2.polylines(overlay, [pts.reshape(-1, 1, 2)], True, (0, 200, 255), 1)
+
+            # 文字標註
             n = metrics.get("n_cells", 0)
             g = metrics.get("median_genes", 0)
-            txt = f"n_cells={n}  median_genes={g:.0f}"
-            cv2.putText(overlay, txt, (8, H - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+            label_str = condition.get("label", "")
+            txt = f"{label_str}  Cells:{n}  Genes:{g:.0f}"
+            cv2.putText(overlay, txt, (8, DISPLAY_H - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 180), 1, cv2.LINE_AA)
 
             bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(str(cond_dir / "preview.jpg"), bgr, [cv2.IMWRITE_JPEG_QUALITY, 88])
+            cv2.imwrite(str(cond_dir / "preview.jpg"), bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            logger.debug(f"縮圖已儲存：{cond_dir / 'preview.jpg'}")
         except Exception as e:
             logger.warning(f"縮圖生成失敗（非致命）：{e}")
+            import traceback
+            logger.debug(traceback.format_exc())
 
-    def _load_he_background(self, W: int, H: int) -> "np.ndarray":
-        """嘗試從 BTF 讀取最小解析度金字塔層，失敗回傳合成背景"""
+    def _load_roi_crop_background(self) -> "np.ndarray":
+        """載入 ROI crop TIF（如 results/analysis/roi/text/he_crop.tif），失敗回傳合成背景"""
         try:
-            he_path_str = self.config.get("paths", {}).get("he_image", "")
-            if not he_path_str:
-                raise ValueError("未設定 he_image 路徑")
-            he_path = Path(he_path_str).expanduser()
-            if not he_path.exists():
-                raise FileNotFoundError(str(he_path))
-
             import tifffile
-            import cv2
-            with tifffile.TiffFile(str(he_path)) as tif:
-                series = tif.series[0]
-                # 使用最小的金字塔層（最後一層 = 最小解析度）
-                level = series.levels[-1]
-                patch = level.asarray()
-            if patch.ndim == 3 and patch.shape[2] >= 3:
+            output_dir = self.config.get("paths", {}).get("output_dir", "results/analysis")
+            rois = self.config.get("rois", [])
+            roi_name = rois[0].get("name", "text") if rois else "text"
+            from backend.src.utils.config import resolve_path
+            he_crop_path = resolve_path(output_dir) / "roi" / roi_name / "he_crop.tif"
+            if not he_crop_path.exists():
+                raise FileNotFoundError(str(he_crop_path))
+            with tifffile.TiffFile(str(he_crop_path)) as tif:
+                patch = tif.asarray()
+            if patch.ndim == 3 and patch.shape[0] in (3, 4):  # (C, H, W) → (H, W, C)
+                patch = np.moveaxis(patch[:3], 0, -1)
+            elif patch.ndim == 3:
                 patch = patch[:, :, :3]
             elif patch.ndim == 2:
                 patch = np.stack([patch] * 3, axis=2)
-            return cv2.resize(patch.astype(np.uint8), (W, H))
+            logger.debug(f"ROI crop loaded: {patch.shape} from {he_crop_path}")
+            return patch.astype(np.uint8)
         except Exception as e:
-            logger.debug(f"無法讀取 H&E：{e}，使用合成背景")
-            return self._make_synthetic_he(W, H)
+            logger.debug(f"無法讀取 ROI crop：{e}，使用合成背景")
+            return self._make_synthetic_he(686, 398)
+
+    def _load_proseg_polygons_px(self, cond_dir: Path, img_w: int, img_h: int) -> list:
+        """
+        從 proseg_results.json (gzipped GeoJSON) 讀取細胞多邊形，
+        將 um 座標轉換為 ROI 像素座標。
+        """
+        import gzip as _gz
+        scale_um_px = self.config.get("proseg", {}).get("constants", {}).get("scale_um_px", 0.2737)
+        rois = self.config.get("rois", [])
+        if rois:
+            scale_um_px = rois[0].get("pixel_size_um", scale_um_px)
+        try:
+            json_path = cond_dir / "proseg_results.json"
+            if not json_path.exists():
+                return []
+            # 自動偵測是否為 gzip
+            with open(json_path, "rb") as f:
+                magic = f.read(2)
+            opener = _gz.open if magic == b"\x1f\x8b" else open
+            mode = "rb" if magic == b"\x1f\x8b" else "r"
+            with opener(json_path, mode) as f:
+                data = json.loads(f.read().decode("utf-8") if mode == "rb" else f.read())
+
+            polygons_px = []
+            features = data.get("features", [])
+            for feat in features:
+                geom = feat.get("geometry", {})
+                ctype = geom.get("type", "")
+                coords = geom.get("coordinates", [])
+                if ctype == "MultiPolygon":
+                    ring = coords[0][0]  # 取第一個多邊形的外環
+                elif ctype == "Polygon":
+                    ring = coords[0]
+                else:
+                    continue
+                pts = np.array(ring, dtype=np.float32)
+                if pts.ndim == 3:
+                    pts = pts[0]
+                # um → pixel (直接除以 pixel_size_um)
+                pts_px = pts / scale_um_px
+                pts_px = np.clip(pts_px, 0, [img_w - 1, img_h - 1]).astype(np.int32)
+                if len(pts_px) >= 3:
+                    polygons_px.append(pts_px)
+            logger.debug(f"載入 {len(polygons_px)} 個真實多邊形 (scale={scale_um_px} um/px)")
+            return polygons_px
+        except Exception as e:
+            logger.debug(f"無法讀取 Proseg 幾何：{e}")
+            return []
 
     def _make_synthetic_he(self, W: int, H: int) -> "np.ndarray":
         """生成合成 H&E 風格背景（粉紫色調）"""
         import cv2
         rng = np.random.default_rng(42)
         base = rng.integers(215, 245, (H, W, 3), dtype=np.uint8)
-        # H&E 色調：增加藍紫分量（Hematoxylin）
         base[:, :, 0] = np.clip(base[:, :, 0].astype(int) - rng.integers(0, 30, (H, W)), 180, 255).astype(np.uint8)
         base[:, :, 2] = np.clip(base[:, :, 2].astype(int) + rng.integers(0, 25, (H, W)), 200, 255).astype(np.uint8)
         return cv2.GaussianBlur(base, (5, 5), 1.5)
-
-    def _load_cell_polygons(self, cond_dir: Path, W: int, H: int):
-        """嘗試從 Proseg 輸出讀取細胞幾何（GeoJSON 優先，h5ad spatial 次之）"""
-        try:
-            import cv2
-
-            # 方案 A：GeoJSON
-            gj_path = cond_dir / "cells.geojson"
-            if gj_path.exists():
-                with open(gj_path) as f:
-                    gj = json.load(f)
-                feats = [
-                    f for f in gj.get("features", [])
-                    if f.get("geometry", {}).get("type") == "Polygon"
-                ][:400]
-                if feats:
-                    all_pts = np.vstack([
-                        np.array(f["geometry"]["coordinates"][0]) for f in feats
-                    ])
-                    min_x, max_x = all_pts[:, 0].min(), all_pts[:, 0].max()
-                    min_y, max_y = all_pts[:, 1].min(), all_pts[:, 1].max()
-                    scale_x = (W - 20) / max(max_x - min_x, 1)
-                    scale_y = (H - 20) / max(max_y - min_y, 1)
-                    polygons = []
-                    for f in feats:
-                        coords = np.array(f["geometry"]["coordinates"][0])
-                        px = ((coords[:, 0] - min_x) * scale_x + 10).astype(np.int32)
-                        py = ((coords[:, 1] - min_y) * scale_y + 10).astype(np.int32)
-                        polygons.append(np.column_stack([px, py]))
-                    return polygons
-
-            # 方案 B：h5ad obsm["spatial"]
-            h5ads = list(cond_dir.glob("*.h5ad"))
-            if h5ads:
-                import anndata as ad
-                adata = ad.read_h5ad(str(h5ads[0]))
-                if "spatial" in adata.obsm:
-                    coords = adata.obsm["spatial"][:400]
-                    min_x, max_x = coords[:, 0].min(), coords[:, 0].max()
-                    min_y, max_y = coords[:, 1].min(), coords[:, 1].max()
-                    xs = ((coords[:, 0] - min_x) / max(max_x - min_x, 1) * (W - 20) + 10).astype(int)
-                    ys = ((coords[:, 1] - min_y) / max(max_y - min_y, 1) * (H - 20) + 10).astype(int)
-                    angles = np.linspace(0, 2 * np.pi, 10, endpoint=False)
-                    r = 6
-                    polygons = []
-                    for cx, cy in zip(xs, ys):
-                        pts = np.column_stack([
-                            (cx + r * np.cos(angles)).astype(np.int32),
-                            (cy + r * np.sin(angles)).astype(np.int32),
-                        ])
-                        polygons.append(pts)
-                    return polygons
-        except Exception as e:
-            logger.debug(f"無法讀取 Proseg 幾何：{e}")
-        return None
 
     def _synthesize_cell_contours(
         self, metrics: dict, condition: dict, W: int, H: int
@@ -456,12 +412,22 @@ class ConditionTester:
         logger.info(f"開始測試 {len(conditions)} 個條件（最大並行：{self.max_parallel}）")
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
+        # 決定真實的 Zarr 目錄 (針對特定 ROI)
+        if not roi_name:
+            rois = self.config.get("rois", [])
+            if not rois:
+                raise ValueError("未定義配置檔案中的 ROI")
+            roi_name = rois[0]["name"]
+        
+        roi_zarr_dir = self.zarr_dir / roi_name / "proseg_integrated.zarr"
+        logger.info(f"使用 Zarr 測試目標：{roi_zarr_dir}")
+
         results = []
         completed = 0
 
         # 順序執行（避免 VRAM 競爭）
         for idx, condition in enumerate(conditions):
-            result = self._run_single_condition(condition, idx, self.zarr_dir, self.out_dir)
+            result = self._run_single_condition(condition, idx, roi_zarr_dir, self.out_dir)
             results.append(result)
             completed += 1
             if on_progress:
@@ -479,52 +445,53 @@ class ConditionTester:
         return results
 
     def _save_comparison_plot(self, df: pd.DataFrame) -> None:
-        """產生指標比較熱力圖"""
+        """產生指標比較矩陣拼圖 (取代原本的散點圖)，提供直觀的 H&E + 輪廓網格視野"""
         try:
             import matplotlib
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
-            import seaborn as sns
+            import matplotlib.image as mpimg
 
             ok_df = df[df.get("status", "ok") == "ok"].copy() if "status" in df.columns else df.copy()
             if ok_df.empty:
+                logger.warning("沒有成功的條件結果可供繪圖。")
                 return
 
-            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+            n_conds = len(ok_df)
+            cols = min(4, n_conds) # 最多 4 欄
+            rows = max(1, (n_conds + cols - 1) // cols)
 
-            # 散點圖：n_cells vs median_genes
-            ax = axes[0]
-            sc = ax.scatter(
-                ok_df["n_cells"], ok_df["median_genes"],
-                c=ok_df.get("fraction_assigned", ok_df["n_cells"]),
-                cmap="viridis", s=80, alpha=0.8
-            )
-            for _, row in ok_df.iterrows():
-                ax.annotate(row.get("label", ""), (row["n_cells"], row["median_genes"]),
-                           fontsize=6, alpha=0.7)
-            plt.colorbar(sc, ax=ax, label="fraction_assigned")
-            ax.set_xlabel("n_cells")
-            ax.set_ylabel("median_genes")
-            ax.set_title("條件比較：細胞數 vs 基因豐富度")
+            fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4), dpi=150)
+            
+            # 展平 axes 處理單一 row 的情況
+            if n_conds == 1:
+                axes = np.array([axes])
+            axes = axes.flatten()
 
-            # 指標表
-            ax = axes[1]
-            ax.axis("off")
-            display_cols = ["label", "n_cells", "median_genes", "median_counts"]
-            display_cols = [c for c in display_cols if c in ok_df.columns]
-            tbl = ax.table(
-                cellText=ok_df[display_cols].round(1).values.tolist(),
-                colLabels=display_cols,
-                loc="center",
-                cellLoc="center",
-            )
-            tbl.auto_set_font_size(False)
-            tbl.set_fontsize(8)
-            ax.set_title("條件指標摘要")
+            for i, (idx, row) in enumerate(ok_df.iterrows()):
+                ax = axes[i]
+                cond_idx = row["condition_idx"]
+                cond_dir = self.out_dir / f"cond_{cond_idx:02d}"
+                preview_path = cond_dir / "preview.jpg"
+                
+                if preview_path.exists():
+                    img = mpimg.imread(str(preview_path))
+                    ax.imshow(img)
+                else:
+                    ax.text(0.5, 0.5, "預覽圖生成失敗", ha="center", va="center")
+                    
+                title = f"{row.get('label', '')}\nCells: {row.get('n_cells', 0)} | Genes: {row.get('median_genes', 0):.0f}"
+                color = "green" if row.get("median_genes", 0) > 30 else "black"
+                ax.set_title(title, fontsize=10, fontweight="bold", color=color)
+                ax.axis("off")
+
+            # 隱藏多餘的空白子圖
+            for j in range(len(ok_df), len(axes)):
+                axes[j].axis("off")
 
             plt.tight_layout()
             plot_path = self.out_dir / "condition_comparison.png"
-            fig.savefig(str(plot_path), dpi=150, bbox_inches="tight")
+            fig.savefig(str(plot_path), bbox_inches="tight", facecolor="white")
             plt.close(fig)
             logger.info(f"已儲存比較圖：{plot_path}")
 
