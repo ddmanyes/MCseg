@@ -23,6 +23,16 @@ uv run python <script>            # 執行腳本
 uv run uvicorn backend.main:app --reload --port 8000  # 啟動後端
 ```
 
+> **⚠️ ExFAT 注意**：`.venv` 是指向 SSD 上 venv 的 symlink（`/Volumes/SSD/plan_a/visiumHD_pipeline_2_venv`）。
+> 若 symlink 失效（重開機後 `/tmp` 被清空是舊問題，現已修正指向 SSD），請重建：
+>
+> ```bash
+> rm .venv && ln -s /Volumes/SSD/plan_a/visiumHD_pipeline_2_venv .venv
+> # 清理 ExFAT 的 ._* 垃圾（避免 uv sync 失敗）
+> find /Volumes/SSD/plan_a/visiumHD_pipeline_2_venv -name '._*' -delete
+> UV_LINK_MODE=copy uv sync
+> ```
+
 ### Node.js 前端
 
 ```bash
@@ -154,14 +164,32 @@ def read_btf_crop(btf_path, x0, y0, w, h):
 - 最多同時並行 4 個條件（避免 VRAM 耗盡）
 - 使用獨立臨時目錄（`results/02b_conditions/cond_{idx}/`）
 
-### macOS `._*` 污染防護
+### macOS `._*` 污染防護（ExFAT 根本解法）
 
-每次讀取 Zarr 或 Parquet 前必須清理：
+**核心問題**：ExFAT 上每次寫入目錄都會產生 AppleDouble 附屬檔（`._*`）。
+`adata.write_zarr()` 完成後會呼叫 `zarr.consolidate_metadata`，其透過
+`DirectoryStore._keys_fast`（`os.walk`）遍歷所有檔案並嘗試 `json_loads`，
+遇到 `._*.zarray` 等 binary 檔時引發 `UnicodeDecodeError: 0xb0 at position 37`。
+
+**已套用解法**：`builder.py` 模組載入時即 monkey patch `DirectoryStore._keys_fast`，
+在 `os.walk` 層過濾 `._*` 和 `.DS_Store`——這是最根本的攔截點：
 
 ```python
-import pathlib
-for f in pathlib.Path(zarr_dir).rglob("._*"):
-    f.unlink(missing_ok=True)
+# 見 builder.py: _patch_zarr_for_exfat()
+@staticmethod
+def _filtered_keys_fast(path, walker=os.walk):
+    for dirpath, _, filenames in walker(path):
+        clean = [f for f in filenames
+                 if not f.startswith('._') and f != '.DS_Store']
+        ...
+zarr.storage.DirectoryStore._keys_fast = _filtered_keys_fast
+```
+
+清理函數作為第二道防線（寫入後立即清理）：
+
+```python
+from backend.src.zarr_builder.builder import _clean_mac_junk
+_clean_mac_junk(Path(zarr_path))
 ```
 
 ### Dask Monkey Patch
@@ -333,16 +361,19 @@ uv run python backend/scripts/00_roi/extract_roi.py --dry-run
 ## 12. 效能注意事項
 
 ### 記憶體保護
+
 - Visium HD 2µm 全圖：>100 萬 bins，需 backed mode 或先裁切
 - BTF 影像：10-80 GB，**必須** tile-based 讀取
 - Proseg GeoJSON：可達數 GB，**必須** ijson 串流
 
 ### GPU 資源管理
+
 - Cellpose batch_size ≤ 8（RTX 4090 VRAM 限制）
 - Proseg 條件測試並行 ≤ 4
 - 每個 Stage 結束後顯式清理 GPU 快取：`torch.cuda.empty_cache()`
 
 ### Dask 分塊策略
+
 - Zarr 讀寫：chunk size = (1, 1024, 1024) for images
 - 大型 DataFrame：使用 dask.dataframe 延遲計算
 

@@ -31,6 +31,47 @@ CHUNK_SIZE = 1024
 
 
 # ---------------------------------------------------------------------------
+# macOS ExFAT 相容性：Monkey patch zarr DirectoryStore
+# ---------------------------------------------------------------------------
+# ExFAT 上每次寫入目錄都會產生 macOS AppleDouble 附屬檔案（._*），
+# zarr.convenience.consolidate_metadata 在遍歷 store 時會透過 _keys_fast
+# 取得所有檔案 key，並嘗試將 is_zarr_key(.zarray/.zgroup/.zattrs) 的內容
+# 以 json_loads 解碼。若 ._* 附屬檔案的名稱恰好符合這些後綴，
+# 就會嘗試解碼含有 0xB0 等非 UTF-8 位元組的 AppleDouble 二進位格式，
+# 引發 UnicodeDecodeError。
+# 最安全的解法是在 _keys_fast 層面直接過濾掉這些檔案。
+
+def _patch_zarr_for_exfat() -> None:
+    """Monkey patch zarr.storage.DirectoryStore._keys_fast 以過濾 macOS 垃圾檔案。"""
+    try:
+        import os as _os
+        import zarr.storage as _zs
+
+        @staticmethod  # type: ignore[misc]
+        def _filtered_keys_fast(path, walker=_os.walk):
+            for dirpath, _, filenames in walker(path):
+                dirpath = _os.path.relpath(dirpath, path)
+                clean = [
+                    f for f in filenames
+                    if not f.startswith("._") and f != ".DS_Store"
+                ]
+                if dirpath == _os.curdir:
+                    yield from clean
+                else:
+                    dirpath = dirpath.replace("\\", "/")
+                    for f in clean:
+                        yield "/".join((dirpath, f))
+
+        _zs.DirectoryStore._keys_fast = _filtered_keys_fast
+        logger.info("✅ zarr DirectoryStore._keys_fast monkey patch 已套用（ExFAT 相容）")
+    except Exception as _e:
+        logger.warning(f"⚠️  zarr monkey patch 失敗（無影響，但 ExFAT 上可能出現 UTF-8 錯誤）：{_e}")
+
+
+_patch_zarr_for_exfat()
+
+
+# ---------------------------------------------------------------------------
 # macOS junk cleanup
 # ---------------------------------------------------------------------------
 
@@ -107,8 +148,8 @@ def _write_image_pyramid(root, image_path: Path, pixel_size_override: Optional[f
 
     # --- 讀取影像 ---
     img_data = None
-    if image_path_str.lower().endswith((".tiff", ".tif")):
-        logger.info("以 tifffile memmap 讀取 TIFF...")
+    if image_path_str.lower().endswith((".tiff", ".tif", ".btf")):
+        logger.info("以 tifffile memmap 讀取 TIFF/BTF...")
         try:
             with tifffile.TiffFile(image_path_str) as tif:
                 try:
@@ -137,10 +178,16 @@ def _write_image_pyramid(root, image_path: Path, pixel_size_override: Optional[f
 
             img_data = tifffile.memmap(image_path_str)
         except Exception as e:
-            logger.warning(f"tifffile memmap 失敗：{e}，改用 cv2...")
-            img_data = cv2.imread(image_path_str)
-            if img_data is not None:
-                img_data = cv2.cvtColor(img_data, cv2.COLOR_BGR2RGB)
+            logger.warning(f"tifffile memmap 失敗：{e}，改用 tifffile pages[0]...")
+            try:
+                with tifffile.TiffFile(image_path_str) as tif:
+                    img_data = tif.pages[0].asarray()
+                logger.info("tifffile pages[0] 讀取成功")
+            except Exception as e2:
+                logger.warning(f"tifffile pages[0] 失敗：{e2}，改用 cv2...")
+                img_data = cv2.imread(image_path_str)
+                if img_data is not None:
+                    img_data = cv2.cvtColor(img_data, cv2.COLOR_BGR2RGB)
     else:
         img_data = cv2.imread(image_path_str)
         if img_data is not None:
@@ -260,9 +307,10 @@ def _write_ome_metadata(root, num_levels: int, pixel_size: Optional[dict] = None
 # Expression table
 # ---------------------------------------------------------------------------
 
-def _write_table(root, table_name: str, config: dict, store_path: str) -> None:
+def _write_table(root, table_name: str, config: dict, store_path: str, roi_crop=None) -> None:
     """
     載入 Visium HD H5 matrix + tissue_positions，對齊座標後寫入 tables/{table_name}。
+    roi_crop: {"x0": int, "y0": int, "x1": int, "y1": int} fullres px，若設定則篩選 ROI 範圍。
     """
     import pandas as pd
     import scanpy as sc
@@ -284,6 +332,17 @@ def _write_table(root, table_name: str, config: dict, store_path: str) -> None:
     if "barcode" in df_pos.columns:
         df_pos = df_pos.set_index("barcode")
 
+    # ROI 篩選（僅保留 crop 範圍內的 spots）
+    if roi_crop is not None and "pxl_col_in_fullres" in df_pos.columns:
+        x0, y0 = roi_crop["x0"], roi_crop["y0"]
+        x1, y1 = roi_crop["x1"], roi_crop["y1"]
+        in_roi = (
+            (df_pos["pxl_col_in_fullres"] >= x0) & (df_pos["pxl_col_in_fullres"] < x1) &
+            (df_pos["pxl_row_in_fullres"] >= y0) & (df_pos["pxl_row_in_fullres"] < y1)
+        )
+        df_pos = df_pos[in_roi]
+        logger.info(f"  ROI 篩選後：{len(df_pos)} spots in x[{x0},{x1}) y[{y0},{y1})")
+
     adata.var_names_make_unique()
     adata_original = adata.copy()
     common = adata.obs_names.intersection(df_pos.index)
@@ -302,10 +361,15 @@ def _write_table(root, table_name: str, config: dict, store_path: str) -> None:
     logger.info(f"  套用 scale factor：{sf}")
 
     if "pxl_col_in_fullres" in df_pos.columns:
-        coords = df_pos[["pxl_col_in_fullres", "pxl_row_in_fullres"]].values
+        coords = df_pos[["pxl_col_in_fullres", "pxl_row_in_fullres"]].values.astype(float)
     else:
         logger.error("  座標欄位不存在，跳過 Table 寫出")
         return
+
+    # ROI 座標偏移（轉為 crop-local 座標）
+    if roi_crop is not None:
+        coords[:, 0] -= roi_crop["x0"]
+        coords[:, 1] -= roi_crop["y0"]
 
     adata.obsm["spatial"] = coords * sf
 
@@ -316,6 +380,11 @@ def _write_table(root, table_name: str, config: dict, store_path: str) -> None:
     table_path = os.path.join(store_path, "tables", table_name)
     logger.info(f"  寫出 AnnData：{table_path}")
 
+    # Pre-delete existing table dir to avoid ExFAT shutil.rmtree fd-unlink failures
+    if os.path.exists(table_path):
+        subprocess.run(["rm", "-rf", table_path], check=False)
+        logger.info(f"  已清除舊 table：{table_path}")
+
     adata.uns["spatialdata_attrs"] = {
         "version": "0.1",
         "region": "tissue_hires_image",
@@ -325,6 +394,25 @@ def _write_table(root, table_name: str, config: dict, store_path: str) -> None:
     adata.obs["region"] = "tissue_hires_image"
     adata.obs["region"] = adata.obs["region"].astype("category")
     adata.obs["instance_id"] = np.arange(adata.shape[0])
+
+    # Sanitize bytes→str to prevent zarr UTF-8 decode errors
+    # (10x H5 files sometimes store gene names/barcodes as raw bytes)
+    def _decode_bytes(v):
+        if isinstance(v, bytes):
+            try:
+                return v.decode("utf-8")
+            except UnicodeDecodeError:
+                return v.decode("latin-1")
+        return v
+
+    adata.var_names = pd.Index([_decode_bytes(v) for v in adata.var_names])
+    adata.obs_names = pd.Index([_decode_bytes(v) for v in adata.obs_names])
+    for _col in list(adata.var.columns):
+        if adata.var[_col].dtype == object:
+            adata.var[_col] = adata.var[_col].map(_decode_bytes)
+    for _col in list(adata.obs.columns):
+        if adata.obs[_col].dtype == object:
+            adata.obs[_col] = adata.obs[_col].map(_decode_bytes)
 
     adata.write_zarr(table_path)
 
@@ -455,10 +543,11 @@ def _add_masks_to_zarr(
 # Transcript points
 # ---------------------------------------------------------------------------
 
-def _write_points(root, config: dict, store_path: str, physical_scale: float = 1.0) -> None:
+def _write_points(root, config: dict, store_path: str, physical_scale: float = 1.0, roi_crop=None) -> None:
     """
     從 Visium HD binned matrix 爆炸轉錄點位（含隨機 jitter），
     以 Dask Parquet 格式寫入 points/transcripts。
+    roi_crop: {"x0", "y0", "x1", "y1"} fullres px，若設定則篩選 ROI 範圍。
     """
     import pandas as pd
     import scanpy as sc
@@ -483,11 +572,32 @@ def _write_points(root, config: dict, store_path: str, physical_scale: float = 1
     if "barcode" in df_pos.columns:
         df_pos = df_pos.set_index("barcode")
 
+    # ROI 篩選
+    if roi_crop is not None:
+        x0, y0 = roi_crop["x0"], roi_crop["y0"]
+        x1, y1 = roi_crop["x1"], roi_crop["y1"]
+        in_roi = (
+            (df_pos["pxl_col_in_fullres"] >= x0) & (df_pos["pxl_col_in_fullres"] < x1) &
+            (df_pos["pxl_row_in_fullres"] >= y0) & (df_pos["pxl_row_in_fullres"] < y1)
+        )
+        df_pos = df_pos[in_roi]
+        logger.info(f"  ROI 篩選後：{len(df_pos)} spots")
+
     logger.info(f"  載入 H5 Matrix：{matrix_path}")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         adata = sc.read_10x_h5(matrix_path)
     adata.var_names_make_unique()
+    # Sanitize bytes→str (same as _write_table)
+    def _dec(v):
+        if isinstance(v, bytes):
+            try:
+                return v.decode("utf-8")
+            except UnicodeDecodeError:
+                return v.decode("latin-1")
+        return v
+    adata.var_names = pd.Index([_dec(v) for v in adata.var_names])
+    adata.obs_names = pd.Index([_dec(v) for v in adata.obs_names])
 
     common = adata.obs_names.intersection(df_pos.index)
     if len(common) == 0:
@@ -516,7 +626,11 @@ def _write_points(root, config: dict, store_path: str, physical_scale: float = 1
     total_points = int(counts.sum())
     logger.info(f"  總轉錄點位數：{total_points:,}")
 
-    coords_base = df_pos[["pxl_col_in_fullres", "pxl_row_in_fullres"]].values * sf
+    raw_coords = df_pos[["pxl_col_in_fullres", "pxl_row_in_fullres"]].values.astype(float)
+    if roi_crop is not None:
+        raw_coords[:, 0] -= roi_crop["x0"]
+        raw_coords[:, 1] -= roi_crop["y0"]
+    coords_base = raw_coords * sf
     row_repeats = np.repeat(X_coo.row, counts)
     col_repeats = np.repeat(X_coo.col, counts)
 
@@ -595,9 +709,10 @@ def _write_points(root, config: dict, store_path: str, physical_scale: float = 1
 # 8µm bin shapes
 # ---------------------------------------------------------------------------
 
-def _write_shapes(root, config: dict, store_path: str, physical_scale: float = 1.0) -> None:
+def _write_shapes(root, config: dict, store_path: str, physical_scale: float = 1.0, roi_crop=None) -> None:
     """
     將 8µm 正方形 bins 以 GeoParquet Shapes 格式寫入 shapes/grid_008um。
+    roi_crop: {"x0", "y0", "x1", "y1"} fullres px，若設定則篩選 ROI 範圍。
     """
     import pandas as pd
     import geopandas as gpd
@@ -611,6 +726,18 @@ def _write_shapes(root, config: dict, store_path: str, physical_scale: float = 1
         return
 
     df = pd.read_parquet(pos_path)
+
+    # ROI 篩選
+    if roi_crop is not None and "pxl_col_in_fullres" in df.columns:
+        x0, y0 = roi_crop["x0"], roi_crop["y0"]
+        x1, y1 = roi_crop["x1"], roi_crop["y1"]
+        in_roi = (
+            (df["pxl_col_in_fullres"] >= x0) & (df["pxl_col_in_fullres"] < x1) &
+            (df["pxl_row_in_fullres"] >= y0) & (df["pxl_row_in_fullres"] < y1)
+        )
+        df = df[in_roi]
+        logger.info(f"  ROI 篩選後：{len(df)} shapes")
+
     sf = config.get("scale_factor", 2.0)
     logger.info(f"  scale factor：{sf}")
 
@@ -623,8 +750,15 @@ def _write_shapes(root, config: dict, store_path: str, physical_scale: float = 1
     half_side = side_length / 2.0
     logger.info(f"  stride={stride:.4f}, side={side_length:.4f}")
 
-    cx = (df["pxl_col_in_fullres"] * sf) * physical_scale
-    cy = (df["pxl_row_in_fullres"] * sf) * physical_scale
+    # ROI 座標偏移
+    col_vals = df["pxl_col_in_fullres"].values.astype(float)
+    row_vals = df["pxl_row_in_fullres"].values.astype(float)
+    if roi_crop is not None:
+        col_vals -= roi_crop["x0"]
+        row_vals -= roi_crop["y0"]
+
+    cx = (col_vals * sf) * physical_scale
+    cy = (row_vals * sf) * physical_scale
 
     geometries = [
         box(
@@ -684,6 +818,67 @@ def _write_shapes(root, config: dict, store_path: str, physical_scale: float = 1
 
 
 # ---------------------------------------------------------------------------
+# H&E image resolution helper
+# ---------------------------------------------------------------------------
+
+_LARGE_BTF_THRESHOLD = 10000  # pixels — above this, prefer hires PNG
+
+
+def _resolve_he_image(
+    he_path: Path,
+    binned_002_dir: Path,
+    pixel_size_um: float,
+) -> tuple[Path, float]:
+    """
+    若 H&E 影像為超大 BTF（> LARGE_BTF_THRESHOLD px），
+    改用 binned_002/spatial/tissue_hires_image.png，並根據
+    scalefactors_json.json 自動換算 pixel size。
+    """
+    import tifffile, json
+
+    he_str = str(he_path)
+    if not he_str.lower().endswith((".btf", ".tiff", ".tif")):
+        return he_path, pixel_size_um
+
+    try:
+        with tifffile.TiffFile(he_str) as tif:
+            p0 = tif.pages[0]
+            h, w = p0.imagelength, p0.imagewidth
+    except Exception:
+        return he_path, pixel_size_um
+
+    if max(h, w) <= _LARGE_BTF_THRESHOLD:
+        return he_path, pixel_size_um
+
+    logger.info(
+        f"BTF 解析度過大（{w}×{h}），改用 tissue_hires_image.png"
+    )
+    hires_png = binned_002_dir / "spatial" / "tissue_hires_image.png"
+    sf_json   = binned_002_dir / "spatial" / "scalefactors_json.json"
+
+    if not hires_png.exists():
+        logger.warning("tissue_hires_image.png 不存在，仍使用原始 BTF（可能很慢）")
+        return he_path, pixel_size_um
+
+    hires_scalef = 1.0
+    if sf_json.exists():
+        try:
+            with open(sf_json) as f:
+                sf = json.load(f)
+            hires_scalef = float(sf.get("tissue_hires_scalef", 1.0))
+        except Exception as e:
+            logger.warning(f"無法讀取 scalefactors_json：{e}")
+
+    adjusted_pixel_size = pixel_size_um / hires_scalef
+    logger.info(
+        f"使用 hires PNG：{hires_png}  "
+        f"scalef={hires_scalef:.6f}  "
+        f"pixel_size={adjusted_pixel_size:.4f} µm/px"
+    )
+    return hires_png, adjusted_pixel_size
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -727,84 +922,131 @@ def build_zarr(config: dict[str, Any]) -> Path:
     pixel_size_um = params.get("pixel_size_um", VISIUM_UM_PX)
     out_filename = params.get("output_filename", "proseg_integrated.zarr")
     gene_scale_factor = params.get("gene_scale_factor", 1.0)
-    out_zarr = zarr_dir / out_filename
+    mask_filename = seg_cfg.get("output", {}).get("mask_filename", "segmentation_masks.npy")
 
-    mask_filename = (
-        seg_cfg.get("output", {}).get("mask_filename", "segmentation_masks.npy")
-    )
-    mask_path = masks_dir / mask_filename
-
-    h5_matrix = files_cfg.get("h5_matrix", "filtered_feature_bc_matrix.h5")
-    spatial_dir = files_cfg.get("spatial_dir", "spatial")
+    h5_matrix      = files_cfg.get("h5_matrix",       "filtered_feature_bc_matrix.h5")
+    spatial_dir    = files_cfg.get("spatial_dir",      "spatial")
     tissue_positions = files_cfg.get("tissue_positions", "tissue_positions.parquet")
 
     datasets = {
         "square_002um": {
-            "matrix": binned_002_dir / h5_matrix,
-            "positions": binned_002_dir / spatial_dir / tissue_positions,
+            "matrix":       binned_002_dir / h5_matrix,
+            "positions":    binned_002_dir / spatial_dir / tissue_positions,
             "scale_factor": gene_scale_factor,
         },
         "square_008um": {
-            "matrix": binned_008_dir / h5_matrix,
-            "positions": binned_008_dir / spatial_dir / tissue_positions,
+            "matrix":       binned_008_dir / h5_matrix,
+            "positions":    binned_008_dir / spatial_dir / tissue_positions,
             "scale_factor": gene_scale_factor,
         },
     }
 
+    # ── 偵測 ROI 模式 ────────────────────────────────────────────────────────
+    output_dir = resolve_path(paths.get("output_dir", "results/analysis"))
+    roi_base   = output_dir / "roi"
+    roi_list   = config.get("rois", [])
+
+    roi_he_crops: list[tuple[str, Path, dict]] = []  # (roi_name, he_crop_path, roi_def)
+    for roi in roi_list:
+        roi_name = roi.get("name", "")
+        he_crop  = roi_base / roi_name / "he_crop.tif"
+        if he_crop.exists():
+            roi_he_crops.append((roi_name, he_crop, roi))
+
+    # fallback：掃描目錄
+    if not roi_he_crops and roi_base.exists():
+        for d in sorted(roi_base.iterdir()):
+            if d.is_dir() and not d.name.startswith("."):
+                he_crop = d / "he_crop.tif"
+                if he_crop.exists():
+                    roi_he_crops.append((d.name, he_crop, {}))
+
+    if roi_he_crops:
+        # ── Per-ROI 模式：每個 ROI 建立獨立 Zarr ────────────────────────────
+        logger.info("=" * 60)
+        logger.info(f"Stage 2: Zarr 建構（per-ROI 模式，{len(roi_he_crops)} 個 ROI）")
+        logger.info("=" * 60)
+
+        last_zarr = None
+        for roi_name, he_crop_path, roi_def in roi_he_crops:
+            roi_zarr_dir = zarr_dir / roi_name
+            roi_zarr_dir.mkdir(parents=True, exist_ok=True)
+            out_zarr = roi_zarr_dir / out_filename
+
+            # ROI crop 範圍（fullres px）
+            roi_crop = None
+            if roi_def.get("x") is not None:
+                rx  = int(roi_def["x"])
+                ry  = int(roi_def["y"])
+                rw  = int(roi_def["width_px"])
+                rh  = int(roi_def["height_px"])
+                roi_crop = {"x0": rx, "y0": ry, "x1": rx + rw, "y1": ry + rh}
+
+            roi_mask_path = roi_base / roi_name / mask_filename
+
+            logger.info(f"\n  ROI: {roi_name}")
+            logger.info(f"  H&E crop:   {he_crop_path}")
+            logger.info(f"  Mask:       {roi_mask_path}")
+            logger.info(f"  ROI crop:   {roi_crop}")
+            logger.info(f"  輸出 Zarr:  {out_zarr}")
+
+            root = _create_zarr_structure(out_zarr)
+            _clean_mac_junk(out_zarr)
+
+            num_levels, pixel_size_obj = _write_image_pyramid(
+                root, he_crop_path, pixel_size_override=pixel_size_um
+            )
+            physical_scale = pixel_size_obj["scale"]
+            _write_ome_metadata(root, num_levels, pixel_size_obj)
+
+            store_path_str = str(out_zarr)
+            _write_table(root, "table", datasets["square_002um"], store_path_str, roi_crop=roi_crop)
+            _write_points(root, datasets["square_002um"], store_path_str,
+                          physical_scale=physical_scale, roi_crop=roi_crop)
+            _add_masks_to_zarr(root, roi_mask_path, physical_scale=physical_scale,
+                               label_name="cellpose_nuclei")
+            _write_shapes(root, datasets["square_008um"], store_path_str,
+                          physical_scale=physical_scale, roi_crop=roi_crop)
+            _clean_mac_junk(out_zarr)
+
+            logger.info(f"  ✅ ROI {roi_name} Zarr 完成：{out_zarr}")
+            last_zarr = out_zarr
+
+        logger.info("=" * 60)
+        logger.info("Zarr 建構完成（per-ROI）")
+        logger.info("=" * 60)
+        return last_zarr
+
+    # ── 全圖模式（fallback）───────────────────────────────────────────────────
     logger.info("=" * 60)
-    logger.info("Stage 2: Zarr 建構")
-    logger.info(f"  H&E 影像:     {he_image_path}")
-    logger.info(f"  2µm matrix:   {binned_002_dir}")
-    logger.info(f"  8µm matrix:   {binned_008_dir}")
-    logger.info(f"  Masks dir:    {masks_dir}")
-    logger.info(f"  輸出 Zarr:    {out_zarr}")
+    logger.info("Stage 2: Zarr 建構（全圖模式）")
+    logger.warning("未找到 he_crop.tif，改用全圖 BTF（可能耗時很長）")
     logger.info("=" * 60)
 
-    # 1. 建立 Zarr 根結構
+    out_zarr = zarr_dir / out_filename
+    mask_path = masks_dir / mask_filename
+
     root = _create_zarr_structure(out_zarr)
-
-    # macOS 清理（在任何 zarr 操作前）
     _clean_mac_junk(out_zarr)
 
-    # 2. H&E 影像金字塔
+    # 全圖模式：BTF 太大時使用 hires PNG
+    effective_he, effective_px = _resolve_he_image(he_image_path, binned_002_dir, pixel_size_um)
+
     num_levels, pixel_size_obj = _write_image_pyramid(
-        root, he_image_path, pixel_size_override=pixel_size_um
+        root, effective_he, pixel_size_override=effective_px
     )
     physical_scale = pixel_size_obj["scale"]
-    logger.info(f"偵測到 physical scale：{physical_scale} {pixel_size_obj['unit']}")
-
-    # 3. OME-NGFF metadata
     _write_ome_metadata(root, num_levels, pixel_size_obj)
 
-    # 4. 2µm binned matrix 表格
     store_path_str = str(out_zarr)
-    if "square_002um" in datasets:
-        _write_table(root, "table", datasets["square_002um"], store_path_str)
-        # 5. 轉錄點位
-        _write_points(
-            root, datasets["square_002um"], store_path_str, physical_scale=physical_scale
-        )
-    else:
-        for name, ds_cfg in datasets.items():
-            _write_table(root, name, ds_cfg, store_path_str)
-
-    # 6. 細胞核分割遮罩
-    _add_masks_to_zarr(
-        root, mask_path, physical_scale=physical_scale, label_name="cellpose_nuclei"
-    )
-
-    # 7. 8µm bin Shapes
-    if "square_008um" in datasets:
-        _write_shapes(
-            root, datasets["square_008um"], store_path_str, physical_scale=physical_scale
-        )
-
-    # 8. 最終 macOS 清理
+    _write_table(root, "table", datasets["square_002um"], store_path_str)
+    _write_points(root, datasets["square_002um"], store_path_str, physical_scale=physical_scale)
+    _add_masks_to_zarr(root, mask_path, physical_scale=physical_scale, label_name="cellpose_nuclei")
+    _write_shapes(root, datasets["square_008um"], store_path_str, physical_scale=physical_scale)
     _clean_mac_junk(out_zarr)
 
     logger.info("=" * 60)
     logger.info("Zarr 建構完成")
     logger.info(f"  輸出：{out_zarr}")
     logger.info("=" * 60)
-
     return out_zarr
