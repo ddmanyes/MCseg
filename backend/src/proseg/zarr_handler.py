@@ -224,7 +224,7 @@ def extract_transcripts(
         # Check if fallback storage is available
         if hasattr(sdata, '_zarr_store'):
              logger.warning(f"  ⚠️  使用容錯模式讀取 Points (from store)")
-             return _extract_transcripts_from_zarr(sdata._zarr_store, points_name, required_columns)
+             return _extract_transcripts_from_zarr(sdata, points_name, required_columns)
              
         raise KeyError(
             f"Points 元素 '{points_name}' 不存在。"
@@ -237,7 +237,7 @@ def extract_transcripts(
     # Handle Fallback Zarr Group directly
     import zarr
     if isinstance(points_data, (zarr.Array, zarr.Group)):
-         return _extract_transcripts_from_zarr(sdata._zarr_store, points_name, required_columns)
+         return _extract_transcripts_from_zarr(sdata, points_name, required_columns)
 
     # 如果是 Dask DataFrame，計算成 Pandas DataFrame
     # 如果是 Dask DataFrame，計算成 Pandas DataFrame
@@ -263,42 +263,40 @@ def extract_transcripts(
     return df
 
 
-def _extract_transcripts_from_zarr(zarr_store, points_name: str, required_columns: list) -> pd.DataFrame:
+def _extract_transcripts_from_zarr(sdata, points_name: str, required_columns: list) -> pd.DataFrame:
     """
     從 Zarr store 直接讀取轉錄點位（容錯模式）
     """
     import pyarrow.parquet as pq
     
     try:
-        # Points 通常儲存為 Parquet 格式在 .zarr/points/NAME/points.parquet
-        # 但 SpatialData Zarr 的 points 結構通常是: /points/NAME 且包含 parquet 檔案
-        # 或者 /points/NAME 是一個 zarr group, 且 .zattrs 指向 parquet
-        
-        # Let's try to find the parquet file.
         # Construct path manually assuming standard structure
-        base_path = zarr_store.store.path # This might be the root of the .zarr directory
-        
-        # Path might be .../points/transcripts/points.parquet or .../points/transcripts/parquet
-        # Let's check common locations
+        if hasattr(sdata, 'zarr_path'):
+            root_path = str(sdata.zarr_path)
+        elif hasattr(sdata, '_zarr_store'):
+            if hasattr(sdata._zarr_store.store, 'path'):
+                root_path = str(sdata._zarr_store.store.path)
+            elif hasattr(sdata._zarr_store.store, 'root'):
+                root_path = str(sdata._zarr_store.store.root)
+            else:
+                raise NotImplementedError("Unable to locate Zarr root path from store")
+        else:
+            raise NotImplementedError("Unable to locate Zarr root path for parquet fallback")
+
         import glob
-        
-        # Assuming zarr_store is the root group
-        # If it's a DirectoryStore
-        if hasattr(zarr_store.store, 'path'):
-             root_path = zarr_store.store.path
-             search_path = os.path.join(root_path, 'points', points_name, '*.parquet')
-             files = glob.glob(search_path)
-             if not files:
-                 # Check subdirectories
-                 search_path = os.path.join(root_path, 'points', points_name, '**', '*.parquet')
-                 files = glob.glob(search_path, recursive=True)
-                 
-             if files:
-                 parquet_file = files[0] # Take the first one
-                 logger.debug(f"    - 讀取 Parquet: {parquet_file}")
-                 table = pq.read_table(parquet_file)
-                 df = table.to_pandas()
-                 return df
+        search_path = os.path.join(root_path, 'points', points_name, '*.parquet')
+        files = glob.glob(search_path)
+        if not files:
+            # Check subdirectories
+            search_path = os.path.join(root_path, 'points', points_name, '**', '*.parquet')
+            files = glob.glob(search_path, recursive=True)
+            
+        if files:
+            parquet_file = files[0] # Take the first one
+            logger.debug(f"    - 讀取 Parquet: {parquet_file}")
+            table = pq.read_table(parquet_file)
+            df = table.to_pandas()
+            return df
         
         # If we can't find parquet via file system (e.g. S3), or no files found
         raise NotImplementedError("無法找到 Points 對應的 Parquet 檔案")

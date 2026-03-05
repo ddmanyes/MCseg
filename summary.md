@@ -39,6 +39,13 @@
   - **根本原因**：即便我們透過 Pipeline 強制配發了精準的細胞核初始領地，Proseg 預設仍帶有 `--nuclear-reassignment-prob 0.2`（或 0.01）的功能。這意味著在預設高達數百次的迭代抽樣（Iteration Sampling）中，核內的 RNA 被允許依據「機率」重新歸屬給附近勢力更大或範圍更廣的強勢細胞。經過疊加，大量位於原核內的基因直接被周遭大細胞掠奪，被吞併的小細胞也就從最終地圖上消失了。
   - **強硬鎖死**：將 CLI 呼叫參數強制設置為 `--nuclear-reassignment-prob 0` 與 `--prior-seg-reassignment-prob 0`。在數學與演算法上**百分之百封印**這項「強盜行為」，徹底禁止 Proseg 將任何已被確認在核內的 RNA 分配給別人。現在它必須老實地遵守 Cellpose 取出的核心基礎數量與核位，不再有細胞被無故剝奪消滅或輪廓被橫切的情形。
 
+## 6. Dask 與 SpatialData 底層套件衝突修復 (Dependency Hell)
+
+- **問題**：在最新版的 `dask (>= 2025.x)` 之中，其內建強制移除了舊有的 Legacy DataFrame 機制 (`dask-expr`)，這導致了我們管線中依賴舊版 DataFrame 介面的核心套件 `spatialdata` 讀取崩潰。這在執行 Proseg 條件掃描時會拋出 `The legacy implementation is no longer supported` 的致命錯誤並中斷執行。另外 Zarr `LocalStore` 也因改版而出現 `LocalStore object has no attribute path`。
+- **解法**：
+  1. **Dask 引擎強制降級與限定**：手動更新了環境的依賴，強制安裝 `"dask[dataframe]<2025.1.0"`，回退至具有舊世代相容性的穩定版本，並確保 `dask.config.set({'dataframe.query-planning': False})` 參數生效。
+  2. **Zarr 讀取容錯修正**：修改 `backend/src/proseg/zarr_handler.py`，增強了 `sdata._zarr_store.store` 的相容性與容錯語法，能正確讀取 `.root` 底下目錄，避開了 Zarr 改版帶來的封裝路徑存取問題。
+
 ## 下一步/注意事項
 
 由於移除了破壞性 Watershed 邏輯與修復了 Proseg Cyto 約束 Bug，目前的細胞數量、細胞核邊界防護與空間對齊度理應處於最佳狀態。您可以透過 UI 的「Proseg (Stage 3)」確認修復後的結果。如果對局部效果仍有要求，可回到 Segmentation 微調 `Eosin BG Threshold` (控制物理擴張牆壁) 或嘗試不同的 Cellpose dP 容忍度 `Flow Threshold`。
