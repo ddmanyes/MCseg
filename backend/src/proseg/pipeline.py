@@ -19,7 +19,7 @@ import cv2  # Add OpenCV for fast dilation
 logger = logging.getLogger("pipeline.proseg")
 
 import dask
-dask.config.set({"dataframe.query-planning": True})
+dask.config.set({"dataframe.query-planning": False})
 import dask.dataframe as dd
 
 import numpy as np
@@ -678,7 +678,7 @@ class ProsegPipeline:
             "--samples", str(self.samples),
             "--burnin-samples", str(self.burnin_samples),
             "--recorded-samples", str(self.recorded_samples),
-            "--nuclear-reassignment-prob", "0",  # 新增：嚴格保護核區域，防止越界擴張
+            "--nuclear-reassignment-prob", "0", "--prior-seg-reassignment-prob", "0",  # 新增：嚴格保護核區域，防止越界擴張
         ]
 
         if self.enforce_connectivity:

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 import dask
 try:
-    dask.config.set({'dataframe.query-planning': True})
+    dask.config.set({'dataframe.query-planning': False})
 except Exception:
     pass # Older dask might not have this key, which is fine as it defaults to legacy
 import dask.dataframe as dd

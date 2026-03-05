@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 import dask
-dask.config.set({"dataframe.query-planning": True})
+dask.config.set({"dataframe.query-planning": False})
 import dask.dataframe as dd
 
 import dask.array as da

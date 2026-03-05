@@ -25,7 +25,7 @@ async def _run_proseg(config: dict):
         from backend.src.proseg.runner import run_tiled_proseg
         import dask
         # 強制在此套用新版 Dask-expr 防護
-        dask.config.set({"dataframe.query-planning": True})
+        dask.config.set({"dataframe.query-planning": False})
         
         await asyncio.get_event_loop().run_in_executor(None, run_tiled_proseg, config)
         _task_status = {"status": "done", "progress": 1.0, "message": "Proseg Tiling 完成"}
