@@ -85,6 +85,11 @@
 - `proseg.golden_params` 原缺少 `burnin_samples` 設定，僅依賴 Proseg 預設值 200
 - 新增 `burnin_samples: 150`（samples=500 時 30% burnin，符合 MCMC 收斂最佳實踐）
 
+## 9. Dask 自動升級導致 Zarr 建構失敗修復 (2026-03-05)
+
+- **問題**：`uv` 自動將 dask 從 `2024.12.1` 升至 `2026.1.2`，該版本完全移除了 `query-planning: False` 相容性開關，`import dask.dataframe` 直接噴 `NotImplementedError: The legacy implementation is no longer supported`，導致「建構 Zarr（Stage 2）」無法啟動。
+- **解法**：`uv add "dask[dataframe]<2025.1.0"` 鎖定至 `dask==2024.12.1`，並寫入 `pyproject.toml` 版本約束，防止日後再次自動升級。
+
 ## 目前產出物清單
 
 | 路徑 | 說明 |
