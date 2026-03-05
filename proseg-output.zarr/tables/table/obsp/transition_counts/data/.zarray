@@ -2,10 +2,10 @@
   "node_type": "array",
   "zarr_format": 2,
   "shape": [
-    2972
+    2869
   ],
   "chunks": [
-    2972
+    2869
   ],
   "dtype": "<u4",
   "compressor": {
