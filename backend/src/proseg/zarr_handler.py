@@ -121,7 +121,7 @@ def _load_zarr_fallback(zarr_path: str) -> SpatialData:
         
         @property
         def labels(self):
-            return {k: v for k, v in self._elements.items() if k.startswith('cellpose')}
+            return {k: v for k, v in self._elements.items() if k.startswith('cellpose') or k.startswith('eosin')}
         
         @property
         def points(self):
@@ -151,21 +151,20 @@ def _load_zarr_fallback(zarr_path: str) -> SpatialData:
         except Exception as e:
             logger.warning(f"    ⚠️  Images 載入失敗: {e}")
     
-    # 2. 載入 Labels (cellpose_nuclei, cellpose_cyto)
+    # 2. 載入 Labels (cellpose_nuclei, cellpose_cyto, eosin_cyto)
     if 'labels' in z:
-        for label_name in ['cellpose_nuclei', 'cellpose_cyto', 'cellpose']:  # Try all possible names
-            if label_name in z['labels']:
-                try:
-                    label_group = z['labels'][label_name]
-                    if '0' in label_group:
-                        scale0_path = os.path.join(zarr_path, f'labels/{label_name}/0')
-                        darr = da.from_zarr(scale0_path)
-                        # Assuming (y, x)
-                        arr = xr.DataArray(darr, dims=['y', 'x'], name=label_name)
-                        elements[label_name] = arr
-                        logger.debug(f"  - 載入 Labels: {label_name} (Scale 0)")
-                except Exception as e:
-                    logger.warning(f"    ⚠️  Labels {label_name} 載入失敗: {e}")
+        for label_name in list(z['labels'].keys()):
+            try:
+                label_group = z['labels'][label_name]
+                if '0' in label_group:
+                    scale0_path = os.path.join(zarr_path, f'labels/{label_name}/0')
+                    darr = da.from_zarr(scale0_path)
+                    # Assuming (y, x)
+                    arr = xr.DataArray(darr, dims=['y', 'x'], name=label_name)
+                    elements[label_name] = arr
+                    logger.debug(f"  - 載入 Labels: {label_name} (Scale 0)")
+            except Exception as e:
+                logger.warning(f"    ⚠️  Labels {label_name} 載入失敗: {e}")
 
     sdata = SimplifiedSpatialData(zarr_path, elements, z)
     logger.info(f"  ✅ 容錯載入完成")

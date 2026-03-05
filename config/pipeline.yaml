@@ -45,7 +45,7 @@ segmentation:
   preprocessing:
     normalize_stains: true
     calibration_roi: null
-    clahe_clip_limit: 1.0   # CLAHE 對比上限；細長型/破碎核降低至 1.0，一般細胞用 2.0
+    clahe_clip_limit: 1.0
   output:
     save_flows: false
     mask_filename: segmentation_masks.npy
@@ -147,23 +147,23 @@ marker_genes:
     - MUC5AC
     - TFF3
     - KRT20
-    description: CRC 腔面（luminal）細胞
+    description: "CRC \u8154\u9762\uFF08luminal\uFF09\u7D30\u80DE"
   CRC_tumor_basal:
     genes:
     - CDH1
     - EPCAM
     - KRT8
     - KRT18
-    description: CRC 基底（basal）/上皮標記
+    description: "CRC \u57FA\u5E95\uFF08basal\uFF09/\u4E0A\u76AE\u6A19\u8A18"
   CRC_endothelial:
     genes:
     - PECAM1
     - CD34
     - VWF
-    description: 內皮細胞
+    description: "\u5167\u76AE\u7D30\u80DE"
   CRC_smooth_muscle:
     genes:
     - ACTA2
     - MYH11
     - TAGLN
-    description: 平滑肌細胞
+    description: "\u5E73\u6ED1\u808C\u7D30\u80DE"

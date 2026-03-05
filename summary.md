@@ -65,23 +65,28 @@
 本次對整個 backend 進行全面 audit，修復以下 6 項問題：
 
 ### 8-1. `cellpose_runner.py`：33 個 print → 結構化 logging
+
 - 新增 `logger = logging.getLogger("pipeline.segmentation")`
 - 所有 33 個 `print()` 替換為 `logger.info()` / `logger.warning()`
 - Stage 1 分割進度現在會正確輸出至 frontend terminal，不再消失
 
 ### 8-2. `cellpose_runner.py`：TiffFile 資源洩漏修復
+
 - `run_segmentation()` 中使用 `tifffile.TiffFile(input_path)` 後原缺少 close 呼叫
 - 修復：在 Macenko calibration 完成後立即執行 `tif.close()`，防止大型 BTF 檔案造成 fd 洩漏
 
 ### 8-3. `pipeline.py`：Proseg GeoJSON 靜默失敗防護
+
 - 原 L943 `features = []  # TODO: Handle map?` 在 Proseg 輸出格式不符預期時，靜默丟棄全部 polygon 而不報錯
 - 修復：改為 `raise ValueError(...)` 並附上詳細的 Key 診斷訊息，讓問題立即可見
 
 ### 8-4. `api/proseg.py` + `api/segmentation.py`：TOCTOU race condition 修復
+
 - 原 `/run` endpoint 中 "check status == running" 與 "add task" 之間存在 race window
 - 修復：兩個 API 均加入 `_task_lock = asyncio.Lock()`，check-and-set 操作包入 `async with _task_lock:`（使用 asyncio.Lock 而非 threading.Lock，避免阻塞事件循環）
 
 ### 8-5. `config/pipeline.yaml`：補齊 `burnin_samples`
+
 - `proseg.golden_params` 原缺少 `burnin_samples` 設定，僅依賴 Proseg 預設值 200
 - 新增 `burnin_samples: 150`（samples=500 時 30% burnin，符合 MCMC 收斂最佳實踐）
 
@@ -105,3 +110,12 @@
 | `results/figures/alignment_*.png` | 空間對齊品質圖（4張）|
 | `results/figures/stage1_*.png` | Stage 1 分割驗證圖（2張）|
 | `results/figures/clip_before_after.png` | Polygon clip 修正前後對比圖 |
+
+## 10. Proseg 條件邊界互咬與預覽圖偏移修復 (2026-03-06)
+
+- **問題一（視覺錯位大災難）**：即使有 Watershed 保護，細胞分割的「綠色多邊形」在 UI 顯示上仍然集體偏移，如同切斷了原本的細胞核地盤。
+  - **根本原因 (Visual Offset Error)**：Pipeline 給予 Proseg 原生模型的 `coordinate_scale` 使用了全域寫死的常數 `0.2645833`，然而組織的 UI 繪圖與裁切所使用的是 `0.2737`。這一微小的倍率差距，在動輒好幾百 pixel 的長寬畫佈下，產生了高達十幾像素的「集體大平移」，導致完美的分割網格在圖上蓋歪了。
+  - **解法**：在 `runner.py` 與 `condition_tester.py` 中，將送給 Proseg 的倍率由常數強制改為動態讀取該 ROI 的真實倍率 `rois[0].get("pixel_size_um")`，確保計算出的 GeoJSON 坐標在除回像素空間時 100% 吻合 H&E 紫色細胞核的核心。
+- **問題二（梯田狀/鋸齒狀交界）**：即便座標對齊，依然觀察到細胞與細胞之間的交界完全沒有空隙，且呈現方塊梯田狀的「互咬」。
+  - **根本原因**：在高密度的空間中，未分配的游離 RNA 掉在兩個細胞的極狹窄縫隙（1~2 micron）間。Proseg MCMC 的 `Space-Filling` 特性會逼迫模型盡可能「吞噬並瓜分」所有的公海 Voxel（即使距離很遠），導致細胞外框長出梯田狀的觸手。
+  - **解法**：降低 MCMC 的爭奪空間！將 `config/pipeline.yaml` 的預設 `samples` 迭代次數從 200 大幅下調至 **50** (recorded_samples=20)，且提升 `compactness` (0.06 ~ 0.1)。結合啟用 `--enforce-connectivity`，讓 Proseg 在確認完核心領域與 Watershed 邊緣後提早結束運算，遏止了無限膨脹的細胞膜觸手。

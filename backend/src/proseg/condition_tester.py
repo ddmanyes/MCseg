@@ -168,6 +168,9 @@ class ConditionTester:
             }
 
         scale_um_px = self.config.get("proseg", {}).get("constants", {}).get("scale_um_px", 0.2645833)
+        rois = self.config.get("rois", [])
+        if rois:
+            scale_um_px = rois[0].get("pixel_size_um", scale_um_px)
 
         # 自動探測外部 cyto_mask.npy (如果 roi 下有)
         cyto_npy = None
@@ -188,6 +191,7 @@ class ConditionTester:
             compactness=condition.get("compactness", 0.06),
             dilation_radius=condition.get("dilation", 20),
             samples=condition.get("samples", 200),
+            burnin_samples=min(150, int(condition.get("samples", 200) * 0.5)),
             recorded_samples=condition.get("recorded", 50),
             coordinate_scale=scale_um_px,
             padding=50,  # 稍微給 padding

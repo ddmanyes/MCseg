@@ -54,6 +54,11 @@ def run_tiled_proseg(config: dict) -> None:
         
     for roi in rois:
         roi_name = roi["name"]
+        
+        # Override the global scale with the ROI-specific scale if available.
+        # This prevents coordinates shifting between um and px if they differ.
+        roi_scale_um_px = roi.get("pixel_size_um", scale_um_px)
+        
         logger.info(f"[{roi_name}] 開始進行分塊 Proseg 分析")
         
         zarr_path = zarr_base / roi_name / "proseg_integrated.zarr"
@@ -122,8 +127,9 @@ def run_tiled_proseg(config: dict) -> None:
                 compactness=golden.get("compactness", 0.06),
                 dilation_radius=golden.get("dilation", 20),
                 samples=golden.get("samples", 500),
+                burnin_samples=golden.get("burnin_samples", int(golden.get("samples", 500) * 0.3)),
                 recorded_samples=golden.get("recorded_samples", 150),
-                coordinate_scale=scale_um_px,
+                coordinate_scale=roi_scale_um_px,
                 padding=padding,
                 nucleus_label_name="cellpose_nuclei",
                 use_cyto_mask_from_zarr=True,       # 優先從 Zarr，失敗則退回 cyto_mask_path
