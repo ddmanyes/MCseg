@@ -49,3 +49,54 @@
 ## 下一步/注意事項
 
 由於移除了破壞性 Watershed 邏輯與修復了 Proseg Cyto 約束 Bug，目前的細胞數量、細胞核邊界防護與空間對齊度理應處於最佳狀態。您可以透過 UI 的「Proseg (Stage 3)」確認修復後的結果。如果對局部效果仍有要求，可回到 Segmentation 微調 `Eosin BG Threshold` (控制物理擴張牆壁) 或嘗試不同的 Cellpose dP 容忍度 `Flow Threshold`。
+
+---
+
+## 7. ExFAT .venv 損毀修復與 start.sh 強化 (2026-03-05)
+
+- **問題**：在 ExFAT 磁碟上執行 `uv sync` 時，macOS 的 `._*` resource fork 檔案會先於目錄被複製，導致 `fonttools` 等套件的快取目錄無法建立，進而 `.venv` 損毀無法啟動。
+- **解法**：將 `.venv` 改為 symlink 指向 APFS 磁碟：`.venv → ~/.venvs/visiumHD_pipeline_2`，並新增：
+  - `export UV_CACHE_DIR="$HOME/.cache/uv"` 避免 ExFAT cache 污染
+  - `start.sh` 自動偵測 symlink 是否存在並重建
+  - 啟動前執行 `lsof -ti:8000,3000 | xargs kill -9` 清除舊行程，避免 Port 衝突
+
+## 8. 全專案程式碼品質稽核修復 (2026-03-05)
+
+本次對整個 backend 進行全面 audit，修復以下 6 項問題：
+
+### 8-1. `cellpose_runner.py`：33 個 print → 結構化 logging
+- 新增 `logger = logging.getLogger("pipeline.segmentation")`
+- 所有 33 個 `print()` 替換為 `logger.info()` / `logger.warning()`
+- Stage 1 分割進度現在會正確輸出至 frontend terminal，不再消失
+
+### 8-2. `cellpose_runner.py`：TiffFile 資源洩漏修復
+- `run_segmentation()` 中使用 `tifffile.TiffFile(input_path)` 後原缺少 close 呼叫
+- 修復：在 Macenko calibration 完成後立即執行 `tif.close()`，防止大型 BTF 檔案造成 fd 洩漏
+
+### 8-3. `pipeline.py`：Proseg GeoJSON 靜默失敗防護
+- 原 L943 `features = []  # TODO: Handle map?` 在 Proseg 輸出格式不符預期時，靜默丟棄全部 polygon 而不報錯
+- 修復：改為 `raise ValueError(...)` 並附上詳細的 Key 診斷訊息，讓問題立即可見
+
+### 8-4. `api/proseg.py` + `api/segmentation.py`：TOCTOU race condition 修復
+- 原 `/run` endpoint 中 "check status == running" 與 "add task" 之間存在 race window
+- 修復：兩個 API 均加入 `_task_lock = asyncio.Lock()`，check-and-set 操作包入 `async with _task_lock:`（使用 asyncio.Lock 而非 threading.Lock，避免阻塞事件循環）
+
+### 8-5. `config/pipeline.yaml`：補齊 `burnin_samples`
+- `proseg.golden_params` 原缺少 `burnin_samples` 設定，僅依賴 Proseg 預設值 200
+- 新增 `burnin_samples: 150`（samples=500 時 30% burnin，符合 MCMC 收斂最佳實踐）
+
+## 目前產出物清單
+
+| 路徑 | 說明 |
+|------|------|
+| `results/analysis/roi/text/segmentation_masks.npy` | Cellpose Logic-A 分割遮罩 |
+| `results/analysis/roi/text/segmentation_masks.tif` | 同上 TIFF 格式（ZLIB 壓縮）|
+| `results/analysis/roi/text/cyto_mask.npy` | Eosin 亮度法細胞質二元遮罩 |
+| `results/analysis/roi/text/flows_preview.jpg` | Cellpose dP 光流預覽 |
+| `results/analysis/roi/text/adata_002um.h5ad` | Visium HD 2µm AnnData |
+| `results/analysis/roi/text/adata_008um.h5ad` | Visium HD 8µm AnnData |
+| `proseg-output.zarr/` | Proseg 輸出（shapes + tables + points）|
+| `results/zarr/text/` | 整合後 SpatialData Zarr |
+| `results/figures/alignment_*.png` | 空間對齊品質圖（4張）|
+| `results/figures/stage1_*.png` | Stage 1 分割驗證圖（2張）|
+| `results/figures/clip_before_after.png` | Polygon clip 修正前後對比圖 |

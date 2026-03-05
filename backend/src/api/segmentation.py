@@ -14,6 +14,7 @@ router = APIRouter()
 logger = logging.getLogger("pipeline.api.segmentation")
 
 _task_status = {"status": "idle", "progress": 0.0, "message": ""}
+_task_lock = asyncio.Lock()
 
 
 class SegmentationParams(BaseModel):
@@ -255,12 +256,13 @@ async def _run_segmentation(config: dict):
 
 @router.post("/run")
 async def run_segmentation(background_tasks: BackgroundTasks, params: SegmentationParams = SegmentationParams()):
-    if _task_status["status"] == "running":
-        return {"status": "error", "message": "任務執行中"}
-    config = load_config()
-    config = _apply_overrides(config, params)
-    config["_mode"] = params.mode
-    background_tasks.add_task(_run_segmentation, config)
+    async with _task_lock:
+        if _task_status["status"] == "running":
+            return {"status": "error", "message": "任務執行中"}
+        config = load_config()
+        config = _apply_overrides(config, params)
+        config["_mode"] = params.mode
+        background_tasks.add_task(_run_segmentation, config)
     return {"status": "ok", "message": "細胞分割已啟動"}
 
 

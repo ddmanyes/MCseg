@@ -93,6 +93,7 @@ proseg:
     max_dist: 40.0
     compactness: 0.06
     samples: 500
+    burnin_samples: 150
     recorded_samples: 150
     use_watershed: true
     enforce_connectivity: true

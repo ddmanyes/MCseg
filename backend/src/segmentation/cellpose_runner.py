@@ -14,6 +14,7 @@ Cellpose 全圖分割執行器
 - 分塊拼接 (Tiling + Stitching)
 """
 
+import logging
 import os
 import sys
 import numpy as np
@@ -26,6 +27,8 @@ from pathlib import Path
 from skimage.segmentation import watershed
 
 from .macenko import MacenkoNormalizer, apply_clahe
+
+logger = logging.getLogger("pipeline.segmentation")
 
 
 def get_best_tissue_patch(page_obj, step=50, grid_n=8):
@@ -89,18 +92,18 @@ def run_eosin_watershed(nuclei_masks: np.ndarray, eosin_img: np.ndarray, bg_thre
         fg = (brightness < (255 - bg_threshold)).astype(np.uint8)  # 亮度低 = 組織
         fg_pct = fg.mean() * 100
         if fg_pct < 1.0:
-            print(f"⚠️  Tissue mask skipped: coverage {fg_pct:.1f}% < 1%")
+            logger.warning(f"Tissue mask skipped: coverage {fg_pct:.1f}% < 1%")
             return nuclei_masks
-        print(f"  Tissue coverage: {fg_pct:.1f}%")
+        logger.info(f"Tissue coverage: {fg_pct:.1f}%")
         # 使用亮度反轉之後做 watershed marker
         return watershed(brightness, markers, mask=fg.astype(bool))
     else:
         fg = (eosin_img > bg_threshold).astype(np.uint8)
         fg_pct = fg.mean() * 100
         if fg_pct < 1.0:
-            print(f"⚠️  Eosin watershed skipped: fg coverage {fg_pct:.1f}% < 1% (eosin max={eosin_img.max()}, threshold={bg_threshold})")
+            logger.warning(f"Eosin watershed skipped: fg coverage {fg_pct:.1f}% < 1% (eosin max={eosin_img.max()}, threshold={bg_threshold})")
             return nuclei_masks
-        print(f"  Eosin fg coverage: {fg_pct:.1f}%")
+        logger.info(f"Eosin fg coverage: {fg_pct:.1f}%")
         return watershed(-eosin_img, markers, mask=fg)
 
 
@@ -181,7 +184,7 @@ def run_segmentation(config: dict):
 
     os.makedirs(output_dir, exist_ok=True)
 
-    print(f"🔬 Loading image: {input_path}")
+    logger.info(f"Loading image: {input_path}")
     tif = tifffile.TiffFile(input_path)
     page0 = tif.pages[0]
     img_full = page0.asarray()
@@ -190,21 +193,21 @@ def run_segmentation(config: dict):
     is_grayscale = False
     if img_full.ndim == 2:
         is_grayscale = True
-        print("  Info: Input image is grayscale")
+        logger.info("Input image is grayscale")
     elif img_full.ndim == 3:
         if img_full.shape[-1] == 4:
             img_full = img_full[..., :3]
         if img_full.shape[-1] == 1:
             img_full = img_full[..., 0]
             is_grayscale = True
-            print("  Info: Input image is grayscale (1-channel)")
+            logger.info("Input image is grayscale (1-channel)")
 
     if is_grayscale:
         normalize_stains = False
-        print("  Info: Skipping stain normalization for grayscale image")
+        logger.info("Skipping stain normalization for grayscale image")
 
     h_full, w_full = img_full.shape[:2]
-    print(f"  Image size: {w_full} x {h_full}")
+    logger.info(f"Image size: {w_full} x {h_full}")
 
     # Macenko 校正
     normalizer = MacenkoNormalizer()
@@ -219,13 +222,15 @@ def run_segmentation(config: dict):
 
         success = normalizer.fit(calib_patch)
         if success:
-            print("✅ Macenko calibration successful")
+            logger.info("Macenko calibration successful")
         else:
-            print("⚠️ Macenko calibration failed, using grayscale fallback")
+            logger.warning("Macenko calibration failed, using grayscale fallback")
+
+    tif.close()
 
     # Cellpose Model
     model = models.CellposeModel(gpu=use_gpu, pretrained_model=model_type)
-    print(f"🧠 Cellpose model: {model_type}, GPU: {use_gpu}")
+    logger.info(f"Cellpose model: {model_type}, GPU: {use_gpu}")
 
     # Tiling
     final_masks = np.zeros((h_full, w_full), dtype=np.int32)
@@ -235,7 +240,7 @@ def run_segmentation(config: dict):
     nx = max(1, (w_full - overlap) // (block_size - overlap) + 1)
     total_tiles = ny * nx
 
-    print(f"🧩 Processing {total_tiles} tiles ({nx}x{ny})")
+    logger.info(f"Processing {total_tiles} tiles ({nx}x{ny})")
 
     for iy in tqdm(range(ny), desc="Rows"):
         for ix in range(nx):
@@ -291,7 +296,7 @@ def run_segmentation(config: dict):
                 global_id += 1
                 final_masks[y0+inner_y0:y0+inner_y1, x0+inner_x0:x0+inner_x1][inner_mask == old_id] = global_id
 
-    print(f"🔢 Total cells: {global_id}")
+    logger.info(f"Total cells: {global_id}")
 
     # ⚠️ 注意：Eosin Watershed 不修改 final_masks（分割結果應保持純 LOGIC_A 輸出）
     # cyto_mask.npy 另外在下方獨立計算，供 Proseg 使用
@@ -301,13 +306,13 @@ def run_segmentation(config: dict):
     tif_path = os.path.join(output_dir, mask_tif_filename)
 
     np.save(npy_path, final_masks)
-    print(f"💾 Saved: {npy_path}")
+    logger.info(f"Saved: {npy_path}")
 
     tifffile.imwrite(tif_path, final_masks.astype(np.uint16), compression='zlib')
-    print(f"💾 Saved: {tif_path}")
+    logger.info(f"Saved: {tif_path}")
 
     if save_flows:
-        print("ℹ️ Flow saving skipped in pipeline mode (available in original script)")
+        logger.info("Flow saving skipped in pipeline mode (available in original script)")
 
     return final_masks
 
@@ -344,16 +349,16 @@ def run_segmentation_rois(config: dict, progress_callback=None):
         raise ValueError("找不到 he_crop.tif，請先在 Stage 0 執行 ROI 裁切")
 
     n = len(roi_paths)
-    print(f"🗂️ 找到 {n} 個 ROI 待分割")
+    logger.info(f"找到 {n} 個 ROI 待分割")
 
     for i, (roi_name, he_crop_path) in enumerate(roi_paths):
         if progress_callback:
             progress_callback(i / n, f"ROI {i+1}/{n}: {roi_name}")
-        print(f"\n{'='*50}")
-        print(f"📂 處理 ROI: {roi_name} ({i+1}/{n})")
+        logger.info("=" * 50)
+        logger.info(f"處理 ROI: {roi_name} ({i+1}/{n})")
         _run_single_roi_segmentation(he_crop_path, roi_name, seg_cfg)
 
-    print(f"\n✅ 所有 {n} 個 ROI 分割完成")
+    logger.info(f"所有 {n} 個 ROI 分割完成")
 
 
 def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dict):
@@ -382,7 +387,7 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
 
     output_dir = he_crop_path.parent
 
-    print(f"🔬 Loading: {he_crop_path}")
+    logger.info(f"Loading: {he_crop_path}")
     img_full = tifffile.imread(str(he_crop_path))
     if img_full.ndim == 3 and img_full.shape[-1] == 4:
         img_full = img_full[..., :3]
@@ -394,15 +399,18 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
             img_full = img_full[..., 0]
 
     h_full, w_full = img_full.shape[:2]
-    print(f"  Image size: {w_full} x {h_full}")
+    logger.info(f"Image size: {w_full} x {h_full}")
 
     normalizer = MacenkoNormalizer()
     if normalize_stains:
         success = normalizer.fit(img_full)
-        print("✅ Macenko calibration successful" if success else "⚠️ Macenko fallback to grayscale")
+        if success:
+            logger.info("Macenko calibration successful")
+        else:
+            logger.warning("Macenko fallback to grayscale")
 
     model = models.CellposeModel(gpu=use_gpu, pretrained_model=model_type)
-    print(f"🧠 Model: {model_type}, GPU: {use_gpu}")
+    logger.info(f"Model: {model_type}, GPU: {use_gpu}")
 
     final_masks = np.zeros((h_full, w_full), dtype=np.int32)
     global_id   = 0
@@ -415,7 +423,7 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
         ny = max(1, (h_full - overlap) // (block_size - overlap) + 1)
         nx = max(1, (w_full - overlap) // (block_size - overlap) + 1)
 
-    print(f"🧩 Processing {ny * nx} tiles ({nx}x{ny})")
+    logger.info(f"Processing {ny * nx} tiles ({nx}x{ny})")
 
     for iy in tqdm(range(ny), desc=roi_name):
         for ix in range(nx):
@@ -481,7 +489,7 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
                     x0+inner_x0:x0+inner_x1
                 ][inner_mask == old_id] = global_id
 
-    print(f"🔢 Total cells: {global_id}")
+    logger.info(f"Total cells: {global_id}")
 
     # ── Flow 視覺化（小尺寸 dP），用於分割品質檢查 ----------------------------------
     if flow_canvas is not None:
@@ -494,12 +502,12 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
             flow_u8.save(flow_buf, "JPEG", quality=85)
             flows_preview_path = output_dir / "flows_preview.jpg"
             flows_preview_path.write_bytes(flow_buf.getvalue())
-            print(f"💾 Saved Flow Preview: {flows_preview_path}")
+            logger.info(f"Saved Flow Preview: {flows_preview_path}")
         except Exception as e:
-            print(f"⚠️ Flow visualization failed: {e}")
+            logger.warning(f"Flow visualization failed: {e}")
 
     if pp_config.get("enable_eosin_watershed", False) and not is_grayscale:
-        print("🔬 Generating Eosin Cytoplasm Mask (Brightness Method)...")
+        logger.info("Generating Eosin Cytoplasm Mask (Brightness Method)...")
         bg_thresh = pp_config.get("eosin_bg_threshold", 40)
         # 亮度法：白色空直背景被排除，組織區域保留
         brightness = img_full[:, :, :3].astype(np.float32).max(axis=2)
@@ -508,15 +516,15 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
         cyto_mask = (~is_background).astype(np.int32)
         cyto_npy_path = output_dir / "cyto_mask.npy"
         np.save(str(cyto_npy_path), cyto_mask)
-        print(f"💾 Saved Cyto Mask: {cyto_npy_path}")
+        logger.info(f"Saved Cyto Mask: {cyto_npy_path}")
 
     npy_path = output_dir / mask_filename
     tif_path = output_dir / mask_tif_filename
 
     np.save(str(npy_path), final_masks)
-    print(f"💾 Saved: {npy_path}")
+    logger.info(f"Saved: {npy_path}")
 
     tifffile.imwrite(str(tif_path), final_masks.astype(np.uint16), compression='zlib')
-    print(f"💾 Saved: {tif_path}")
+    logger.info(f"Saved: {tif_path}")
 
     return final_masks

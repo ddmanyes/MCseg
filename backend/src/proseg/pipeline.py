@@ -934,9 +934,12 @@ class ProsegPipeline:
                     logger.info("  🔍 偵測到 GeoJSON FeatureCollection")
                     features = poly_data['features']
                 else:
-                    # Fallback or older format
-                    logger.warning(f"  ⚠️  未知 JSON 結構，嘗試簡易解析... (Keys: {list(poly_data.keys())[:3]})")
-                    features = [] # TODO: Handle map?
+                    # Unknown JSON structure — raise instead of silently dropping all polygons
+                    raise ValueError(
+                        f"Proseg GeoJSON 格式不支援（無 'type'/'features' 欄位）。"
+                        f"實際 Keys: {list(poly_data.keys())}。"
+                        f"請確認 Proseg 版本與輸出格式。"
+                    )
 
                 count = 0
                 for feat in features:

@@ -10,6 +10,7 @@ router = APIRouter()
 logger = logging.getLogger("pipeline.api.proseg")
 
 _task_status = {"status": "idle", "progress": 0.0, "message": ""}
+_task_lock = asyncio.Lock()
 
 
 @router.get("/status")
@@ -37,8 +38,9 @@ async def _run_proseg(config: dict):
 
 @router.post("/run")
 async def run_proseg(background_tasks: BackgroundTasks):
-    if _task_status["status"] == "running":
-        return {"status": "error", "message": "任務執行中"}
-    config = load_config()
-    background_tasks.add_task(_run_proseg, config)
+    async with _task_lock:
+        if _task_status["status"] == "running":
+            return {"status": "error", "message": "任務執行中"}
+        config = load_config()
+        background_tasks.add_task(_run_proseg, config)
     return {"status": "ok", "message": "Proseg 已啟動"}

@@ -16,12 +16,29 @@ if ! command -v uv &>/dev/null; then
     exit 1
 fi
 
-# 清理 ExFAT ._* 垃圾（避免 uv/zarr 安裝/解析錯誤）
+# ExFAT 防護：把 .venv 實體放在本機 APFS（避免 ._* resource fork 破壞安裝）
+LOCAL_VENV="$HOME/.venvs/visiumHD_pipeline_2"
 VENV_DIR="$ROOT/.venv"
-if [ -d "$VENV_DIR" ]; then
-    echo -e "${YELLOW}清理 ExFAT ._* 快取...${NC}"
+export UV_CACHE_DIR="$HOME/.cache/uv"
+
+if [ -L "$VENV_DIR" ] && [ -d "$(readlink "$VENV_DIR")" ]; then
+    : # symlink 正常
+elif [ -d "$VENV_DIR" ] && [ ! -L "$VENV_DIR" ]; then
+    echo -e "${YELLOW}清理 ExFAT .venv，改用本機 symlink...${NC}"
     find "$VENV_DIR" -name "._*" -delete 2>/dev/null || true
+    rm -rf "$VENV_DIR"
+    mkdir -p "$LOCAL_VENV"
+    ln -s "$LOCAL_VENV" "$VENV_DIR"
+else
+    echo -e "${YELLOW}建立本機 .venv symlink...${NC}"
+    mkdir -p "$LOCAL_VENV"
+    ln -sf "$LOCAL_VENV" "$VENV_DIR"
 fi
+
+# 清除舊行程（避免 Address already in use）
+echo -e "${YELLOW}清除舊行程（port 8000/3000）...${NC}"
+lsof -ti:8000,3000 | xargs kill -9 2>/dev/null || true
+sleep 1
 
 # 啟動後端（背景）
 echo -e "${GREEN}[1/2] 啟動後端（port 8000）...${NC}"
@@ -48,8 +65,9 @@ echo ""
 
 if [ "$BACKEND_OK" = false ]; then
     echo -e "${RED}❌ 後端啟動失敗！請嘗試手動修復：${NC}"
-    echo -e "${YELLOW}  find .venv -name '._*' -delete${NC}"
-    echo -e "${YELLOW}  UV_LINK_MODE=copy uv sync${NC}"
+    echo -e "${YELLOW}  rm -rf .venv${NC}"
+    echo -e "${YELLOW}  mkdir -p ~/.venvs/visiumHD_pipeline_2 && ln -s ~/.venvs/visiumHD_pipeline_2 .venv${NC}"
+    echo -e "${YELLOW}  UV_CACHE_DIR=~/.cache/uv uv sync${NC}"
     kill "$BACKEND_PID" 2>/dev/null || true
     exit 1
 fi
