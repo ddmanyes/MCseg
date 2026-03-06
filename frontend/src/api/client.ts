@@ -47,7 +47,7 @@ export const runProseg = () => api.post('/proseg/run')
 export const getProsegStatus = () => api.get('/proseg/status')
 
 // Stage 4: Analysis
-export const runAnalysis = () => api.post('/analysis/run')
+export const runAnalysis = (params?: object) => api.post('/analysis/run', params ?? {})
 export const getAnalysisStatus = () => api.get('/analysis/status')
 export const getUmap = () => api.get('/analysis/umap')
 
