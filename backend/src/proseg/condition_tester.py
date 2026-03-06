@@ -145,6 +145,39 @@ class ConditionTester:
 
         return result
 
+    def _get_center_test_roi(
+        self, zarr_dir: Path, pixel_size_um: float
+    ) -> "Optional[Tuple[float, float, float, float]]":
+        """
+        從 zarr 讀取 nucleus label 尺寸，計算並回傳以中心為基準的子區域 fixed_roi (x, y, w, h) in pixels。
+        若 test_roi_um <= 0 或讀取失敗，回傳 None 表示使用全圖。
+        """
+        if self.test_roi_um <= 0:
+            return None
+        try:
+            import zarr as _zarr
+            z = _zarr.open(str(zarr_dir), mode="r")
+            # 支援多尺度（"labels/cellpose_nuclei/0"）或單層
+            label_node = z["labels"]["cellpose_nuclei"]
+            arr = label_node["0"] if "0" in label_node else label_node
+            shape = arr.shape  # (H, W) 或 (1, H, W)
+            H, W = shape[-2], shape[-1]
+
+            test_roi_px = max(1, int(self.test_roi_um / max(pixel_size_um, 1e-6)))
+            half = test_roi_px // 2
+            x0 = max(0, W // 2 - half)
+            y0 = max(0, H // 2 - half)
+            w = min(test_roi_px, W - x0)
+            h = min(test_roi_px, H - y0)
+            logger.info(
+                f"  🔍 子區域條件測試: {self.test_roi_um}µm → {test_roi_px}px，"
+                f"中心裁切 x={x0}, y={y0}, w={w}, h={h}（全圖 {W}×{H}）"
+            )
+            return (float(x0), float(y0), float(w), float(h))
+        except Exception as e:
+            logger.warning(f"  ⚠️  無法讀取 zarr label 尺寸，改用全圖: {e}")
+            return None
+
     def _run_proseg_minimal(self, condition: dict, work_dir: Path, zarr_dir: Path) -> dict:
         """
         執行最小化的 Proseg 測試。
@@ -184,6 +217,9 @@ class ConditionTester:
                     logger.info(f"自動探測到外部細胞質遮罩：{cm}")
                     break
 
+        # 計算中心子區域（test_roi_um 限制測試範圍，加速條件測試）
+        center_roi = self._get_center_test_roi(zarr_dir, scale_um_px)
+
         pipeline = ProsegPipeline(
             zarr_path=str(zarr_dir),
             output_dir=str(work_dir),
@@ -200,7 +236,8 @@ class ConditionTester:
             cyto_mask_path=cyto_npy,            # [新增] 自動探測的外部遮罩
             cyto_label_name="eosin_cyto",
             use_watershed=condition.get("watershed", True),
-            enforce_connectivity=condition.get("connectivity", True)
+            enforce_connectivity=condition.get("connectivity", True),
+            fixed_roi=center_roi,               # 僅測試中心 test_roi_um × test_roi_um 子區域
         )
         
         pipeline.run_full_pipeline()

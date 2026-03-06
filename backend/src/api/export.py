@@ -83,10 +83,12 @@ async def _run_xenium(config: dict, req: ExportRequest):
 
         out_dir = Path(req.output_dir) if req.output_dir else export_dir / "xenium"
 
+        roi_pixel_size_um = rois[0].get("pixel_size_um", 0.2737) if rois else 0.2737
         exporter = XeniumExporter(
             zarr_path=zarr_path if zarr_path.exists() else None,
             poly_json_path=combined_poly_path if combined_poly_path.exists() else None,
-            transcripts_csv_path=None,  # tile-level transcripts 暫不合並
+            transcripts_csv_path=None,  # tile-level transcripts 自動從 zarr 載入
+            pixel_size_um=roi_pixel_size_um,
         )
         await asyncio.get_event_loop().run_in_executor(
             None, exporter.export, h5ad_path, out_dir,
