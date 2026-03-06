@@ -40,6 +40,7 @@ from spatialdata.models import (
     ShapesModel,
     TableModel,
 )
+from spatialdata.transformations import Identity
 
 from backend.src.utils.constants import PROSEG_UM_PX, PROSEG_NM_PX
 
@@ -157,7 +158,10 @@ class XeniumExporter:
             else:
                 dask_img = da.from_zarr(img_array).transpose((2, 0, 1))
 
-            sd_image = Image2DModel.parse(dask_img, dims=("c", "y", "x"))
+            sd_image = Image2DModel.parse(
+                dask_img, dims=("c", "y", "x"),
+                transformations={"global": Identity()},
+            )
             logger.info(f"影像載入完成，shape={dask_img.shape}")
             return sd_image
 
@@ -285,7 +289,7 @@ class XeniumExporter:
             {"geometry": polygons},
             index=pd.Index(range(len(polygons)), dtype=int),
         )
-        sd_shapes = ShapesModel.parse(gdf)
+        sd_shapes = ShapesModel.parse(gdf, transformations={"global": Identity()})
         logger.info(f"ShapesModel 建立完成：{len(gdf)} 個多邊形。")
 
         return sd_shapes, sd_table, id_remap
@@ -348,7 +352,7 @@ class XeniumExporter:
             if "gene" in sample.columns:
                 parse_kwargs["feature_key"] = "gene"
 
-            sd_points = PointsModel.parse(tx_dd, sort=True, **parse_kwargs)
+            sd_points = PointsModel.parse(tx_dd, sort=True, transformations={"global": Identity()}, **parse_kwargs)
             logger.info("轉錄點 PointsModel 建立完成。")
             return sd_points
 
