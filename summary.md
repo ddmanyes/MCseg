@@ -142,3 +142,98 @@
     2. 後端 `/api/analysis/run` 新增 Pydantic 模型接收前端的參數設定。
     3. 加入 `Resolution (聚類解析度)`、`n_pcs (PCA 維度)`、`min_genes (最低基因數)`、`max_pct_mito (粒線體上限)`，並能自動即時寫回 YAML 設定檔。
     4. **實裝了額外的品質控制閘門 `min_counts` (最低 UMI 數)**：於底層預處理模組加入 `sc.pp.filter_cells(adata, min_counts)` 功能，避免僅有基因種類達標但讀值極低（深度不足）的背景微滴雜訊干擾聚類，大幅提高 Leiden 分群結果的純度！
+
+## 13. Stage 4 三區塊 UI 重構與圖表升級 (2026-03-06)
+
+### 13-1. 三區塊 UI 設計
+
+原本的 Stage 4 分析頁面為單一整合區塊，本次完全重構為三個**依序解鎖**的獨立區塊：
+
+| 區塊 | 標題 | 內容 |
+|------|------|------|
+| Block 1 | QC 前處理 | QC → normalize → HVG → PCA； 顯示小提琴圖、散佈圖、PCA Elbow |
+| Block 2 | UMAP 解析 | KNN → UMAP → Leiden，支援多組解析度同時比較；個別圖縮小為 50% 寬，Grid 全寬 |
+| Block 3 | 熱圖輸出 | 選擇解析度 → 同時產生 Heatmap + Dotplot |
+
+- Block 2 在 Block 1 完成前鎖定 (`opacity-50`)
+- Block 3 在 Block 2 完成前鎖定
+- 每次重新執行自動清空舊圖、後端快取同步清除，確保即時更新
+
+### 13-2. 後端 pipeline 新增三步驟函數
+
+- **`run_qc_step(config)`**：QC metrics → violin/scatter/PCA elbow 三張圖 → 儲存 `qc_preprocessed.h5ad`
+- **`run_umap_step(config, resolutions, n_pcs, n_neighbors, min_dist)`**：KNN → UMAP → Leiden（多解析度）→ 各解析度 PNG + Grid PNG → 儲存 `umap_computed.h5ad`
+- **`run_heatmap_step(config, resolution, n_top_genes)`**：同時產生兩張圖，回傳 `dict[str, str]`：
+  - **Heatmap**：`seaborn.clustermap`，顯示**全部 HVGs**，行（cluster）與列（基因）均有樹枝圖（`row_cluster` / `col_cluster`），cluster 數 < 2 時自動關閉對應樹枝圖
+  - **Dotplot**：`sc.pl.dotplot`，每 cluster 取 `n_top_genes` 個 marker 基因（由 `n_top_genes` 控制），點大小 = 表達比例，顏色 = 平均表達量
+
+### 13-3. 後端 API 新增 12 條路由
+
+| 路由 | 說明 |
+|------|------|
+| `POST /run_qc` | 啟動 QC 步驟 |
+| `GET /qc_status` | 查詢 QC 狀態（含磁碟恢復） |
+| `GET /qc_images` | 取得三張 QC 圖（base64） |
+| `POST /run_umap` | 啟動 UMAP |
+| `GET /umap_status` | 查詢 UMAP 狀態 |
+| `GET /umap_images` | 取得各解析度 UMAP 圖 + Grid |
+| `POST /run_heatmap` | 啟動 Heatmap + Dotplot |
+| `GET /heatmap_status` | 查詢狀態 |
+| `GET /heatmap` | 取得 `{heatmap, dotplot}` dict |
+
+所有 GET 端點均實作**磁碟 fallback**：後端 `--reload` 重啟後自動從磁碟恢復狀態，不需重跑。
+
+### 13-4. Bug 修復記錄
+
+| # | 問題 | 修復 |
+|---|------|------|
+| 1 | `n_components > min(n_samples, n_features)` | `run_pca()` 自動夾緊 `n_pcs` 上限 |
+| 2 | `pca_variance_ratio() got unexpected keyword 'ax'` | 改為直接讀 `adata.uns["pca"]["variance_ratio"]` 用 matplotlib 繪圖 |
+| 3 | 後端 `--reload` 重啟後圖表消失 | 磁碟 fallback 機制 |
+| 4 | Heatmap PNG 空白 | 原 `sc.pl.matrixplot()` 未加 `return_fig=True`，改用 `seaborn.clustermap` |
+| 5 | `clustermap` 單一 cluster 報錯 | cluster < 2 時 `row_cluster=False` |
+| 6 | 圖片重跑不即時更新 | 點擊執行時清空 state，後端執行前清空快取 |
+
+## 14. Stage 0 ROI 表單驗證 + Stage 1 細胞包細胞修復 (2026-03-06)
+
+### 14-1. Stage 0 ROI 表單靜默失敗修復
+
+- **問題**：按「新增 ROI」沒有反應——原因是 `handleAdd` 中 `!form.name || !form.tissue` 條件靜默 return，組織欄位未填時完全沒有任何提示。
+- **修復**：
+  - 新增 `formError` state
+  - 個別欄位驗證並顯示對應錯誤訊息（「請填寫名稱」/ 「請填寫組織（CRC/LUAD）」）
+  - 任何欄位變動時自動清除錯誤
+
+### 14-2. 細胞包細胞（雙輪廓）問題修復
+
+**問題根因 1：LOGIC_A 孤立像素 bug**
+
+`_merge_masks_logic_a` 替換大細胞時只覆蓋大細胞範圍內的像素，若小細胞有任何像素延伸到大細胞邊界外，這些殘留像素仍保留在 `merged` 中形成孤立的外圈細輪廓。
+
+修復：替換前先清除所有 `small_ids_in_region` 的整體像素：
+```python
+for sid in small_ids_in_region:
+    merged[merged == sid] = 0
+merged[region] = next_id
+```
+
+**問題根因 2：`merge_enclosed_cells` 判斷邏輯歷程**
+
+| 版本 | 方法 | 問題 |
+|------|------|------|
+| v1 | 1px dilation，ring 中無 0 | Cellpose 核/胞質 1-2px 間隙導致幾乎都跳過 |
+| v2 | 拓撲連通（外部背景集合） | 間隙通往外部 → 仍跳過 |
+| v3（最終） | 覆蓋率 + 四象限雙重判斷 | 能容忍間隙，且防止誤合併相鄰細胞 |
+
+**最終演算法（v3）**：
+1. 對每個細胞做 `dilation_px=6` px dilation ring
+2. 外層較大細胞在 ring 中佔比 ≥ `coverage_threshold=0.55` → 可能被包圍
+3. 再確認該外層細胞出現在**所有 4 個象限**（上左、上右、下左、下右）→ 排除只是鄰居而非包圍的情況
+4. 通過後合併
+
+**新增位置**：
+- `cellpose_runner.py`：`merge_enclosed_cells()` 函數
+- `run_segmentation()`、`_run_single_roi_segmentation()`：正式分割後呼叫
+- `segmentation.py`：`_run_preview_sync()` 預覽也同步呼叫，保持 Quick Preview 與正式結果一致
+
+**config**：`postprocessing.enable_merge_enclosed: true`（可關閉）

@@ -186,10 +186,18 @@ class Preprocessor:
 
         logger.info("執行 PCA...")
 
+        # 確保 n_pcs 不超過 min(n_obs, n_vars) - 1（svd 數學限制）
+        max_pcs = min(adata.n_obs, adata.n_vars) - 1
+        if n_pcs > max_pcs:
+            logger.warning(
+                f"n_pcs={n_pcs} 超過資料維度上限 {max_pcs}（{adata.n_obs} 細胞 × {adata.n_vars} 基因），"
+                f"自動降至 {max_pcs}"
+            )
+            n_pcs = max(1, max_pcs)
+
         # OOM 防護: 針對大型資料集跳過密集化縮放 (Dense Scaling)
         if adata.n_obs > 100000:
             logger.warning(f"資料集過大 ({adata.n_obs:,} > 100k)，跳過 sc.pp.scale 以避免記憶體不足")
-            # 確保使用 sparse solver
             sc.tl.pca(adata, n_comps=n_pcs, svd_solver='arpack')
         else:
             sc.pp.scale(adata, max_value=10)

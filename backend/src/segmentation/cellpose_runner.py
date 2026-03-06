@@ -25,6 +25,7 @@ from tqdm import tqdm
 from cellpose import models, core
 from pathlib import Path
 from skimage.segmentation import watershed
+from scipy.ndimage import binary_dilation
 
 from .macenko import MacenkoNormalizer, apply_clahe
 
@@ -131,10 +132,88 @@ def _merge_masks_logic_a(masks_small, masks_large, fragment_threshold=50):
                 significant_small.append(sid)
 
         if len(significant_small) <= 1:
+            # 清除所有含入的小細胞像素（包含延伸到大細胞外的殘留像素）
+            for sid in small_ids_in_region:
+                merged[merged == sid] = 0
             merged[region] = next_id
             next_id += 1
 
     return merged
+
+
+def merge_enclosed_cells(masks: np.ndarray,
+                         dilation_px: int = 6,
+                         coverage_threshold: float = 0.55) -> np.ndarray:
+    """
+    將被單一較大細胞大面積包圍的細胞合併到該細胞。
+
+    判斷方法（覆蓋率 + 四象限）：
+    1. 對每個細胞做 dilation_px px dilation ring
+    2. 若 ring 中同一個較大細胞佔比 >= coverage_threshold → 可能被包圍
+    3. 再確認該較大細胞出現在 ring 的所有 4 個象限（排除「只在一側的鄰居」）
+    4. 通過後合併
+
+    此方法容許 Cellpose 在細胞間留下的背景間隙（通常 < 40% ring 面積），
+    同時透過四象限檢查避免將相鄰而非包圍的細胞錯誤合併。
+    """
+    result = masks.copy()
+    struct = np.ones((3, 3), dtype=bool)  # 8-connectivity
+
+    cell_ids = np.unique(result)
+    cell_ids = cell_ids[cell_ids > 0]
+    sizes = {cid: int(np.sum(result == cid)) for cid in cell_ids}
+    cell_ids_sorted = sorted(cell_ids, key=lambda cid: sizes[cid])
+
+    n_merged = 0
+    for cid in cell_ids_sorted:
+        cell_mask = (result == cid)
+        if not cell_mask.any():
+            continue  # 已被前一輪合併
+
+        # ── dilation ring ──────────────────────────────────────────────────
+        dilated = binary_dilation(cell_mask, structure=struct, iterations=dilation_px)
+        ring = dilated & ~cell_mask
+        ring_vals = result[ring]
+        if ring_vals.size == 0:
+            continue
+
+        # ── 找出 ring 中佔比最高的細胞（可含背景）──────────────────────────
+        unique_all, counts_all = np.unique(ring_vals, return_counts=True)
+        id_to_count = dict(zip(unique_all.tolist(), counts_all.tolist()))
+
+        # 只考慮比自己大的細胞
+        cell_counts = {u: c for u, c in id_to_count.items()
+                       if u != 0 and sizes.get(int(u), 0) > sizes.get(cid, 0)}
+        if not cell_counts:
+            continue
+
+        parent = int(max(cell_counts, key=cell_counts.get))
+        coverage = cell_counts[parent] / ring_vals.size  # 含背景的覆蓋率
+        if coverage < coverage_threshold:
+            continue
+
+        # ── 四象限檢查：parent 必須出現在細胞質心的四個象限 ─────────────────
+        ys, xs = np.where(cell_mask)
+        cy, cx = float(ys.mean()), float(xs.mean())
+        parent_ring = np.zeros_like(ring, dtype=bool)
+        parent_ring[ring] = (ring_vals == parent)
+        py, px = np.where(parent_ring)
+        if py.size == 0:
+            continue
+        q1 = bool(np.any((py < cy) & (px < cx)))   # top-left
+        q2 = bool(np.any((py < cy) & (px >= cx)))  # top-right
+        q3 = bool(np.any((py >= cy) & (px < cx)))  # bottom-left
+        q4 = bool(np.any((py >= cy) & (px >= cx))) # bottom-right
+        if not (q1 and q2 and q3 and q4):
+            continue  # parent 未出現在所有象限 → 只是鄰居，非包圍
+
+        result[cell_mask] = parent
+        n_merged += 1
+        logger.debug(f"Enclosed cell {cid}({sizes[cid]}px) → {parent}({sizes[parent]}px) cov={coverage:.2f}")
+
+    if n_merged:
+        logger.info(f"merge_enclosed_cells: {n_merged} cells merged")
+    return result
 
 
 def run_segmentation(config: dict):
@@ -297,6 +376,11 @@ def run_segmentation(config: dict):
                 final_masks[y0+inner_y0:y0+inner_y1, x0+inner_x0:x0+inner_x1][inner_mask == old_id] = global_id
 
     logger.info(f"Total cells: {global_id}")
+
+    # 合併被完全封閉在其他細胞內的子細胞
+    if pp_config.get("enable_merge_enclosed", True):
+        logger.info("Running merge_enclosed_cells...")
+        final_masks = merge_enclosed_cells(final_masks)
 
     # ⚠️ 注意：Eosin Watershed 不修改 final_masks（分割結果應保持純 LOGIC_A 輸出）
     # cyto_mask.npy 另外在下方獨立計算，供 Proseg 使用
@@ -490,6 +574,11 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
                 ][inner_mask == old_id] = global_id
 
     logger.info(f"Total cells: {global_id}")
+
+    # 合併被完全封閉在其他細胞內的子細胞
+    if pp_config.get("enable_merge_enclosed", True):
+        logger.info("Running merge_enclosed_cells...")
+        final_masks = merge_enclosed_cells(final_masks)
 
     # ── Flow 視覺化（小尺寸 dP），用於分割品質檢查 ----------------------------------
     if flow_canvas is not None:

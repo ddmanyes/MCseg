@@ -46,10 +46,25 @@ export const getConditionThumbnail = (idx: number) => api.get(`/conditions/thumb
 export const runProseg = () => api.post('/proseg/run')
 export const getProsegStatus = () => api.get('/proseg/status')
 
-// Stage 4: Analysis
+// Stage 4: Analysis (舊版整合執行)
 export const runAnalysis = (params?: object) => api.post('/analysis/run', params ?? {})
 export const getAnalysisStatus = () => api.get('/analysis/status')
 export const getUmap = () => api.get('/analysis/umap')
+
+// Stage 4: Step 1 — QC 前處理
+export const runQC = (params?: object) => api.post('/analysis/run_qc', params ?? {})
+export const getQCStatus = () => api.get('/analysis/qc_status')
+export const getQCImages = () => api.get('/analysis/qc_images')
+
+// Stage 4: Step 2 — UMAP 多解析度
+export const runUMAPExplore = (params?: object) => api.post('/analysis/run_umap', params ?? {})
+export const getUMAPExploreStatus = () => api.get('/analysis/umap_status')
+export const getUMAPImages = () => api.get('/analysis/umap_images')
+
+// Stage 4: Step 3 — Heatmap
+export const runHeatmap = (params: object) => api.post('/analysis/run_heatmap', params)
+export const getHeatmapStatus = () => api.get('/analysis/heatmap_status')
+export const getHeatmapImage = () => api.get('/analysis/heatmap')
 
 // Stage 5: Export
 export const exportXenium = (body: object) => api.post('/export/xenium', body)

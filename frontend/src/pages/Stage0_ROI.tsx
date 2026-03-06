@@ -14,6 +14,7 @@ export default function Stage0_ROI() {
   const stage = stages['roi']
   const { refetch: refetchStatus } = useStageStatus('roi', getRoiStatus, 2000)
   const [form, setForm] = useState<Partial<RoiDefinition>>({ pixel_size_um: 0.2737 })
+  const [formError, setFormError] = useState<string | null>(null)
 
   useEffect(() => {
     listRois().then(r => setRois(r.data.data ?? []))
@@ -30,7 +31,9 @@ export default function Stage0_ROI() {
   }
 
   const handleAdd = async () => {
-    if (!form.name || !form.tissue) return
+    if (!form.name) { setFormError('請填寫名稱'); return }
+    if (!form.tissue) { setFormError('請填寫組織（CRC/LUAD）'); return }
+    setFormError(null)
     await addRoi(form as RoiDefinition)
     const updated = await listRois()
     setRois(updated.data.data ?? [])
@@ -93,10 +96,13 @@ export default function Stage0_ROI() {
                 <input
                   type={type as string}
                   value={(form as any)[key] ?? ''}
-                  onChange={e => setForm(f => ({
-                    ...f,
-                    [key]: type === 'number' ? Number(e.target.value) : e.target.value,
-                  }))}
+                  onChange={e => {
+                    setFormError(null)
+                    setForm(f => ({
+                      ...f,
+                      [key]: type === 'number' ? Number(e.target.value) : e.target.value,
+                    }))
+                  }}
                   className="w-full mt-1 px-2 py-1.5 bg-surface border border-surface-border rounded text-sm text-gray-200 focus:border-primary focus:outline-none"
                 />
               </div>
@@ -108,6 +114,7 @@ export default function Stage0_ROI() {
           >
             + 新增 ROI
           </button>
+          {formError && <p className="mt-2 text-xs text-red-400">{formError}</p>}
         </div>
       </StageCard>
 

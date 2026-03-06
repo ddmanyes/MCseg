@@ -17,12 +17,12 @@ paths:
   figure_dir: figures
   proseg_bin: ~/.cargo/bin/proseg
 rois:
-- name: text
-  tissue: crc
-  x: 47630
-  y: 16725
-  width_px: 686
-  height_px: 398
+- name: test
+  tissue: CRC
+  x: 48128
+  y: 12657
+  width_px: 1491
+  height_px: 1210
   pixel_size_um: 0.2737
 segmentation:
   cellpose_model:
@@ -39,6 +39,7 @@ segmentation:
   postprocessing:
     enable_eosin_watershed: true
     eosin_bg_threshold: 80
+    enable_merge_enclosed: true
   tiling:
     block_size: 2048
     overlap: 256
@@ -110,11 +111,12 @@ proseg:
 analysis:
   preprocessing:
     cellular:
-      min_genes: 20
+      min_genes: 10
       max_genes: 8000
       min_cells: 3
-      max_pct_mito: 20
+      max_pct_mito: 20.0
       mito_prefix: MT-
+      min_counts: 5
     normalization:
       target_sum: 10000
       method: log1p
@@ -147,23 +149,23 @@ marker_genes:
     - MUC5AC
     - TFF3
     - KRT20
-    description: "CRC \u8154\u9762\uFF08luminal\uFF09\u7D30\u80DE"
+    description: CRC 腔面（luminal）細胞
   CRC_tumor_basal:
     genes:
     - CDH1
     - EPCAM
     - KRT8
     - KRT18
-    description: "CRC \u57FA\u5E95\uFF08basal\uFF09/\u4E0A\u76AE\u6A19\u8A18"
+    description: CRC 基底（basal）/上皮標記
   CRC_endothelial:
     genes:
     - PECAM1
     - CD34
     - VWF
-    description: "\u5167\u76AE\u7D30\u80DE"
+    description: 內皮細胞
   CRC_smooth_muscle:
     genes:
     - ACTA2
     - MYH11
     - TAGLN
-    description: "\u5E73\u6ED1\u808C\u7D30\u80DE"
+    description: 平滑肌細胞

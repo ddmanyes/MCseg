@@ -157,8 +157,13 @@ def _run_preview_sync(he_crop_path: Path, req: PreviewRequest, config: dict) -> 
                                      flow_threshold=flow_thresh, cellprob_threshold=cellprob_thresh)
     masks_l, _, _ = model.eval(input_img, diameter=dia_large,
                                flow_threshold=flow_thresh, cellprob_threshold=cellprob_thresh)
-    from backend.src.segmentation.cellpose_runner import _merge_masks_logic_a
+    from backend.src.segmentation.cellpose_runner import _merge_masks_logic_a, merge_enclosed_cells
     merged = _merge_masks_logic_a(masks_s, masks_l, frag_thresh)
+
+    # 合併被其他細胞完全包圍的子細胞（與正式分割流程一致）
+    pp = seg_cfg.get("postprocessing", {})
+    if pp.get("enable_merge_enclosed", True):
+        merged = merge_enclosed_cells(merged)
 
     # ── 疊圖（H&E + 綠色細胞邊界）─────────────────────────────────────────────
     overlay = patch[..., :3].copy() if patch.ndim == 3 else np.stack([patch] * 3, axis=-1)
