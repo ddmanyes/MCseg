@@ -16,6 +16,7 @@ export default function Stage4_Analysis() {
   // Parameters state
   const [params, setParams] = useState({
     min_genes: 20,
+    min_counts: 100,
     max_genes: 8000,
     min_cells: 3,
     max_pct_mito: 20,
@@ -32,6 +33,7 @@ export default function Stage4_Analysis() {
         const ana = res.data.data.analysis
         setParams({
           min_genes: ana.preprocessing?.cellular?.min_genes ?? 20,
+          min_counts: ana.preprocessing?.cellular?.min_counts ?? 100,
           max_genes: ana.preprocessing?.cellular?.max_genes ?? 8000,
           min_cells: ana.preprocessing?.cellular?.min_cells ?? 3,
           max_pct_mito: ana.preprocessing?.cellular?.max_pct_mito ?? 20,
@@ -66,7 +68,7 @@ export default function Stage4_Analysis() {
         </div>
 
         {/* 參數設定區塊 */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 bg-surface-darker p-4 rounded-lg border border-surface-border">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4 bg-surface-darker p-4 rounded-lg border border-surface-border">
           <div>
             <label className="block text-xs text-gray-400 mb-1">聚類解析度 (Resolution)</label>
             <input
@@ -83,6 +85,15 @@ export default function Stage4_Analysis() {
               className="w-full bg-surface-highlight border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary border"
               value={params.n_pcs}
               onChange={e => setParams({ ...params, n_pcs: parseInt(e.target.value) || 0 })}
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">最低 UMI 數 (min_counts)</label>
+            <input
+              type="number"
+              className="w-full bg-surface-highlight border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary border"
+              value={params.min_counts}
+              onChange={e => setParams({ ...params, min_counts: parseInt(e.target.value) || 0 })}
             />
           </div>
           <div>

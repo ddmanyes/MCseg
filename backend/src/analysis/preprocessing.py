@@ -65,16 +65,21 @@ class Preprocessor:
 
         params = qc_params if qc_params else self.params.get("cellular", {})
 
-        min_genes = params.get("min_genes", 200)
+        min_genes = params.get("min_genes", 20)
         max_genes = params.get("max_genes", 8000)
         max_pct_mito = params.get("max_pct_mito", 20)
+        min_counts = params.get("min_counts")
 
         logger.info("過濾細胞...")
-        logger.info(f"  - 參數: min_genes={min_genes}, max_genes={max_genes}, max_pct_mito={max_pct_mito}")
+        logger.info(f"  - 參數: min_genes={min_genes}, max_genes={max_genes}, max_pct_mito={max_pct_mito}, min_counts={min_counts}")
         logger.info(f"  - 過濾前: {n_before:,} 細胞")
 
         # 基因數過濾
         sc.pp.filter_cells(adata, min_genes=min_genes)
+
+        # UMI 總數過濾
+        if min_counts is not None:
+            sc.pp.filter_cells(adata, min_counts=min_counts)
 
         # 最大基因數過濾 (排除 doublets)
         if max_genes:
