@@ -55,6 +55,7 @@ export const getUmap = () => api.get('/analysis/umap')
 export const runQC = (params?: object) => api.post('/analysis/run_qc', params ?? {})
 export const getQCStatus = () => api.get('/analysis/qc_status')
 export const getQCImages = () => api.get('/analysis/qc_images')
+export const getOverlayHdUrl = (name: 'pre_qc' | 'post_qc') => `/api/analysis/overlay_hd/${name}`
 
 // Stage 4: Step 2 — UMAP 多解析度
 export const runUMAPExplore = (params?: object) => api.post('/analysis/run_umap', params ?? {})

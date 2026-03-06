@@ -429,3 +429,64 @@ logger.info(f"sdata elements: images={list(sdata.images.keys())}, shapes={list(s
 .venv/lib/python3.12/site-packages/spatialdata_xenium_explorer/
 .venv/lib/python3.12/site-packages/spatialdata/
 ```
+
+---
+
+## 18. Stage 2.5 縮圖升級 + 空腔幽靈細胞三個根本問題定位 (2026-03-06)
+
+### 18-1. Stage 2.5 條件測試縮圖升級為 400×400
+
+**需求**：原縮圖尺寸 686×398（scaled down）太小，難以觀察細胞輪廓細節。
+
+**修改**（`condition_tester.py`，commit `090104e`）：
+
+| 檔案 | 尺寸 | 方式 |
+|------|------|------|
+| `preview.jpg` | 400×400 | 全 ROI 等比縮放至 400×400 |
+| `preview_hd.jpg` | 400×400 | 原始解析度正中心裁切 400×400 px，2px 綠色輪廓 |
+
+`preview_hd.jpg` 生成邏輯：
+1. 在原始 HE 影像上直接繪製 2px 綠色多邊形（不縮放）
+2. 取影像正中心 400×400 crop（`y0 = h//2 - 200, x0 = w//2 - 200`）
+3. 尺寸不足時以黑色 canvas padding
+4. 右下角疊加條件標籤文字（`FONT_HERSHEY_SIMPLEX, 0.7`）
+5. JPEG quality 95 輸出
+
+---
+
+### 18-2. 空腔區域幽靈細胞三個根本問題（已定位，尚未修復）
+
+**問題現象**：`condition_comparison.png` 右下角白色空腔區域仍顯示綠色細胞輪廓，即使 eosin 遮罩理論上應覆蓋該區域。
+
+**調查方法**：
+- 讀取 `cyto_mask.npy`（1210×1491，87% 組織）並疊加 HE 影像（`he_cyto_overlay.png`）
+- 確認 `eosin_cyto` zarr label 與 `cyto_mask.npy` 一致，遮罩本身正確
+
+**定位出的三個 Bug（均在 `backend/src/proseg/pipeline.py`）**：
+
+#### Bug 1：`_clip_polygons_with_cyto` 使用 `RETR_EXTERNAL`，無法感知孔洞
+
+| 項目 | 說明 |
+|------|------|
+| 問題 | `cv2.findContours(..., cv2.RETR_EXTERNAL)` 只取最外層輪廓，vessel lumen（空腔）是「洞」而非「外輪廓」，完全被忽略 |
+| 錯誤邏輯 | 建立 `cyto_union`（組織外輪廓） → 與細胞多邊形取 `intersection` → 空腔內細胞因在組織外輪廓「內部」而通過 |
+| 正確修法 | 找背景（black=0）輪廓建立 `bg_union` → 用 `cell_poly.difference(bg_union)` 削去背景區域 → 加 1px erosion 避免切除 1-2px 邊緣雜訊 |
+
+#### Bug 2：Smart Resume 略過削切步驟
+
+| 項目 | 說明 |
+|------|------|
+| 問題 | `run_proseg()` 在所有輸出檔案已存在時提前 return（L657），跳過 L712-714 的 `_clip_polygons_with_cyto` 呼叫 |
+| 正確修法 | 在 Smart Resume 早返回前補充呼叫削切函數 |
+
+#### Bug 3：`proseg_results.json` 為 gzip 壓縮格式
+
+| 項目 | 說明 |
+|------|------|
+| 問題 | 以 `open(..., 'r', encoding='utf-8')` 讀取 → `UnicodeDecodeError: 0x8b at position 1` |
+| 偵測 | magic bytes `\x1f\x8b` 代表 gzip |
+| 正確修法 | 偵測 magic bytes → 以 `gzip.open(..., 'rt', encoding='utf-8')` 讀取 → 寫出時同樣以 gzip 寫回 |
+
+**最終決定**：三個 bug 均已確認，但因用戶決定以 `git restore` 返回先前版本，**所有 `pipeline.py` 修改均已還原**。`condition_tester.py` 的縮圖升級保留（commit `090104e`）。
+
+**後續**：若需重新修復，三個問題的修法均已明確記錄於此，可直接套用。

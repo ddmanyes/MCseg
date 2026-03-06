@@ -111,10 +111,10 @@ proseg:
 analysis:
   preprocessing:
     cellular:
-      min_genes: 10
+      min_genes: 20
       max_genes: 8000
-      min_cells: 3
-      max_pct_mito: 20.0
+      min_cells: 5
+      max_pct_mito: 80.0
       mito_prefix: MT-
       min_counts: 5
     normalization:

@@ -7,7 +7,7 @@ import {
   runQC, getQCStatus, getQCImages,
   runUMAPExplore, getUMAPExploreStatus, getUMAPImages,
   runHeatmap, getHeatmapStatus, getHeatmapImage,
-  getConfig,
+  getConfig, getOverlayHdUrl,
 } from '../api/client'
 
 // ── 小工具 ────────────────────────────────────────────────────────
@@ -157,9 +157,9 @@ export default function Stage4_Analysis() {
 
   // ── QC 參數 ──
   const [qcParams, setQcParams] = useState({
-    min_genes: 20, max_genes: 8000,
-    min_counts: 100, min_cells: 3,
-    max_pct_mito: 20.0, n_top_genes: 2000, n_pcs: 30,
+    min_genes: 10, max_genes: 8000,
+    min_counts: 5, min_cells: 3,
+    max_pct_mito: 80.0, n_top_genes: 2000, n_pcs: 30,
   })
 
   // ── UMAP 參數 ──
@@ -330,14 +330,42 @@ export default function Stage4_Analysis() {
 
         {/* QC 圖表 */}
         {Object.keys(qcImages).length > 0 && (
-          <ChartView
-            images={qcImages}
-            tabs={[
-              { key: 'violin',  label: '小提琴圖 (QC 分布)' },
-              { key: 'scatter', label: '散佈圖 (UMI vs Genes)' },
-              { key: 'elbow',   label: 'PCA Elbow' },
-            ]}
-          />
+          <>
+            <ChartView
+              images={qcImages}
+              tabs={[
+                { key: 'violin',  label: '小提琴圖 (QC 分布)' },
+                { key: 'scatter', label: '散佈圖 (UMI vs Genes)' },
+                { key: 'elbow',   label: 'PCA Elbow' },
+                { key: 'pre_qc',  label: 'H&E 疊圖 (QC 前)' },
+                { key: 'post_qc', label: 'H&E 疊圖 (QC 後)' },
+              ]}
+            />
+            {/* HD 存檔下載 */}
+            {(qcImages['pre_qc'] || qcImages['post_qc']) && (
+              <div className="mt-2 flex gap-3">
+                <span className="text-xs text-gray-400 self-center">HD 存檔 (300 DPI)：</span>
+                {qcImages['pre_qc'] && (
+                  <a
+                    href={getOverlayHdUrl('pre_qc')}
+                    download="overlay_pre_qc_hd.png"
+                    className="text-xs text-brand-primary hover:underline"
+                  >
+                    下載 Pre-QC HD
+                  </a>
+                )}
+                {qcImages['post_qc'] && (
+                  <a
+                    href={getOverlayHdUrl('post_qc')}
+                    download="overlay_post_qc_hd.png"
+                    className="text-xs text-brand-primary hover:underline"
+                  >
+                    下載 Post-QC HD
+                  </a>
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
 

@@ -32,6 +32,89 @@ def _fix_log1p(adata: ad.AnnData) -> None:
             adata.uns["log1p"].pop("base", None)
 
 
+# ─────────────────────── helpers ──────────────────────────────────
+
+def _generate_overlay_images(
+    pre_spatial: "np.ndarray",
+    pre_obs_names: list,
+    post_obs_names_set: set,
+    he_path: Path,
+    fig_dir: Path,
+    pixel_size_um: float,
+) -> dict[str, str]:
+    """在 H&E 底圖上疊加細胞重心，產生 QC 前後比較圖。
+
+    Returns
+    -------
+    dict  {"pre_qc": base64_preview_png, "post_qc": base64_preview_png}
+    HD 版本（300 DPI）同時存檔至 fig_dir，但不放入回傳值（供下載）。
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import tifffile
+    import numpy as np
+
+    figures: dict[str, str] = {}
+
+    if not he_path.exists():
+        logger.warning(f"找不到 H&E 影像：{he_path}，跳過疊圖生成")
+        return figures
+
+    he = tifffile.imread(str(he_path))
+    H, W = he.shape[:2]
+
+    # µm → HE 像素
+    x_px = pre_spatial[:, 0] / pixel_size_um
+    y_px = pre_spatial[:, 1] / pixel_size_um
+
+    kept_mask    = np.array([n in post_obs_names_set for n in pre_obs_names])
+    removed_mask = ~kept_mask
+    n_total  = len(pre_obs_names)
+    n_kept   = int(kept_mask.sum())
+    n_removed = int(removed_mask.sum())
+
+    # marker size：preview dpi=150 → s=12（≈4px radius），HD dpi=300 → s=3（≈2pt）
+    for dpi, suffix, s in [(150, "", 12), (300, "_hd", 3)]:
+        figsize = (W / dpi, H / dpi)
+
+        # ── Pre-QC overlay ──
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.imshow(he)
+        ax.scatter(x_px, y_px, s=s, c="cyan", alpha=0.6, linewidths=0,
+                   label=f"All cells ({n_total:,})")
+        ax.set_title(f"Pre-QC  ·  {n_total:,} cells", fontsize=9)
+        ax.axis("off")
+        ax.legend(loc="upper right", fontsize=7, markerscale=2, framealpha=0.5)
+        path = fig_dir / f"overlay_pre_qc{suffix}.png"
+        fig.savefig(str(path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
+        plt.close(fig)
+        if not suffix:
+            figures["pre_qc"] = _encode_image(path)
+        logger.info(f"已儲存 {path.name}")
+
+        # ── Post-QC overlay（kept=綠，removed=紅）──
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.imshow(he)
+        if removed_mask.any():
+            ax.scatter(x_px[removed_mask], y_px[removed_mask], s=s, c="red",
+                       alpha=0.5, linewidths=0, label=f"Removed ({n_removed:,})")
+        ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="lime",
+                   alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
+        ax.set_title(
+            f"Post-QC  ·  kept {n_kept:,} / removed {n_removed:,}", fontsize=9)
+        ax.axis("off")
+        ax.legend(loc="upper right", fontsize=7, markerscale=2, framealpha=0.5)
+        path = fig_dir / f"overlay_post_qc{suffix}.png"
+        fig.savefig(str(path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
+        plt.close(fig)
+        if not suffix:
+            figures["post_qc"] = _encode_image(path)
+        logger.info(f"已儲存 {path.name}")
+
+    return figures
+
+
 # ─────────────────────── Step 1: QC + PCA ─────────────────────────
 
 def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
@@ -108,6 +191,11 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
                 ax.axhline(val, color=color, linestyle="--", linewidth=1.2, alpha=0.8, label=label)
             if thresholds.get(key):
                 ax.legend(fontsize=8)
+            # 鎖定 y 軸：下限=0，上限夾至 99th percentile × 1.5
+            data_99 = float(adata.obs[key].quantile(0.99))
+            _, y_top = ax.get_ylim()
+            new_top = data_99 * 1.5 if y_top > data_99 * 3 else y_top
+            ax.set_ylim(bottom=0, top=new_top)
         plt.tight_layout()
         violin_path = fig_dir / "qc_violin.png"
         fig.savefig(str(violin_path), dpi=150, bbox_inches="tight")
@@ -129,6 +217,10 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
         logger.info("已儲存 qc_scatter.png")
 
     # ── 4. 過濾 + normalize + HVG + PCA ──
+    # 過濾前保存空間資訊，供疊圖比較使用
+    _pre_obs_names = list(adata.obs_names)
+    _pre_spatial   = adata.obsm["spatial"].copy() if "spatial" in adata.obsm else None
+
     adata = preprocessor.filter_cells(adata, qc_params)
     adata = preprocessor.filter_genes(adata, qc_params)
 
@@ -162,7 +254,17 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
         figures["elbow"] = _encode_image(elbow_path)
         logger.info("已儲存 pca_elbow.png")
 
-    # ── 6. 儲存前處理結果 ──
+    # ── 6. 疊圖（H&E + 細胞重心，QC 前後比較） ──
+    if _pre_spatial is not None:
+        he_path = out_base / roi_name / "he_crop.tif"
+        pixel_size_um = config.get("rois", [{}])[0].get("pixel_size_um", 0.2737)
+        overlay_figs = _generate_overlay_images(
+            _pre_spatial, _pre_obs_names, set(adata.obs_names),
+            he_path, fig_dir, pixel_size_um,
+        )
+        figures.update(overlay_figs)
+
+    # ── 7. 儲存前處理結果 ──
     _fix_log1p(adata)
     qc_h5ad = output_dir / "qc_preprocessed.h5ad"
     adata.write_h5ad(str(qc_h5ad))

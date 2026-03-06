@@ -4,6 +4,7 @@ import base64
 import logging
 from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -167,15 +168,32 @@ async def get_qc_images():
         try:
             fig_dir = _get_fig_dir()
             _qc_images = _load_disk_images([
-                ("violin",  fig_dir / "qc_violin.png"),
-                ("scatter", fig_dir / "qc_scatter.png"),
-                ("elbow",   fig_dir / "pca_elbow.png"),
+                ("violin",   fig_dir / "qc_violin.png"),
+                ("scatter",  fig_dir / "qc_scatter.png"),
+                ("elbow",    fig_dir / "pca_elbow.png"),
+                ("pre_qc",   fig_dir / "overlay_pre_qc.png"),
+                ("post_qc",  fig_dir / "overlay_post_qc.png"),
             ])
         except Exception:
             pass
     if not _qc_images:
         return {"status": "error", "message": "QC 圖尚未產生"}
     return {"status": "ok", "data": _qc_images}
+
+
+@router.get("/overlay_hd/{name}")
+async def download_overlay_hd(name: str):
+    """下載 HD 疊圖（300 DPI）。name = pre_qc | post_qc"""
+    allowed = {"pre_qc": "overlay_pre_qc_hd.png", "post_qc": "overlay_post_qc_hd.png"}
+    if name not in allowed:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"未知圖名：{name}")
+    fig_dir = _get_fig_dir()
+    path = fig_dir / allowed[name]
+    if not path.exists():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="HD 疊圖尚未產生，請先執行 QC")
+    return FileResponse(str(path), media_type="image/png", filename=allowed[name])
 
 
 async def _run_qc(config: dict):
