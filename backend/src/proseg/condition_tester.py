@@ -298,8 +298,8 @@ class ConditionTester:
             polygons = self._load_proseg_polygons_px(cond_dir, orig_w, orig_h)
 
             # 等比例縮放 H&E 至顯示尺寸
-            DISPLAY_W = 686
-            DISPLAY_H = 398
+            DISPLAY_W = 400
+            DISPLAY_H = 400
             scale_x = DISPLAY_W / max(orig_w, 1)
             scale_y = DISPLAY_H / max(orig_h, 1)
             he_disp = cv2.resize(he_img.astype(np.uint8), (DISPLAY_W, DISPLAY_H))
@@ -330,6 +330,35 @@ class ConditionTester:
             bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
             cv2.imwrite(str(cond_dir / "preview.jpg"), bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
             logger.debug(f"縮圖已儲存：{cond_dir / 'preview.jpg'}")
+
+            # 額外儲存固定 400×400 置中裁切高畫質版本（供放大觀察）
+            HD = 400
+            he_hd = he_img.astype(np.uint8).copy()
+            if polygons:
+                for pts in polygons:
+                    cv2.polylines(he_hd, [pts.reshape(-1, 1, 2)], True, (0, 230, 90), 2)
+            # 置中裁切 500×500（若原圖不足則先 pad）
+            cy_c, cx_c = orig_h // 2, orig_w // 2
+            y0_c = max(0, cy_c - HD // 2)
+            x0_c = max(0, cx_c - HD // 2)
+            y1_c = min(orig_h, y0_c + HD)
+            x1_c = min(orig_w, x0_c + HD)
+            crop_hd = he_hd[y0_c:y1_c, x0_c:x1_c]
+            # 若裁到邊界不足 400 則 pad 黑邊
+            if crop_hd.shape[0] != HD or crop_hd.shape[1] != HD:
+                canvas = np.zeros((HD, HD, 3), dtype=np.uint8)
+                ch, cw = crop_hd.shape[:2]
+                canvas[:ch, :cw] = crop_hd
+                crop_hd = canvas
+            n_hd = metrics.get("n_cells", 0)
+            g_hd = metrics.get("median_genes", 0)
+            label_hd = condition.get("label", "")
+            txt_hd = f"{label_hd}  Cells:{n_hd}  Genes:{g_hd:.0f}"
+            cv2.putText(crop_hd, txt_hd, (8, HD - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 180), 2, cv2.LINE_AA)
+            bgr_hd = cv2.cvtColor(crop_hd, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(str(cond_dir / "preview_hd.jpg"), bgr_hd, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            logger.debug(f"HD 縮圖已儲存：{cond_dir / 'preview_hd.jpg'} (400×400 置中裁切)")
         except Exception as e:
             logger.warning(f"縮圖生成失敗（非致命）：{e}")
             import traceback
