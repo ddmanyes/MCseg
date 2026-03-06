@@ -54,6 +54,7 @@ def run_tiled_proseg(config: dict) -> None:
         
     for roi in rois:
         roi_name = roi["name"]
+        roi_out_dir = out_base / roi_name
         
         # Override the global scale with the ROI-specific scale if available.
         # This prevents coordinates shifting between um and px if they differ.

@@ -2,11 +2,11 @@
   "node_type": "array",
   "zarr_format": 2,
   "shape": [
-    211,
+    25,
     2
   ],
   "chunks": [
-    211,
+    25,
     1
   ],
   "dtype": "<f4",

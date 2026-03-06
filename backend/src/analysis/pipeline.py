@@ -32,15 +32,16 @@ def run_analysis_pipeline(config: dict[str, Any]) -> ad.AnnData:
     analysis_cfg = config.get("analysis", {})
 
     # 確定輸入 h5ad（Proseg 輸出）
-    proseg_dir = resolve_path(paths["proseg_dir"])
-    input_h5ad = proseg_dir / "processed_proseg_cyto.h5ad"
+    out_base = resolve_path(paths["output_dir"]) / "roi"
+    roi_name = config.get("rois", [{"name": "text"}])[0].get("name", "text")
+    input_h5ad = out_base / roi_name / "proseg_cells.h5ad"
 
     if not input_h5ad.exists():
         raise FileNotFoundError(f"找不到 Proseg 輸出：{input_h5ad}")
 
     logger.info(f"載入資料：{input_h5ad}")
     adata = sc.read_h5ad(str(input_h5ad))
-    adata.uns["dataset_name"] = "proseg_cyto"
+    adata.uns["dataset_name"] = "proseg_cells"
     logger.info(f"  {adata.n_obs:,} 細胞, {adata.n_vars:,} 基因")
 
     # 預處理
