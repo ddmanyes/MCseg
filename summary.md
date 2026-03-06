@@ -119,3 +119,12 @@
 - **問題二（梯田狀/鋸齒狀交界）**：即便座標對齊，依然觀察到細胞與細胞之間的交界完全沒有空隙，且呈現方塊梯田狀的「互咬」。
   - **根本原因**：在高密度的空間中，未分配的游離 RNA 掉在兩個細胞的極狹窄縫隙（1~2 micron）間。Proseg MCMC 的 `Space-Filling` 特性會逼迫模型盡可能「吞噬並瓜分」所有的公海 Voxel（即使距離很遠），導致細胞外框長出梯田狀的觸手。
   - **解法**：降低 MCMC 的爭奪空間！將 `config/pipeline.yaml` 的預設 `samples` 迭代次數從 200 大幅下調至 **50** (recorded_samples=20)，且提升 `compactness` (0.06 ~ 0.1)。結合啟用 `--enforce-connectivity`，讓 Proseg 在確認完核心領域與 Watershed 邊緣後提早結束運算，遏止了無限膨脹的細胞膜觸手。
+
+## 11. 最終空腔幽靈細胞清除與幾何削切 (2026-03-06)
+
+- **問題一（FastAPI 顯示崩潰 NaN Error）**：執行參數掃描時，後端爆出 `ValueError: Out of range float values are not JSON compliant: nan` 造成 500 Server Error。
+  - **根本原因**：參數掃描計算面積變異係數或失敗時傳遞了 `float("nan")`。`nan` 在 Python 可行，但無法被 `json.dumps()` 轉換導致後端全毀。
+  - **解法**：將 `condition_tester.py` 強塞預估值的 `float("nan")` 安全轉換為 `0.0`。
+- **問題二（細胞質邊界被突圍，綠色網格瘋狂擴張至空白處）**：雖然修復了 Zarr 容錯讀取，讓 `eosin_cyto` 實體防護牆成功傳給管線濾掉外部游離點，但 Proseg 的原罪（Space-Filling Voronoi 特性）使得就算沒有基因，它依然會強制把算好的細胞多邊形**「無限往外長」**，填滿整個畫布，長出蜘蛛網般的觸手跑到完全沒有組織的背景上。
+  - **終極解法（Shapely Geometric Clipping 削切法）**：在 `pipeline.py` (Stage 3) 放棄依賴 Proseg 去學習邊緣，而是在它運算完後**追加一道具毀滅性的後製裁剪工序** `_clip_polygons_with_cyto`。利用 OpenCV 將 `eosin_cyto` 轉化成 `shapely.geometry.Polygon`。當 Proseg 產出細胞 GeoJSON 後，將組織防護圖當成剪刀與核邊界做幾何交集 (`intersection`)。
+  - **效果**：所有跨越雷池的過長細胞膜，立刻如同切蛋糕般完美被沿著 Eosin 確切輪廓截斷於組織內部；而所有完全掉在純背景上的「虛構幽靈細胞」則因交集為空而被整顆剔除。成功確保了最高的視覺與組織擬真效果！

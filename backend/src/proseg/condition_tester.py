@@ -55,7 +55,7 @@ def _compute_metrics(adata) -> dict:
                 metrics["cell_area_cv"] = float(areas.std() / areas.mean())
             break
     else:
-        metrics["cell_area_cv"] = float("nan")
+        metrics["cell_area_cv"] = 0.0
 
     return metrics
 
@@ -240,7 +240,7 @@ class ConditionTester:
             "median_genes":      median_genes,
             "median_counts":     median_counts,
             "fraction_assigned": frac,
-            "cell_area_cv":      float("nan"),
+            "cell_area_cv":      0.0,
         }
 
 

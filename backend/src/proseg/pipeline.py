@@ -429,6 +429,9 @@ class ProsegPipeline:
                 dilated_mask,
                 0
             ).astype(np.int32)
+            
+            # 儲存供之後 Polygon 物理邊界裁剪 (post-processing)
+            self._cyto_constraint = cyto_constraint
 
             # 統計約束效果
             dilated_cells = len(np.unique(dilated_mask)) - 1
@@ -706,6 +709,10 @@ class ProsegPipeline:
                     raise FileNotFoundError(f"Proseg 輸出缺少: {name} ({path})")
                 logger.debug(f"  - {name}: {path}")
 
+            # 裁剪超出細胞質空白區域的多邊形 (如果 cyto mask 存在)
+            if hasattr(self, '_cyto_constraint') and self._cyto_constraint is not None:
+                self._clip_polygons_with_cyto(outputs['polygons'])
+
             self.proseg_results = outputs
             return outputs
 
@@ -713,6 +720,107 @@ class ProsegPipeline:
             logger.error(f"❌ Proseg 執行失敗！")
             logger.error(f"錯誤訊息: {e.stderr}")
             raise
+
+    def _clip_polygons_with_cyto(self, json_path: Path) -> None:
+        """
+        使用 cyto_constraint (影像像素陣列) 裁剪 Proseg 輸出的 GeoJSON 多邊形。
+        強制切斷所有不合理延伸到組織外空腔的「虛假邊界」。
+        """
+        if not json_path.exists():
+            return
+            
+        logger.info("✂️ 開始進行 Polygon Cyto 實體邊界精確裁剪...")
+        import json
+        import cv2
+        import numpy as np
+        from shapely.geometry import shape, mapping, Polygon, MultiPolygon
+        
+        # 1. 將 cyto_constraint 轉換為 um 坐標系的 Shapely Polygon
+        # 先做輕微膨脹以防止內部細碎破洞影響裁剪 (3 px)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        mask_binary = (self._cyto_constraint > 0).astype(np.uint8)
+        mask_closed = cv2.morphologyEx(mask_binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+        
+        contours, _ = cv2.findContours(mask_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        cyto_polys = []
+        for cnt in contours:
+            if len(cnt) >= 3:
+                # cv2 contour is (N, 1, 2)
+                pts = cnt.reshape(-1, 2).astype(np.float64)
+                # Convert pixel to um (multiply by current ROI scale)
+                pts[:, 0] *= self.coordinate_scale
+                pts[:, 1] *= self.coordinate_scale
+                try:
+                    poly = Polygon(pts)
+                    if poly.is_valid:
+                        cyto_polys.append(poly)
+                    else:
+                        poly = poly.buffer(0)
+                        if poly.is_valid:
+                            cyto_polys.append(poly)
+                except Exception:
+                    pass
+                    
+        if not cyto_polys:
+            logger.warning("  ⚠️ 找不到任何有效的 Cyto 遮罩輪廓，跳過裁剪")
+            return
+            
+        from shapely.ops import unary_union
+        cyto_union = unary_union(cyto_polys)
+        
+        # 2. 讀寫 GeoJSON
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            clipped_count = 0
+            empty_count = 0
+            new_features = []
+            
+            for feat in data.get('features', []):
+                geom_dict = feat.get('geometry')
+                if not geom_dict:
+                    continue
+                    
+                try:
+                    cell_poly = shape(geom_dict)
+                    if not cell_poly.is_valid:
+                        cell_poly = cell_poly.buffer(0)
+                        
+                    # 進行交集運算 (Clipping)
+                    intersected = cell_poly.intersection(cyto_union)
+                    
+                    if intersected.is_empty:
+                        empty_count += 1
+                        continue  # 這個細胞完全在組織外，直接拋棄
+                        
+                    # 重新指定削切後的形狀
+                    # 若被切成很多塊，只取最大的一塊 (保持 single polygon 邏輯)
+                    if intersected.geom_type == 'MultiPolygon':
+                        areas = [p.area for p in intersected.geoms]
+                        max_idx = np.argmax(areas)
+                        intersected = intersected.geoms[max_idx]
+                    elif intersected.geom_type in ('GeometryCollection', 'LineString', 'Point', 'MultiLineString'):
+                        # 若切到只剩線或點，也捨棄
+                        continue
+                        
+                    feat['geometry'] = mapping(intersected)
+                    new_features.append(feat)
+                    clipped_count += 1
+                    
+                except Exception as e:
+                    # 遇到怪異幾何時保留原狀
+                    new_features.append(feat)
+                    
+            # 覆寫回 JSON
+            data['features'] = new_features
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+                
+            logger.info(f"  ✅ 裁剪完成: 處理了 {clipped_count} 個細胞，拋棄了 {empty_count} 個完全越界的幽靈細胞")
+        except Exception as e:
+            logger.error(f"  ❌ 裁剪失敗: {e}")
 
     def assemble_anndata(self) -> AnnData:
         """
