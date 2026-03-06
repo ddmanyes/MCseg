@@ -128,3 +128,17 @@
 - **問題二（細胞質邊界被突圍，綠色網格瘋狂擴張至空白處）**：雖然修復了 Zarr 容錯讀取，讓 `eosin_cyto` 實體防護牆成功傳給管線濾掉外部游離點，但 Proseg 的原罪（Space-Filling Voronoi 特性）使得就算沒有基因，它依然會強制把算好的細胞多邊形**「無限往外長」**，填滿整個畫布，長出蜘蛛網般的觸手跑到完全沒有組織的背景上。
   - **終極解法（Shapely Geometric Clipping 削切法）**：在 `pipeline.py` (Stage 3) 放棄依賴 Proseg 去學習邊緣，而是在它運算完後**追加一道具毀滅性的後製裁剪工序** `_clip_polygons_with_cyto`。利用 OpenCV 將 `eosin_cyto` 轉化成 `shapely.geometry.Polygon`。當 Proseg 產出細胞 GeoJSON 後，將組織防護圖當成剪刀與核邊界做幾何交集 (`intersection`)。
   - **效果**：所有跨越雷池的過長細胞膜，立刻如同切蛋糕般完美被沿著 Eosin 確切輪廓截斷於組織內部；而所有完全掉在純背景上的「虛構幽靈細胞」則因交集為空而被整顆剔除。成功確保了最高的視覺與組織擬真效果！
+
+## 12. 下游單細胞分析管線升級 (Scanpy) (2026-03-06)
+
+在解決完 Segmentation (Proseg) 之後，我們成功進入了 Stage 4 (下游聚類分析)，將產出的切割地圖做生物學分群，期間修復並實裝了以下功能：
+
+- **問題一（找不到分析輸入檔）**：原先的下游管線固定尋找舊版的單一 H5AD 路徑，但由於引進了「核心巨型圖像分塊 (Tiling)」機制，Proseg 會動態產出一個接合所有圖塊的 `proseg_cells.h5ad`，導致路徑脫鉤讀不到檔案。
+  - **解法**：修改 `analysis/pipeline.py`，改讓管線智能擷取當下設定檔的 `roi_name`，並指向正確的分塊縫合最終檔案 `/results/analysis/roi/{roi_name}/proseg_cells.h5ad`。
+- **功能擴增（單細胞分析儀表板化與 UMI 深度過濾）**：
+  - 以往分析參數直接寫死在 `pipeline.yaml`，需要手動改檔重啟。
+  - **實作進度**：
+    1. 前端 UI (`Stage4_Analysis.tsx`) 加入完整的深色調「控制面板」。
+    2. 後端 `/api/analysis/run` 新增 Pydantic 模型接收前端的參數設定。
+    3. 加入 `Resolution (聚類解析度)`、`n_pcs (PCA 維度)`、`min_genes (最低基因數)`、`max_pct_mito (粒線體上限)`，並能自動即時寫回 YAML 設定檔。
+    4. **實裝了額外的品質控制閘門 `min_counts` (最低 UMI 數)**：於底層預處理模組加入 `sc.pp.filter_cells(adata, min_counts)` 功能，避免僅有基因種類達標但讀值極低（深度不足）的背景微滴雜訊干擾聚類，大幅提高 Leiden 分群結果的純度！
