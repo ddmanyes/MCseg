@@ -370,10 +370,11 @@ class XeniumExporter:
         # 相容 spatialdata 新舊 API（tables vs table 參數）
         sdata_kwargs: dict = {}
         sd_init_sig = inspect.signature(sd.SpatialData.__init__)
-        if "tables" in sd_init_sig.parameters:
-            sdata_kwargs["tables"] = {"table": sd_table}
-        else:
-            sdata_kwargs["table"] = sd_table
+        if sd_table is not None:
+            if "tables" in sd_init_sig.parameters:
+                sdata_kwargs["tables"] = {"table": sd_table}
+            else:
+                sdata_kwargs["table"] = sd_table
 
         if sd_image is not None:
             sdata_kwargs["images"] = {"tissue_image": sd_image}
@@ -428,3 +429,116 @@ class XeniumExporter:
             )
         except Exception as exc:
             logger.error(f"experiment.xenium 修補失敗：{exc}")
+
+
+def generate_combined_geojson(
+    tile_proseg_dir: "Path",
+    zarr_path: "Path",
+    config: dict,
+) -> dict:
+    """
+    將各 tile 的 proseg_results.json（gzip GeoJSON）合併為 ROI 絕對座標的 GeoJSON。
+
+    座標轉換：
+        abs_µm = tile_rel_µm + (ix * tile_w_px * scale_um_px,
+                                 iy * tile_h_px * scale_um_px)
+
+    每個 feature 的 full_id 設為 ``tile_y{iy}_x{ix}_{cell_idx}``，
+    與 proseg_cells.h5ad 的 obs_names 格式一致。
+
+    Parameters
+    ----------
+    tile_proseg_dir:
+        ``results/analysis/roi/{roi_name}/proseg_tiles`` 目錄路徑。
+    zarr_path:
+        ``proseg_integrated.zarr`` 路徑，用于讀取 label 尺寸。
+    config:
+        Pipeline config dict，需含 proseg.tiling 與 proseg.constants。
+
+    Returns
+    -------
+    dict
+        GeoJSON FeatureCollection（可直接 json.dump）。
+    """
+    import gzip
+    import json as _json
+    import re
+    import zarr as _zarr
+
+    tiling = config.get("proseg", {}).get("tiling", {})
+    scale_um_px: float = (
+        config.get("proseg", {})
+        .get("constants", {})
+        .get("scale_um_px", PROSEG_UM_PX)
+    )
+    grid_nx: int = int(tiling.get("grid_nx", 4))
+    grid_ny: int = int(tiling.get("grid_ny", 3))
+
+    # 從 Zarr 取得完整 label 尺寸
+    z = _zarr.open(str(zarr_path), mode="r")
+    label_arr = z["labels"]["cellpose_nuclei"]["0"]
+    h_full, w_full = label_arr.shape[-2], label_arr.shape[-1]
+    tile_w_px = w_full // grid_nx
+    tile_h_px = h_full // grid_ny
+
+    _pattern = re.compile(r"tile_y(\d+)_x(\d+)$")
+    all_features: list = []
+
+    tile_dirs = sorted(
+        [d for d in Path(tile_proseg_dir).iterdir()
+         if d.is_dir() and _pattern.match(d.name)],
+        key=lambda d: d.name,
+    )
+
+    for tile_dir in tile_dirs:
+        json_path = tile_dir / "proseg_results.json"
+        if not json_path.exists():
+            logger.warning(f"缺少 proseg_results.json：{tile_dir.name}，略過")
+            continue
+
+        m = _pattern.match(tile_dir.name)
+        iy, ix = int(m.group(1)), int(m.group(2))
+        x_offset_um = ix * tile_w_px * scale_um_px
+        y_offset_um = iy * tile_h_px * scale_um_px
+
+        try:
+            with gzip.open(str(json_path), "rt") as f:
+                data = _json.load(f)
+        except Exception as exc:
+            logger.warning(f"讀取 {tile_dir.name} GeoJSON 失敗：{exc}，略過")
+            continue
+
+        for feat in data.get("features", []):
+            cell_idx = feat["properties"].get("cell", 0)
+            full_id = f"{tile_dir.name}_{cell_idx}"
+            geom = feat["geometry"]
+            geom_type = geom["type"]
+
+            if geom_type == "MultiPolygon":
+                new_coords = [
+                    [
+                        [[c[0] + x_offset_um, c[1] + y_offset_um] for c in ring]
+                        for ring in poly
+                    ]
+                    for poly in geom["coordinates"]
+                ]
+                new_geom = {"type": "MultiPolygon", "coordinates": new_coords}
+            elif geom_type == "Polygon":
+                new_coords = [
+                    [[c[0] + x_offset_um, c[1] + y_offset_um] for c in ring]
+                    for ring in geom["coordinates"]
+                ]
+                new_geom = {"type": "Polygon", "coordinates": new_coords}
+            else:
+                continue
+
+            all_features.append({
+                "type": "Feature",
+                "properties": {"full_id": full_id},
+                "geometry": new_geom,
+            })
+
+    logger.info(
+        f"合併 {len(tile_dirs)} 個 tile，共 {len(all_features)} 個多邊形。"
+    )
+    return {"type": "FeatureCollection", "features": all_features}

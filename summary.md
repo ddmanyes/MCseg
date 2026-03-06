@@ -237,3 +237,125 @@ merged[region] = next_id
 - `segmentation.py`：`_run_preview_sync()` 預覽也同步呼叫，保持 Quick Preview 與正式結果一致
 
 **config**：`postprocessing.enable_merge_enclosed: true`（可關閉）
+
+---
+
+## 15. Stage 2.5 條件測試改用中心子區域 + Stage 5 匯出 API 修復 (2026-03-06)
+
+### 15-1. Stage 2.5：條件測試從 ROI 全圖 → 中心子區域
+
+**問題**：`condition_tester.py` 中 `test_roi_um`（config 預設 1000µm）已定義但從未使用，每次條件測試都跑整張 ROI Zarr，若 ROI 較大（例如 1324×1324µm），計算量龐大。
+
+**修復**：在 `ConditionTester` 新增 `_get_center_test_roi()` helper：
+- 輕量讀取 `zarr.open()` 取得 `labels/cellpose_nuclei` 的 H×W shape（不載入全陣列）
+- 將 `test_roi_um ÷ pixel_size_um` 換算為像素大小
+- 裁切影像正中心，clamp 到合法邊界
+- 失敗時 fallback 回傳 `None`（退回全圖模式，不中斷流程）
+
+**呼叫位置**：`_run_proseg_minimal()` 在建立 `ProsegPipeline` 前呼叫，並傳入 `fixed_roi=center_roi`。
+
+**效能提升**：以 1000µm² 子區域 vs 1324×1324µm 全圖，資料量縮小約 **17 倍**，條件測試速度大幅提升。
+
+**調整方式**：`config/pipeline.yaml` 的 `condition_test.test_roi_um`（設 0 或負數則關閉，改用全圖）。
+
+---
+
+### 15-2. Stage 5：Xenium / Loupe 匯出 API 修復
+
+**問題根因**：`export.py` 的 `_run_xenium` 與 `_run_loupe` 兩個函式把整個 `config` dict 當作 `zarr_path`/`poly_json_path` 傳入 exporter 的建構子：
+```python
+exporter = XeniumExporter(config)  # TypeError: argument should be str/PathLike, not 'dict'
+exporter = LoupeExporter(config)   # 同上
+```
+
+**修復**：改從 `config` 正確解析各路徑：
+
+| 參數 | 來源 |
+|------|------|
+| `zarr_path` | `paths.zarr_dir / {roi_name} / proseg_integrated.zarr` |
+| `poly_json_path` | `paths.proseg_dir / {roi_name} / combined_proseg_results_qc.json` |
+| `transcripts_csv_path` | `paths.proseg_dir / {roi_name} / combined_transcripts.csv` |
+| `h5ad_path` | 自動依序搜尋 `clustered_final.h5ad → umap_computed.h5ad → qc_preprocessed.h5ad` |
+| `out_dir` | `paths.export_dir / xenium`（或 `loupe`） |
+
+路徑不存在時傳 `None`（exporter 有 graceful fallback），h5ad 找不到才拋出明確 `FileNotFoundError`。
+
+---
+
+## 16. Stage 5 Xenium 匯出深度修復：NoneType + 路徑找不到 + GeoJSON 合併 (2026-03-06)
+
+### 問題描述
+
+上一節（Section 15）修復了 `dict-as-path` 錯誤後，重新點擊「匯出 Xenium」仍然失敗：
+
+```
+錯誤：'NoneType' object has no attribute 'uns'
+```
+
+Terminal 顯示：
+```
+[ERROR] ERROR pipeline.api.export: Xenium 匯出失敗：'NoneType' object has no attribute 'uns'
+```
+
+### 根因分析
+
+| # | 問題 | 說明 |
+|---|------|------|
+| 1 | `sd_table=None` 傳入 SpatialData | `_write_xenium_bundle` 不論 `sd_table` 是否為 `None` 都強制設定 `tables`/`table`，造成 `spatialdata_xenium_explorer.write()` 內部嘗試存取 `None.uns` |
+| 2 | `combined_proseg_results_qc.json` 不存在 | `export.py` 沿用舊路徑 `results/proseg/{roi_name}/`，但實際資料存放在 `results/analysis/roi/test/`，因此永遠找不到多邊形 |
+| 3 | `h5ad` 搜尋範圍不完整 | 僅搜尋 `results/analysis/`，未搜尋 `results/analysis/roi/test/`（`proseg_cells.h5ad` 所在地）|
+
+### 修復內容
+
+#### `backend/src/export/xenium_exporter.py`
+
+**1. `_write_xenium_bundle`：`sd_table=None` 防護**
+
+```python
+# 修復前：不管 None 都強制設定
+if "tables" in sd_init_sig.parameters:
+    sdata_kwargs["tables"] = {"table": sd_table}
+else:
+    sdata_kwargs["table"] = sd_table
+
+# 修復後：None 時不加入 sdata_kwargs
+if sd_table is not None:
+    if "tables" in sd_init_sig.parameters:
+        sdata_kwargs["tables"] = {"table": sd_table}
+    else:
+        sdata_kwargs["table"] = sd_table
+```
+
+**2. 新增 `generate_combined_geojson()` 函數（模組層級）**
+
+由於 Stage 3 (Proseg) 使用 tile-based 分塊，每個 tile 各自輸出 `proseg_results.json`（gzip GeoJSON，相對座標 µm），不存在預先合併的單一 GeoJSON。
+
+此函數從 12 個 tile 自動合併並套用 offset：
+
+```python
+abs_µm = tile_rel_µm + (ix * tile_w_px * scale_um_px,
+                         iy * tile_h_px * scale_um_px)
+```
+
+`full_id` 格式為 `tile_y{iy}_x{ix}_{cell_idx}`，與 `proseg_cells.h5ad` 的 `obs_names` 格式完全一致（3150 個細胞，12 tiles × ~260 cells/tile）。
+
+#### `backend/src/api/export.py`
+
+**`_run_xenium`：路徑邏輯全面修正**
+
+| 項目 | 修復前 | 修復後 |
+|------|--------|--------|
+| 路徑基底 | `results/proseg/{roi_name}/` | `results/analysis/roi/{roi_name}/` |
+| GeoJSON | 只讀取現有檔案 | 不存在時自動從 tile 重建並儲存 |
+| h5ad 搜尋 | 僅 `results/analysis/` | 同時搜尋 `results/analysis/` 和 `results/analysis/roi/test/` 含 `proseg_cells.h5ad` |
+
+### 測試驗證
+
+```
+Total features: 3150
+first full_id: tile_y0_x0_0
+last full_id: tile_y2_x3_322
+last 2 coords (abs um): [[450.57, 376.83], [450.57, 378.83]]  ← 正確絕對座標
+```
+
+合併函數在系統 Python 3.13 環境下通過驗證，3150 個細胞多邊形正確對應至 obs_names。
