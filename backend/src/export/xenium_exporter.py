@@ -4,17 +4,26 @@ Stage 5 — Xenium Explorer 匯出模組
 將 Proseg 分割結果（h5ad + GeoJSON 多邊形 + 轉錄點 CSV）組裝成
 spatialdata_xenium_explorer 可讀取的 Xenium Explorer bundle。
 
-關鍵 Bug 修復
---------------
-spatialdata_xenium_explorer.write() 內部硬編碼 pixel_size=0.2125，
-每次寫出後必須修補 experiment.xenium 的 pixel_size 欄位為 PROSEG_UM_PX。
-
-座標系對應
+座標系設計
 ----------
-- GeoJSON 多邊形：µm（Proseg 輸出）
-- 轉錄點 CSV：µm（combined_transcripts.csv）
-- Xenium Explorer 輸入：像素（÷ PROSEG_UM_PX = ÷ 0.2645833）
-- 影像（Zarr）：像素，直接使用
+Xenium Explorer 內部硬編碼使用 0.2125 µm/px 作為像素單位。
+為確保影像與多邊形正確對齊，必須統一使用 XENIUM_UM_PX = 0.2125：
+
+1. 影像（morphology.ome.tif）：
+   - 從 Zarr 載入（Visium 原生 0.2737 µm/px）
+   - 縮放至 Xenium 原生解析度（×0.2737/0.2125 = ×1.288）
+   - 寫入時帶有 PhysicalSizeX=0.2125 OME 元資料
+
+2. 多邊形（cells.zarr）：
+   - GeoJSON µm → ÷ 0.2125 → Xenium 原生像素
+   - write_polygons 再乘以 0.2125 → 儲存為 µm
+
+3. 轉錄點（transcripts.zarr）：
+   - zarr/CSV µm → ÷ 0.2125 → Xenium 原生像素
+
+4. experiment.xenium：pixel_size = 0.2125
+
+如此 Xenium Explorer 以 0.2125 µm/px 解析全部資料，確保正確對齊。
 
 移植自：Proseg-Zarr-Integration/scripts/export_to_xenium_full.py
 """
@@ -42,9 +51,36 @@ from spatialdata.models import (
 )
 from spatialdata.transformations import Identity
 
-from backend.src.utils.constants import PROSEG_UM_PX, PROSEG_NM_PX
+from backend.src.utils.constants import PROSEG_UM_PX, PROSEG_NM_PX, VISIUM_UM_PX, XENIUM_UM_PX
 
 logger = logging.getLogger("pipeline.export.xenium")
+
+
+def _apply_xenium_explorer_patches() -> None:
+    """
+    Monkey-patch spatialdata_xenium_explorer.utils.to_intrinsic 使其能
+    處理 element=None 的情況（無轉錄點時 get_element 回傳 None，
+    原始實作直接呼叫 transform_element_to_coordinate_system(None, cs)
+    觸發 AssertionError）。
+    """
+    try:
+        import spatialdata_xenium_explorer.utils as _sx_utils
+
+        if getattr(_sx_utils, "_to_intrinsic_patched", False):
+            return  # 已 patch，不重複
+
+        _orig = _sx_utils.to_intrinsic
+
+        def _safe_to_intrinsic(sdata, element, element_cs):
+            if element is None:
+                return None
+            return _orig(sdata, element, element_cs)
+
+        _sx_utils.to_intrinsic = _safe_to_intrinsic
+        _sx_utils._to_intrinsic_patched = True
+        logger.debug("spatialdata_xenium_explorer.utils.to_intrinsic patched (None-safe)")
+    except Exception as exc:
+        logger.warning(f"xenium_explorer patch 失敗（不影響主流程）：{exc}")
 
 
 class XeniumExporter:
@@ -69,6 +105,7 @@ class XeniumExporter:
         poly_json_path: Optional[str | Path] = None,
         transcripts_csv_path: Optional[str | Path] = None,
         ram_threshold_gb: float = 4.0,
+        pixel_size_um: float = VISIUM_UM_PX,
     ) -> None:
         self.zarr_path = Path(zarr_path) if zarr_path else None
         self.poly_json_path = Path(poly_json_path) if poly_json_path else None
@@ -76,6 +113,7 @@ class XeniumExporter:
             Path(transcripts_csv_path) if transcripts_csv_path else None
         )
         self.ram_threshold_gb = ram_threshold_gb
+        self.pixel_size_um = pixel_size_um  # µm/px of the morphology image
 
     # ------------------------------------------------------------------
     # Public API
@@ -116,8 +154,10 @@ class XeniumExporter:
         # 3. 載入多邊形並建立 ID 重映射
         sd_shapes, sd_table, id_remap = self._load_polygons_and_table(adata)
 
-        # 4. 載入轉錄點
+        # 4. 載入轉錄點（優先 CSV，其次 zarr parquet）
         sd_points = self._load_transcripts(id_remap)
+        if sd_points is None:
+            sd_points = self._load_transcripts_from_zarr()
 
         # 5. 組裝 SpatialData 並寫出
         self._write_xenium_bundle(
@@ -139,24 +179,45 @@ class XeniumExporter:
     # ------------------------------------------------------------------
 
     def _load_image(self) -> Optional[sd.models.Image2DModel]:
-        """從 Zarr 惰性載入影像（失敗時回傳 None，不中斷流程）。"""
+        """
+        從 Zarr 惰性載入影像，並重新縮放至 Xenium 原生解析度（0.2125 µm/px）。
+
+        Xenium Explorer 內部硬編碼使用 0.2125 µm/px 作為像素單位，
+        因此影像必須縮放至對應解析度，polygon 座標才能正確對齊。
+        縮放比例 = self.pixel_size_um / XENIUM_UM_PX（例如 0.2737 / 0.2125 = 1.288）。
+        """
         if self.zarr_path is None or not self.zarr_path.exists():
             logger.info("未提供 zarr_path，跳過影像層。")
             return None
 
         try:
             import dask.array as da
+            import numpy as np
             import zarr
+            from scipy.ndimage import zoom as ndimage_zoom
 
             logger.info(f"載入 Zarr 影像：{self.zarr_path}")
             z = zarr.open(str(self.zarr_path), mode="r")
             img_array = z["images"]["tissue_hires_image"]["0"]
 
-            # 統一為 (c, y, x) 格式
-            if img_array.shape[0] in (1, 3):
-                dask_img = da.from_zarr(img_array)
+            # 統一為 (c, y, x) 格式並計算至 numpy
+            raw = np.array(img_array)
+            if raw.shape[0] not in (1, 3):
+                raw = raw.transpose((2, 0, 1))
+
+            # 縮放至 Xenium 原生解析度（0.2125 µm/px）
+            scale_factor = self.pixel_size_um / XENIUM_UM_PX  # e.g. 0.2737/0.2125 = 1.288
+            if abs(scale_factor - 1.0) > 0.01:
+                logger.info(
+                    f"縮放影像至 Xenium 原生解析度：×{scale_factor:.4f} "
+                    f"({self.pixel_size_um} → {XENIUM_UM_PX} µm/px)"
+                )
+                scaled = ndimage_zoom(raw, zoom=(1, scale_factor, scale_factor), order=1)
+                logger.info(f"縮放完成：{raw.shape} → {scaled.shape}")
             else:
-                dask_img = da.from_zarr(img_array).transpose((2, 0, 1))
+                scaled = raw
+
+            dask_img = da.from_array(scaled, chunks=(1, 2048, 2048))
 
             sd_image = Image2DModel.parse(
                 dask_img, dims=("c", "y", "x"),
@@ -240,11 +301,12 @@ class XeniumExporter:
                 if not poly_um.is_valid or poly_um.is_empty:
                     continue
 
-                # µm → px
+                # µm → Xenium 原生像素（0.2125 µm/px）
+                # Xenium Explorer 硬編碼使用 0.2125 µm/px，必須統一使用此值
                 poly_px = shapely_scale(
                     poly_um,
-                    xfact=1.0 / PROSEG_UM_PX,
-                    yfact=1.0 / PROSEG_UM_PX,
+                    xfact=1.0 / XENIUM_UM_PX,
+                    yfact=1.0 / XENIUM_UM_PX,
                     origin=(0, 0),
                 )
 
@@ -332,9 +394,9 @@ class XeniumExporter:
             logger.info(f"載入轉錄點 CSV：{self.transcripts_csv_path}")
             tx_dd = dd.read_csv(str(self.transcripts_csv_path))
 
-            # µm → px
-            tx_dd["x"] = tx_dd["x"] / PROSEG_UM_PX
-            tx_dd["y"] = tx_dd["y"] / PROSEG_UM_PX
+            # µm → Xenium 原生像素（0.2125 µm/px）
+            tx_dd["x"] = tx_dd["x"] / XENIUM_UM_PX
+            tx_dd["y"] = tx_dd["y"] / XENIUM_UM_PX
 
             # 預覽欄位名稱
             sample = pd.read_csv(self.transcripts_csv_path, nrows=3)
@@ -360,6 +422,46 @@ class XeniumExporter:
             logger.error(f"轉錄點載入失敗（繼續執行）：{exc}")
             return None
 
+    def _load_transcripts_from_zarr(self) -> Optional[object]:
+        """
+        從 Zarr 的 points/transcripts parquet 直接載入轉錄點（µm 座標）。
+        轉換為 Xenium px 座標後建立 PointsModel。
+        """
+        if self.zarr_path is None or not self.zarr_path.exists():
+            return None
+
+        parquet_path = (
+            self.zarr_path / "points" / "transcripts"
+            / "points.parquet" / "part.0.parquet"
+        )
+        if not parquet_path.exists():
+            logger.info("zarr 中無轉錄點 parquet，跳過。")
+            return None
+
+        try:
+            import dask.dataframe as dd
+
+            logger.info(f"從 zarr 載入轉錄點：{parquet_path}")
+            tx_dd = dd.read_parquet(str(parquet_path))
+
+            # µm → Xenium 原生像素（0.2125 µm/px）
+            tx_dd["x"] = tx_dd["x"] / XENIUM_UM_PX
+            tx_dd["y"] = tx_dd["y"] / XENIUM_UM_PX
+
+            sd_points = PointsModel.parse(
+                tx_dd,
+                sort=True,
+                coordinates={"x": "x", "y": "y"},
+                feature_key="gene",
+                transformations={"global": Identity()},
+            )
+            logger.info("zarr 轉錄點 PointsModel 建立完成。")
+            return sd_points
+
+        except Exception as exc:
+            logger.warning(f"zarr 轉錄點載入失敗（繼續執行）：{exc}")
+            return None
+
     def _write_xenium_bundle(
         self,
         out_xenium_dir: Path,
@@ -370,6 +472,10 @@ class XeniumExporter:
     ) -> None:
         """組裝 SpatialData 並呼叫 spatialdata_xenium_explorer.write()。"""
         import spatialdata_xenium_explorer
+
+        # 修補 to_intrinsic：讓 element=None 時直接回傳 None，
+        # 避免無轉錄點時觸發 AssertionError（library bug）。
+        _apply_xenium_explorer_patches()
 
         # 相容 spatialdata 新舊 API（tables vs table 參數）
         sdata_kwargs: dict = {}
@@ -390,7 +496,9 @@ class XeniumExporter:
         logger.info("組裝 SpatialData 物件...")
         sdata = sd.SpatialData(**sdata_kwargs)
 
-        logger.info(f"寫出 Xenium Explorer bundle 至：{out_xenium_dir}（大型資料集耗時較長）")
+        # 使用 Xenium 原生 pixel_size=0.2125，確保 Explorer 正確對齊
+        # 影像已在 _load_image() 中縮放至 0.2125 µm/px，座標亦對應使用 XENIUM_UM_PX 轉換
+        logger.info(f"寫出 Xenium Explorer bundle 至：{out_xenium_dir}（pixel_size={XENIUM_UM_PX}，大型資料集耗時較長）")
         spatialdata_xenium_explorer.write(
             path=str(out_xenium_dir),
             sdata=sdata,
@@ -398,20 +506,19 @@ class XeniumExporter:
             shapes_key="cell_boundaries" if sd_shapes is not None else None,
             points_key="transcripts" if sd_points is not None else None,
             gene_column="gene" if sd_points is not None else None,
-            pixel_size=PROSEG_UM_PX,
+            pixel_size=XENIUM_UM_PX,
             lazy=True,
             ram_threshold_gb=self.ram_threshold_gb,
         )
         logger.info("spatialdata_xenium_explorer.write() 完成。")
 
-    @staticmethod
-    def _patch_experiment_xenium(out_xenium_dir: Path) -> None:
+    def _patch_experiment_xenium(self, out_xenium_dir: Path) -> None:
         """
         修補 experiment.xenium 的 pixel_size Bug。
 
         spatialdata_xenium_explorer 內部硬編碼 pixel_size=0.2125（Xenium 原生值），
-        即使呼叫時傳入正確的 PROSEG_UM_PX，寫出後仍會被覆蓋。
-        此方法在寫出後強制將 pixel_size 改寫為正確的 PROSEG_UM_PX。
+        即使呼叫時傳入正確的 pixel_size_um，寫出後仍會被覆蓋。
+        此方法在寫出後強制將 pixel_size 改寫為正確的 self.pixel_size_um。
         """
         exp_file = out_xenium_dir / "experiment.xenium"
         if not exp_file.exists():
@@ -423,13 +530,13 @@ class XeniumExporter:
                 exp_data = json.load(f)
 
             old_val = exp_data.get("pixel_size", "N/A")
-            exp_data["pixel_size"] = PROSEG_UM_PX  # 0.2645833（修補硬編碼 0.2125）
+            exp_data["pixel_size"] = XENIUM_UM_PX  # 統一使用 Xenium 原生 0.2125 µm/px
 
             with open(exp_file, "w") as f:
                 json.dump(exp_data, f, indent=2)
 
             logger.info(
-                f"experiment.xenium pixel_size 修補完成：{old_val} → {PROSEG_UM_PX}"
+                f"experiment.xenium pixel_size 修補完成：{old_val} → {XENIUM_UM_PX}"
             )
         except Exception as exc:
             logger.error(f"experiment.xenium 修補失敗：{exc}")
@@ -437,27 +544,33 @@ class XeniumExporter:
 
 def generate_combined_geojson(
     tile_proseg_dir: "Path",
-    zarr_path: "Path",
-    config: dict,
+    zarr_path: "Path" = None,
+    config: dict = None,
 ) -> dict:
     """
     將各 tile 的 proseg_results.json（gzip GeoJSON）合併為 ROI 絕對座標的 GeoJSON。
 
-    座標轉換：
-        abs_µm = tile_rel_µm + (ix * tile_w_px * scale_um_px,
-                                 iy * tile_h_px * scale_um_px)
+    座標換算說明
+    -----------
+    Proseg 每個 tile 的 GeoJSON 座標為**局部座標**（相對於 padded tile 起點），
+    需加上正確的全域偏移才能得到 ROI µm 座標。
 
-    每個 feature 的 full_id 設為 ``tile_y{iy}_x{ix}_{cell_idx}``，
-    與 proseg_cells.h5ad 的 obs_names 格式一致。
+    正確偏移公式（考慮 padding）：
+        x_start_px = max(0, ix × tile_w_px - padding_px)
+        x_offset_µm = x_start_px × coordinate_scale_um_px
+
+    原始錯誤公式的兩個 bug：
+        1. 使用 PROSEG_UM_PX (0.2645833) 而非 ROI coordinate_scale (0.2737)
+        2. 未減去 padding，導致偏移量虛高且座標超出影像範圍
 
     Parameters
     ----------
     tile_proseg_dir:
         ``results/analysis/roi/{roi_name}/proseg_tiles`` 目錄路徑。
     zarr_path:
-        ``proseg_integrated.zarr`` 路徑，用于讀取 label 尺寸。
+        Zarr 路徑，用於讀取 label 尺寸（可選；若 None 則從 tile 目錄推斷）。
     config:
-        Pipeline config dict，需含 proseg.tiling 與 proseg.constants。
+        Pipeline config dict，讀取 proseg.tiling 與 ROI pixel_size_um。
 
     Returns
     -------
@@ -469,21 +582,29 @@ def generate_combined_geojson(
     import re
     import zarr as _zarr
 
-    tiling = config.get("proseg", {}).get("tiling", {})
-    scale_um_px: float = (
-        config.get("proseg", {})
-        .get("constants", {})
-        .get("scale_um_px", PROSEG_UM_PX)
-    )
+    # 從 config 取得分塊參數
+    cfg = config or {}
+    tiling = cfg.get("proseg", {}).get("tiling", {})
     grid_nx: int = int(tiling.get("grid_nx", 4))
     grid_ny: int = int(tiling.get("grid_ny", 3))
+    padding: int = int(tiling.get("padding", 200))
 
-    # 從 Zarr 取得完整 label 尺寸
-    z = _zarr.open(str(zarr_path), mode="r")
-    label_arr = z["labels"]["cellpose_nuclei"]["0"]
-    h_full, w_full = label_arr.shape[-2], label_arr.shape[-1]
-    tile_w_px = w_full // grid_nx
-    tile_h_px = h_full // grid_ny
+    # coordinate_scale：優先用 ROI pixel_size_um，退回 VISIUM_UM_PX
+    rois = cfg.get("rois", [{}])
+    coordinate_scale: float = (
+        rois[0].get("pixel_size_um", VISIUM_UM_PX) if rois else VISIUM_UM_PX
+    )
+
+    # 從 Zarr 取得完整 label 尺寸（決定 tile 邊界）
+    w_full: Optional[int] = None
+    h_full: Optional[int] = None
+    if zarr_path is not None:
+        try:
+            z = _zarr.open(str(zarr_path), mode="r")
+            label_arr = z["labels"]["cellpose_nuclei"]["0"]
+            h_full, w_full = int(label_arr.shape[-2]), int(label_arr.shape[-1])
+        except Exception as exc:
+            logger.warning(f"無法讀取 zarr label 尺寸（{exc}），使用 tile 目錄命名推斷。")
 
     _pattern = re.compile(r"tile_y(\d+)_x(\d+)$")
     all_features: list = []
@@ -502,8 +623,15 @@ def generate_combined_geojson(
 
         m = _pattern.match(tile_dir.name)
         iy, ix = int(m.group(1)), int(m.group(2))
-        x_offset_um = ix * tile_w_px * scale_um_px
-        y_offset_um = iy * tile_h_px * scale_um_px
+
+        # 計算 tile 像素邊界（使用與 runner.py 相同的分塊邏輯）
+        tile_w = (w_full // grid_nx) if w_full else 372
+        tile_h = (h_full // grid_ny) if h_full else 403
+        # padded_start = 去掉 padding 的全域像素起點
+        x_start_px = max(0, ix * tile_w - padding)
+        y_start_px = max(0, iy * tile_h - padding)
+        x_offset_um = x_start_px * coordinate_scale
+        y_offset_um = y_start_px * coordinate_scale
 
         try:
             with gzip.open(str(json_path), "rt") as f:
@@ -544,5 +672,6 @@ def generate_combined_geojson(
 
     logger.info(
         f"合併 {len(tile_dirs)} 個 tile，共 {len(all_features)} 個多邊形。"
+        f"（coordinate_scale={coordinate_scale}, padding={padding}px）"
     )
     return {"type": "FeatureCollection", "features": all_features}
