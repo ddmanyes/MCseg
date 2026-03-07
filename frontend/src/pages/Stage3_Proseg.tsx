@@ -11,13 +11,13 @@ export default function Stage3_Proseg() {
   const stage = stages['proseg']
   const { refetch: refetchStatus } = useStageStatus('proseg', getProsegStatus, 5000)
 
+  const params = recommendedCondition ?? { max_dist: 40, compactness: 0.06, dilation: 20 }
+
   const handleRun = async () => {
     updateStage('proseg', { status: 'running', progress: 0, message: '啟動 Proseg...' })
-    await runProseg()
+    await runProseg({ max_dist: params.max_dist, compactness: params.compactness, dilation: params.dilation })
     refetchStatus()
   }
-
-  const params = recommendedCondition ?? { max_dist: 40, compactness: 0.06, dilation: 20 }
 
   return (
     <div className="space-y-4">

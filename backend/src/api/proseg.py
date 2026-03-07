@@ -1,9 +1,11 @@
 """Stage 3: Proseg 完整執行 API"""
 import asyncio
 import logging
+from typing import Optional
 from fastapi import APIRouter, BackgroundTasks
+from pydantic import BaseModel
 
-from backend.src.utils.config import load_config
+from backend.src.utils.config import load_config, save_config
 from backend.src.utils.logging import set_current_stage
 
 router = APIRouter()
@@ -11,6 +13,12 @@ logger = logging.getLogger("pipeline.api.proseg")
 
 _task_status = {"status": "idle", "progress": 0.0, "message": ""}
 _task_lock = asyncio.Lock()
+
+
+class ProsegRunParams(BaseModel):
+    max_dist: Optional[float] = None
+    compactness: Optional[float] = None
+    dilation: Optional[int] = None
 
 
 @router.get("/status")
@@ -37,10 +45,23 @@ async def _run_proseg(config: dict):
 
 
 @router.post("/run")
-async def run_proseg(background_tasks: BackgroundTasks):
+async def run_proseg(background_tasks: BackgroundTasks, params: Optional[ProsegRunParams] = None):
     async with _task_lock:
         if _task_status["status"] == "running":
             return {"status": "error", "message": "任務執行中"}
         config = load_config()
+        # 若前端傳入 params，覆寫 golden_params 並儲存
+        if params:
+            golden = config.setdefault("proseg", {}).setdefault("golden_params", {})
+            if params.max_dist is not None:
+                golden["max_dist"] = params.max_dist
+                logger.info(f"覆寫 golden_params.max_dist = {params.max_dist}")
+            if params.compactness is not None:
+                golden["compactness"] = params.compactness
+                logger.info(f"覆寫 golden_params.compactness = {params.compactness}")
+            if params.dilation is not None:
+                golden["dilation"] = params.dilation
+                logger.info(f"覆寫 golden_params.dilation = {params.dilation}")
+            save_config(config)
         background_tasks.add_task(_run_proseg, config)
     return {"status": "ok", "message": "Proseg 已啟動"}

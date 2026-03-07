@@ -92,9 +92,9 @@ condition_test:
   recorded_samples: 50
 proseg:
   golden_params:
-    dilation: 20
-    max_dist: 40.0
-    compactness: 0.06
+    dilation: 0
+    max_dist: 30.0
+    compactness: 0.03
     samples: 500
     burnin_samples: 150
     recorded_samples: 150
@@ -111,7 +111,7 @@ proseg:
     scale_nm_px: 264.5833
     scale_um_px: 0.2645833
 analysis:
-  merge_rois: false   # 多 ROI 合併分析（同一 H&E + Visium，無需 batch correction）
+  merge_rois: false
   preprocessing:
     cellular:
       min_genes: 20

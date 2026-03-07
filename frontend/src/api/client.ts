@@ -44,7 +44,8 @@ export const getConditionThumbnail = (idx: number) => api.get(`/conditions/thumb
 export const getConditionThumbnailHd = (idx: number) => api.get(`/conditions/thumbnail_hd/${idx}`)
 
 // Stage 3: Proseg
-export const runProseg = () => api.post('/proseg/run')
+export const runProseg = (params?: { max_dist?: number; compactness?: number; dilation?: number }) =>
+  api.post('/proseg/run', params ?? {})
 export const getProsegStatus = () => api.get('/proseg/status')
 
 // Stage 4: Analysis (舊版整合執行)
