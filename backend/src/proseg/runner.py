@@ -192,4 +192,24 @@ def run_tiled_proseg(config: dict) -> None:
             tile_h=tile_h,
             coordinate_scale=roi_scale_um_px,
         )
+
+        # 同步重新生成 GeoJSON，確保與 proseg_cells.h5ad 來自同一次 tile run
+        # 若分開生成，Stage 3 重跑後 h5ad 與 GeoJSON cell ID 會版本錯開
+        try:
+            import json as _json
+            from backend.src.export.xenium_exporter import generate_combined_geojson
+            geojson_path = roi_out_dir / "combined_proseg_results_qc.json"
+            geojson = generate_combined_geojson(
+                tile_proseg_dir=output_dir,
+                zarr_path=zarr_path,
+                config=config,
+            )
+            with open(geojson_path, "w") as _f:
+                _json.dump(geojson, _f)
+            logger.info(
+                f"[{roi_name}] GeoJSON 已同步更新：{len(geojson['features'])} 個多邊形 → {geojson_path}"
+            )
+        except Exception as _e:
+            logger.warning(f"[{roi_name}] GeoJSON 同步更新失敗（非致命）：{_e}")
+
         logger.info(f"[{roi_name}] Tiled Proseg 處理完成！")

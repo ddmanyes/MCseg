@@ -280,7 +280,6 @@ class ConditionTester:
             "cell_area_cv":      0.0,
         }
 
-
     # ──────────────────────────────────────────
     # 縮圖生成（HE + 細胞輪廓疊圖）
     # ──────────────────────────────────────────
@@ -298,11 +297,11 @@ class ConditionTester:
             polygons = self._load_proseg_polygons_px(cond_dir, orig_w, orig_h)
 
             # 等比例縮放 H&E 至顯示尺寸
-            DISPLAY_W = 400
-            DISPLAY_H = 400
+            DISPLAY_W = 800
+            DISPLAY_H = 800
             scale_x = DISPLAY_W / max(orig_w, 1)
             scale_y = DISPLAY_H / max(orig_h, 1)
-            he_disp = cv2.resize(he_img.astype(np.uint8), (DISPLAY_W, DISPLAY_H))
+            he_disp = cv2.resize(he_img.astype(np.uint8), (DISPLAY_W, DISPLAY_H), interpolation=cv2.INTER_CUBIC)
 
             overlay = he_disp.copy()
             if polygons:
@@ -312,53 +311,56 @@ class ConditionTester:
                     pts_scaled[:, 0] = pts_scaled[:, 0] * scale_x
                     pts_scaled[:, 1] = pts_scaled[:, 1] * scale_y
                     pts_int = pts_scaled.astype(np.int32)
-                    cv2.polylines(overlay, [pts_int.reshape(-1, 1, 2)], True, (0, 230, 90), 1)
+                    cv2.polylines(overlay, [pts_int.reshape(-1, 1, 2)], True, (0, 230, 90), 2)
             else:
                 # 無真實多邊形時合成圓形示意
                 synth = self._synthesize_cell_contours(metrics, condition, DISPLAY_W, DISPLAY_H)
                 for pts in synth:
-                    cv2.polylines(overlay, [pts.reshape(-1, 1, 2)], True, (0, 200, 255), 1)
+                    cv2.polylines(overlay, [pts.reshape(-1, 1, 2)], True, (0, 200, 255), 2)
 
             # 文字標註
             n = metrics.get("n_cells", 0)
             g = metrics.get("median_genes", 0)
             label_str = condition.get("label", "")
             txt = f"{label_str}  Cells:{n}  Genes:{g:.0f}"
-            cv2.putText(overlay, txt, (8, DISPLAY_H - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 180), 1, cv2.LINE_AA)
+            cv2.putText(overlay, txt, (10, DISPLAY_H - 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 180), 2, cv2.LINE_AA)
 
             bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
             cv2.imwrite(str(cond_dir / "preview.jpg"), bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
             logger.debug(f"縮圖已儲存：{cond_dir / 'preview.jpg'}")
 
-            # 額外儲存固定 400×400 置中裁切高畫質版本（供放大觀察）
-            HD = 400
+            # 額外儲存高畫質 zoom 版：從原圖中心裁切 200×200 px → 放大到 800×800（4× zoom）
+            CROP_SRC = 200
+            OUT_SIZE = 800
             he_hd = he_img.astype(np.uint8).copy()
             if polygons:
                 for pts in polygons:
                     cv2.polylines(he_hd, [pts.reshape(-1, 1, 2)], True, (0, 230, 90), 2)
-            # 置中裁切 500×500（若原圖不足則先 pad）
+            # 置中裁切 CROP_SRC×CROP_SRC
             cy_c, cx_c = orig_h // 2, orig_w // 2
-            y0_c = max(0, cy_c - HD // 2)
-            x0_c = max(0, cx_c - HD // 2)
-            y1_c = min(orig_h, y0_c + HD)
-            x1_c = min(orig_w, x0_c + HD)
+            y0_c = max(0, cy_c - CROP_SRC // 2)
+            x0_c = max(0, cx_c - CROP_SRC // 2)
+            y1_c = min(orig_h, y0_c + CROP_SRC)
+            x1_c = min(orig_w, x0_c + CROP_SRC)
             crop_hd = he_hd[y0_c:y1_c, x0_c:x1_c]
-            # 若裁到邊界不足 400 則 pad 黑邊
-            if crop_hd.shape[0] != HD or crop_hd.shape[1] != HD:
-                canvas = np.zeros((HD, HD, 3), dtype=np.uint8)
+            # 若裁到邊界不足則 pad 黑邊
+            if crop_hd.shape[0] != CROP_SRC or crop_hd.shape[1] != CROP_SRC:
+                canvas = np.zeros((CROP_SRC, CROP_SRC, 3), dtype=np.uint8)
                 ch, cw = crop_hd.shape[:2]
                 canvas[:ch, :cw] = crop_hd
                 crop_hd = canvas
+            # 放大到 OUT_SIZE×OUT_SIZE（INTER_CUBIC 保持銳利）
+            crop_hd = cv2.resize(crop_hd, (OUT_SIZE, OUT_SIZE), interpolation=cv2.INTER_CUBIC)
             n_hd = metrics.get("n_cells", 0)
             g_hd = metrics.get("median_genes", 0)
             label_hd = condition.get("label", "")
             txt_hd = f"{label_hd}  Cells:{n_hd}  Genes:{g_hd:.0f}"
-            cv2.putText(crop_hd, txt_hd, (8, HD - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 180), 2, cv2.LINE_AA)
+            cv2.putText(crop_hd, txt_hd, (8, OUT_SIZE - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 180), 2, cv2.LINE_AA)
             bgr_hd = cv2.cvtColor(crop_hd, cv2.COLOR_RGB2BGR)
             cv2.imwrite(str(cond_dir / "preview_hd.jpg"), bgr_hd, [cv2.IMWRITE_JPEG_QUALITY, 95])
-            logger.debug(f"HD 縮圖已儲存：{cond_dir / 'preview_hd.jpg'} (400×400 置中裁切)")
+            logger.debug(f"HD 縮圖已儲存：{cond_dir / 'preview_hd.jpg'} ({CROP_SRC}px→{OUT_SIZE}px 4× zoom)")
         except Exception as e:
             logger.warning(f"縮圖生成失敗（非致命）：{e}")
             import traceback

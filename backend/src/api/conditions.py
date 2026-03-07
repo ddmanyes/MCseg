@@ -91,6 +91,20 @@ async def get_thumbnail(condition_idx: int):
     return {"status": "ok", "data": {"image_b64": img_b64}}
 
 
+@router.get("/thumbnail_hd/{condition_idx}")
+async def get_thumbnail_hd(condition_idx: int):
+    """回傳高畫質 zoom 縮圖（200px 原圖裁切 → 800px，base64 JPEG）"""
+    import base64
+    config = load_config()
+    from backend.src.utils.config import resolve_path
+    cond_dir = resolve_path(config["paths"]["conditions_dir"]) / f"cond_{condition_idx:02d}"
+    preview_path = cond_dir / "preview_hd.jpg"
+    if not preview_path.exists():
+        return {"status": "error", "message": "HD 縮圖尚未生成，請先執行條件測試"}
+    img_b64 = base64.b64encode(preview_path.read_bytes()).decode()
+    return {"status": "ok", "data": {"image_b64": img_b64}}
+
+
 @router.post("/run")
 async def run_conditions(request: ConditionGridRequest, background_tasks: BackgroundTasks):
     if _task_status["status"] == "running":

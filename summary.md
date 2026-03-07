@@ -52,6 +52,56 @@
 
 ---
 
+## 21. 縮圖高畫質升級 + dilation=0 支援 (2026-03-07)
+
+### 21-1. Stage 2.5 縮圖升級至 800×800
+
+**需求**：原 `preview.jpg`（400×400）在 Finder 資料夾瀏覽時細胞輪廓太小，難以比較條件差異。
+
+**修改**（`backend/src/proseg/condition_tester.py`）：
+
+| 項目 | 舊值 | 新值 |
+|------|------|------|
+| `DISPLAY_W / DISPLAY_H` | 400 × 400 | **800 × 800** |
+| resize interpolation | 預設（bilinear）| `cv2.INTER_CUBIC` |
+| 輪廓線寬 | 1px | **2px** |
+| 文字大小 / 粗細 | 0.45 / 1 | **0.8 / 2** |
+
+`preview_hd.jpg`（200px 原圖裁切 → 800px 4× zoom，供前端 modal）維持不變。
+
+### 21-2. 前端 Modal 點擊放大（HD 縮圖）
+
+**新增元件**（`frontend/src/pages/Stage2b_ConditionTest.tsx`）：
+- `ThumbnailModal`：全螢幕黑底 overlay，顯示 `preview_hd.jpg`（點擊外部關閉）
+- `ThumbnailCard`：新增 🔍 badge + `cursor-zoom-in`，點擊呼叫 `/conditions/thumbnail_hd/{idx}` 取得 base64 後開啟 modal
+
+**新增 API**（`backend/src/api/conditions.py`）：
+- `GET /conditions/thumbnail_hd/{condition_idx}` → 回傳 `preview_hd.jpg` base64
+
+**新增 client 函數**（`frontend/src/api/client.ts`）：
+- `getConditionThumbnailHd(idx: number)`
+
+### 21-3. dilation=0 選項
+
+**需求**：Stage 2.5 前端原無 `dilation=0` 選項，無法測試純轉錄本驅動的細胞形狀。
+
+**修改**：
+- `config/pipeline.yaml`：`grid.dilation` 新增 `0`（→ `[0, 10, 20, 30]`）；`quick_grid.dilation` 新增 `0`（→ `[0, 10, 20]`）
+- `frontend/.../Stage2b_ConditionTest.tsx`：dilation options 從 `[5, 10, 20, 30]` 改為 `[0, 5, 10, 20, 30]`
+
+### 21-4. Polygon Smoothing 評估
+
+- 測試新版 `simplify(1.2)+buffer(2.5, res=32)` 與 STRtree overlap removal
+- 視覺對比腳本：`scripts/temp/test_smooth_polygon.py`（封存時已刪除）
+- **結論**：用戶決定保留原始 `simplify(0.4)+buffer(1.0)` 版本
+
+### 21-5. 已知待辦
+
+- 重新執行 Stage 2.5，生成新 800×800 `preview.jpg`（舊檔案仍是 400×400）
+- 考慮以 2×2 tiling 重跑 Stage 3，改善 tile 邊界縫隙問題（需 8-12 GB RAM）
+
+---
+
 ## 7. ExFAT .venv 損毀修復與 start.sh 強化 (2026-03-05)
 
 - **問題**：在 ExFAT 磁碟上執行 `uv sync` 時，macOS 的 `._*` resource fork 檔案會先於目錄被複製，導致 `fonttools` 等套件的快取目錄無法建立，進而 `.venv` 損毀無法啟動。

@@ -73,6 +73,7 @@ condition_test:
     - 0.06
     - 0.1
     dilation:
+    - 0
     - 10
     - 20
     - 30
@@ -84,6 +85,7 @@ condition_test:
     - 0.03
     - 0.06
     dilation:
+    - 0
     - 10
     - 20
   samples: 200

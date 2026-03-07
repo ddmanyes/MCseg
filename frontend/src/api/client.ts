@@ -41,6 +41,7 @@ export const getConditionsStatus = () => api.get('/conditions/status')
 export const getConditionsResults = () => api.get('/conditions/results')
 export const getConditionsRecommend = () => api.get('/conditions/recommend')
 export const getConditionThumbnail = (idx: number) => api.get(`/conditions/thumbnail/${idx}`)
+export const getConditionThumbnailHd = (idx: number) => api.get(`/conditions/thumbnail_hd/${idx}`)
 
 // Stage 3: Proseg
 export const runProseg = () => api.post('/proseg/run')

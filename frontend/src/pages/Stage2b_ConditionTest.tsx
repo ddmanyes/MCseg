@@ -4,7 +4,7 @@ import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
 import {
   runConditions, getConditionsStatus, getConditionsResults,
-  getConditionsRecommend, getConditionThumbnail,
+  getConditionsRecommend, getConditionThumbnail, getConditionThumbnailHd,
 } from '../api/client'
 import {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid,
@@ -30,6 +30,31 @@ function MetricBadge({ label, value, unit = '' }: { label: string; value: React.
   )
 }
 
+// ── HD 縮圖 Modal ────────────────────────────────────────────────
+function ThumbnailModal({ imgB64, label, onClose }: { imgB64: string; label: string; onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+      onClick={onClose}
+    >
+      <div className="relative max-w-[90vw] max-h-[90vh]" onClick={e => e.stopPropagation()}>
+        <img
+          src={`data:image/jpeg;base64,${imgB64}`}
+          alt={label}
+          className="rounded-lg shadow-2xl max-w-full max-h-[85vh] object-contain"
+        />
+        <div className="absolute top-2 right-2">
+          <button
+            onClick={onClose}
+            className="bg-black/60 hover:bg-black/80 text-white rounded-full w-7 h-7 flex items-center justify-center text-sm"
+          >✕</button>
+        </div>
+        <p className="text-center text-xs text-gray-400 mt-1">{label} — 中央 200px 裁切 × 4 倍放大　點擊外部關閉</p>
+      </div>
+    </div>
+  )
+}
+
 // ── Top-3 縮圖卡片 ───────────────────────────────────────────────
 function ThumbnailCard({
   rank, result, isRecommended, thumbnail, onApply,
@@ -40,7 +65,25 @@ function ThumbnailCard({
   thumbnail: string | null
   onApply: () => void
 }) {
+  const [modalImg, setModalImg] = useState<string | null>(null)
+
+  const handleThumbnailClick = useCallback(async () => {
+    if (!thumbnail) return
+    try {
+      const res = await getConditionThumbnailHd(result.condition_idx)
+      const b64 = res.data?.data?.image_b64
+      if (b64) setModalImg(b64)
+    } catch {
+      // fallback：直接放大原圖
+      setModalImg(thumbnail)
+    }
+  }, [thumbnail, result.condition_idx])
+
   return (
+    <>
+      {modalImg && (
+        <ThumbnailModal imgB64={modalImg} label={result.label} onClose={() => setModalImg(null)} />
+      )}
     <div className={`rounded-xl border p-3 flex flex-col gap-2 transition-colors
       ${isRecommended
         ? 'border-green-600/50 bg-green-900/10'
@@ -57,8 +100,12 @@ function ThumbnailCard({
         )}
       </div>
 
-      {/* 縮圖 */}
-      <div className="relative rounded overflow-hidden bg-gray-900 aspect-[3/2]">
+      {/* 縮圖（點擊放大） */}
+      <div
+        className="relative rounded overflow-hidden bg-gray-900 aspect-[3/2] cursor-zoom-in"
+        onClick={handleThumbnailClick}
+        title="點擊查看 HD 放大圖"
+      >
         {thumbnail
           ? <img src={`data:image/jpeg;base64,${thumbnail}`} alt={result.label}
             className="w-full h-full object-cover" />
@@ -66,6 +113,11 @@ function ThumbnailCard({
             <span className="text-xs text-gray-600 animate-pulse">載入縮圖...</span>
           </div>
         }
+        {thumbnail && (
+          <div className="absolute bottom-1 right-1 bg-black/50 text-white text-[10px] px-1 rounded">
+            🔍
+          </div>
+        )}
       </div>
 
       {/* 指標格 */}
@@ -96,6 +148,7 @@ function ThumbnailCard({
         套用此條件 →
       </button>
     </div>
+    </>
   )
 }
 
@@ -263,7 +316,7 @@ export default function Stage2b_ConditionTest() {
           {([
             { label: 'max_dist (µm)', val: maxDist, set: setMaxDist, options: [10, 15, 20, 30, 40, 50] },
             { label: 'compactness', val: compactness, set: setCompactness, options: [0.03, 0.06, 0.1, 0.2, 0.3] },
-            { label: 'dilation (px)', val: dilation, set: setDilation, options: [5, 10, 20, 30] },
+            { label: 'dilation (px)', val: dilation, set: setDilation, options: [0, 5, 10, 20, 30] },
           ] as const).map(({ label, val, set, options }) => (
             <div key={label}>
               <p className="text-xs text-gray-400 mb-2 font-medium">{label}</p>
