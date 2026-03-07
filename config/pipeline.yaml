@@ -93,7 +93,7 @@ condition_test:
 proseg:
   golden_params:
     dilation: 0
-    max_dist: 30.0
+    max_dist: 20.0
     compactness: 0.03
     samples: 500
     burnin_samples: 150
@@ -127,7 +127,7 @@ analysis:
       n_top_genes: 2000
       flavor: seurat_v3
   clustering:
-    n_pcs: 30
+    n_pcs: 20
     n_neighbors: 15
     metric: euclidean
     method: leiden

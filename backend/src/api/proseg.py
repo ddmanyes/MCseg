@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 
-from backend.src.utils.config import load_config, save_config
+from backend.src.utils.config import load_config, save_state
 from backend.src.utils.logging import set_current_stage
 
 router = APIRouter()
@@ -62,6 +62,6 @@ async def run_proseg(background_tasks: BackgroundTasks, params: Optional[ProsegR
             if params.dilation is not None:
                 golden["dilation"] = params.dilation
                 logger.info(f"覆寫 golden_params.dilation = {params.dilation}")
-            save_config(config)
+            save_state({"proseg": {"golden_params": golden}})
         background_tasks.add_task(_run_proseg, config)
     return {"status": "ok", "message": "Proseg 已啟動"}

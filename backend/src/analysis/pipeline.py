@@ -443,17 +443,171 @@ def run_umap_step(
     return figures
 
 
-# ────────────────────── Step 3: Heatmap ──────────────────────────
+# ────────────────────── Step 3: CellTypist 標註 ───────────────────
+
+# 支援的 CellTypist 模型清單（顯示名稱 → 模型檔名）
+CELLTYPIST_MODELS: dict[str, str] = {
+    "Human CRC（大腸癌）":    "Human_Colorectal_Cancer.pkl",
+    "Human Lung Atlas":       "Human_Lung_Atlas.pkl",
+    "Immune（精細）":         "Immune_All_Low.pkl",
+    "Immune（粗分類）":       "Immune_All_High.pkl",
+    "Pan Cancer（泛癌）":     "Pan_Cancer.pkl",
+}
+
+
+def get_cluster_ids(config: dict[str, Any], resolution: float) -> list[str]:
+    """取得指定 resolution 的 cluster ID 列表（字串排序）。"""
+    paths = config["paths"]
+    output_dir = resolve_path(paths["output_dir"])
+    umap_h5ad = output_dir / "umap_computed.h5ad"
+    if not umap_h5ad.exists():
+        raise FileNotFoundError(f"找不到 UMAP 資料：{umap_h5ad}")
+
+    adata = sc.read_h5ad(str(umap_h5ad))
+    leiden_key = f"leiden_{resolution}"
+    if leiden_key not in adata.obs.columns:
+        available = [c for c in adata.obs.columns if c.startswith("leiden_")]
+        raise ValueError(f"找不到 resolution={resolution}，可用：{available}")
+
+    ids = sorted(adata.obs[leiden_key].astype(str).unique().tolist(), key=lambda x: int(x))
+
+    # 若已有套用的標籤，一起回傳
+    existing_labels: dict[str, str] = {}
+    if (
+        adata.uns.get("cell_type_resolution") == resolution
+        and "cell_type_labels" in adata.uns
+    ):
+        existing_labels = {str(k): str(v) for k, v in adata.uns["cell_type_labels"].items()}
+
+    return ids, existing_labels
+
+
+def run_celltypist_annotation(
+    config: dict[str, Any],
+    resolution: float,
+    model_name: str = "Human_Colorectal_Cancer.pkl",
+) -> dict[str, str]:
+    """
+    使用 CellTypist 對每個 Leiden cluster 進行多數投票標註。
+
+    Returns
+    -------
+    dict  {cluster_id (str): cell_type_label (str)}
+    """
+    try:
+        import celltypist
+        from celltypist import models as ct_models
+    except ImportError:
+        raise ImportError("請先安裝 celltypist：uv add celltypist")
+
+    paths = config["paths"]
+    output_dir = resolve_path(paths["output_dir"])
+    umap_h5ad = output_dir / "umap_computed.h5ad"
+    if not umap_h5ad.exists():
+        raise FileNotFoundError(f"找不到 UMAP 資料：{umap_h5ad}")
+
+    logger.info(f"CellTypist 標註：載入 {umap_h5ad}")
+    adata = sc.read_h5ad(str(umap_h5ad))
+
+    leiden_key = f"leiden_{resolution}"
+    if leiden_key not in adata.obs.columns:
+        raise ValueError(f"找不到 resolution={resolution} 的 Leiden 結果")
+
+    # CellTypist 需要 log1p(CPM)——從 raw counts 重建
+    if "counts" in adata.layers:
+        import anndata as _ad
+        import numpy as np
+        adata_ct = _ad.AnnData(
+            X=adata.layers["counts"].copy(),
+            obs=adata.obs.copy(),
+            var=adata.var.copy(),
+        )
+        sc.pp.normalize_total(adata_ct, target_sum=1e4)
+        sc.pp.log1p(adata_ct)
+        logger.info("  從 layers['counts'] 重建 log1p(CPM) 資料")
+    else:
+        adata_ct = adata.copy()
+        logger.warning("  找不到 layers['counts']，直接使用 adata.X（可能為已縮放資料）")
+
+    # 載入模型（本地不存在時自動下載）
+    logger.info(f"  載入模型：{model_name}")
+    try:
+        model = ct_models.Model.load(model_name)
+    except Exception:
+        logger.info(f"  本地找不到模型，嘗試下載 {model_name}...")
+        ct_models.download_models(model=model_name)
+        model = ct_models.Model.load(model_name)
+
+    # 執行標註（majority voting per Leiden cluster）
+    logger.info(f"  執行 majority voting (over_clustering={leiden_key})")
+    predictions = celltypist.annotate(
+        adata_ct,
+        model=model,
+        majority_voting=True,
+        over_clustering=leiden_key,
+    )
+    adata_pred = predictions.to_adata()
+
+    cluster_labels: dict[str, str] = {}
+    for cluster in sorted(adata.obs[leiden_key].astype(str).unique(), key=lambda x: int(x)):
+        mask = adata.obs[leiden_key].astype(str) == cluster
+        mv_labels = adata_pred.obs.loc[mask, "majority_voting"]
+        majority = mv_labels.value_counts().index[0] if len(mv_labels) > 0 else "Unknown"
+        cluster_labels[cluster] = str(majority)
+
+    logger.info(f"CellTypist 標註完成：{len(cluster_labels)} 個 cluster")
+    for c, lbl in sorted(cluster_labels.items(), key=lambda x: int(x[0])):
+        logger.info(f"  Cluster {c} → {lbl}")
+
+    return cluster_labels
+
+
+def apply_cluster_labels(
+    config: dict[str, Any],
+    resolution: float,
+    labels: dict[str, str],
+) -> None:
+    """
+    將 cluster 標籤套用到 umap_computed.h5ad。
+    結果存入 adata.obs["cell_type"]，並記錄於 adata.uns["cell_type_labels"]。
+    """
+    paths = config["paths"]
+    output_dir = resolve_path(paths["output_dir"])
+    umap_h5ad = output_dir / "umap_computed.h5ad"
+    if not umap_h5ad.exists():
+        raise FileNotFoundError(f"找不到 UMAP 資料：{umap_h5ad}")
+
+    logger.info(f"套用標籤：resolution={resolution}，{len(labels)} 個 cluster")
+    adata = sc.read_h5ad(str(umap_h5ad))
+
+    leiden_key = f"leiden_{resolution}"
+    if leiden_key not in adata.obs.columns:
+        raise ValueError(f"找不到 resolution={resolution} 的 Leiden 結果")
+
+    adata.obs["cell_type"] = (
+        adata.obs[leiden_key].astype(str).map(labels).fillna("Unknown")
+    )
+    adata.uns["cell_type_resolution"] = resolution
+    adata.uns["cell_type_labels"] = labels
+
+    _fix_log1p(adata)
+    adata.write_h5ad(str(umap_h5ad))
+    logger.info(f"標籤已套用並儲存：{umap_h5ad}")
+
+
+# ────────────────────── Step 4: Heatmap ──────────────────────────
 
 def run_heatmap_step(
     config: dict[str, Any],
     resolution: float,
     n_top_genes: int = 20,
+    n_heatmap_genes: int = 50,
 ) -> dict[str, str]:
     """
     Step 3：針對指定解析度同時產生兩張 marker gene 圖表。
 
-    - heatmap：seaborn.clustermap，顯示所有 HVGs，行（cluster）與列（基因）均有樹枝圖
+    - heatmap：seaborn.clustermap，顯示方差最高的 n_heatmap_genes 個 HVGs，
+              行（cluster）與列（基因）均有樹枝圖
     - dotplot：sc.pl.dotplot，每 cluster 取 n_top_genes 個 marker 基因，
               點大小 = 表達細胞比例，顏色 = 平均表達量
 
@@ -489,13 +643,40 @@ def run_heatmap_step(
 
     clusters = adata.obs[leiden_key].cat.categories.tolist()
 
-    # ── 1. Heatmap：所有 HVGs，seaborn clustermap，行列均有樹枝圖 ────
-    logger.info("Heatmap：使用全部 HVGs 建立 seaborn clustermap")
+    # 若有套用 cell_type 標籤（且對應同一 resolution），用標籤取代數字
+    cell_type_map: dict[str, str] | None = None
+    if (
+        adata.uns.get("cell_type_resolution") == resolution
+        and "cell_type_labels" in adata.uns
+    ):
+        cell_type_map = {str(k): str(v) for k, v in adata.uns["cell_type_labels"].items()}
+        logger.info(f"  使用 cell_type 標籤覆寫 y 軸：{cell_type_map}")
+
+    # ── 1. Heatmap：取方差最高的 n_heatmap_genes 個 HVGs ────────────
+    logger.info(f"Heatmap：從 HVGs 中選方差最高的 {n_heatmap_genes} 個基因")
 
     if "highly_variable" in adata.var.columns:
-        gene_list = adata.var_names[adata.var["highly_variable"]].tolist()
+        hvg_names = adata.var_names[adata.var["highly_variable"]].tolist()
     else:
-        gene_list = adata.var_names.tolist()
+        hvg_names = adata.var_names.tolist()
+
+    # 計算每個 HVG 在全部細胞的方差，取 top N
+    if len(hvg_names) > n_heatmap_genes:
+        import scipy.sparse as sp
+        X_hvg = adata[:, hvg_names].X
+        if sp.issparse(X_hvg):
+            # 稀疏矩陣：E[X^2] - E[X]^2
+            mean_sq = np.array(X_hvg.power(2).mean(axis=0)).ravel()
+            mean_   = np.array(X_hvg.mean(axis=0)).ravel()
+            gene_var = mean_sq - mean_ ** 2
+        else:
+            gene_var = X_hvg.var(axis=0)
+        top_idx = np.argsort(gene_var)[::-1][:n_heatmap_genes]
+        gene_list = [hvg_names[i] for i in sorted(top_idx)]
+        logger.info(f"  HVG 總數 {len(hvg_names)}，選用方差最高的 {len(gene_list)} 個")
+    else:
+        gene_list = hvg_names
+        logger.info(f"  HVG 總數 {len(hvg_names)}（≤ {n_heatmap_genes}），全部使用")
 
     # 計算各 cluster 的平均表達量（n_clusters × n_genes）
     X_sub = adata[:, gene_list].X
@@ -509,16 +690,41 @@ def run_heatmap_step(
 
     df_mean = pd.DataFrame(cluster_means, index=gene_list).T  # shape: (n_clusters, n_genes)
 
-    # min-max scale per gene (column)
-    col_min = df_mean.min(axis=0)
-    col_max = df_mean.max(axis=0)
-    df_scaled = (df_mean - col_min) / (col_max - col_min + 1e-8)
+    # 若有 cell_type 標籤，重新命名 index，並將同名 cell type 合併（加權平均）
+    if cell_type_map:
+        df_mean.index = [cell_type_map.get(str(c), f"C{c}") for c in clusters]
+        # 計算每個 cluster 的 cell 數（用於加權平均）
+        cluster_sizes = {
+            str(c): int((adata.obs[leiden_key] == c).sum()) for c in clusters
+        }
+        size_series = pd.Series(
+            [cluster_sizes[str(c)] for c in clusters], index=df_mean.index
+        )
+        # 若有重複名稱，做加權平均後合併
+        if df_mean.index.duplicated().any():
+            df_mean["_n"] = size_series.values
+            df_mean = (
+                df_mean.groupby(df_mean.index)
+                .apply(lambda g: pd.Series(
+                    np.average(g.drop(columns="_n").values, axis=0, weights=g["_n"].values),
+                    index=gene_list,
+                ))
+            )
+            logger.info(f"  同名 cell type 合併後：{df_mean.shape[0]} 列")
+
+    # Z-score per gene (column)：讓顏色反映「該 cluster 相對其他 cluster 的高低」
+    # 截斷至 [-2.5, 2.5] 避免個別 outlier 撐爆色域導致其他欄全變同色
+    col_mean = df_mean.mean(axis=0)
+    col_std  = df_mean.std(axis=0).replace(0, 1)   # std=0 的基因設為 1 防除零
+    df_scaled = ((df_mean - col_mean) / col_std).clip(-2.5, 2.5)
 
     n_genes_total = len(gene_list)
     n_clusters = len(clusters)
-    hm_h = max(4, n_clusters * 0.5 + 2)
-    hm_w = max(14, min(n_genes_total * 0.12 + 3, 60))  # 最寬 60 吋
-    show_gene_labels = n_genes_total <= 150
+    # 寬度：每個基因 0.25 吋，最窄 10 吋，最寬 80 吋
+    hm_w = max(10, min(n_genes_total * 0.25 + 3, 80))
+    # 高度：每個 cluster 0.6 吋，同時確保最小縱橫比不低於 1:4（避免過扁）
+    hm_h = max(4, n_clusters * 0.6 + 2, hm_w / 4)
+    show_gene_labels = n_genes_total <= 80
 
     # 只有 ≥2 個 cluster / gene 才能做層次聚類；否則關閉對應樹枝圖避免報錯
     do_row_cluster = n_clusters >= 2
@@ -532,14 +738,15 @@ def run_heatmap_step(
     plt.close("all")
     g = sns.clustermap(
         df_scaled,
-        cmap="viridis",
+        cmap="RdBu_r",
+        vmin=-2.5, vmax=2.5,
         figsize=(hm_w, hm_h),
         yticklabels=True,              # cluster 標籤
         xticklabels=show_gene_labels,  # 基因標籤（數量少時才顯示）
         row_cluster=do_row_cluster,    # cluster 樹枝圖（左側 / 行）
         col_cluster=do_col_cluster,    # 基因樹枝圖（上方 / 列）
         linewidths=0,
-        cbar_kws={"label": "Scaled mean expr.", "shrink": 0.5},
+        cbar_kws={"label": "Z-score (mean expr.)", "shrink": 0.5},
     )
     if not show_gene_labels:
         g.ax_heatmap.set_xlabel(f"Genes ({n_genes_total} HVGs)")

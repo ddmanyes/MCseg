@@ -681,7 +681,7 @@ with open(geojson_path, "w") as f:
 ## Section 22: 多 ROI 合併分析功能實作（2026-03-07）
 
 ### 22-1. 背景
-當 `pipeline.yaml` 定義 2-3 個 ROI（來自同一 H&E + Visium），Stage 2/3 各自獨立處理。  
+當 `pipeline.yaml` 定義 2-3 個 ROI（來自同一 H&E + Visium），Stage 2/3 各自獨立處理。
 新增合併功能讓 Stage 4 可以整合所有 ROI 一起做 QC + UMAP + Leiden。
 
 ### 22-2. 設計決策
@@ -704,3 +704,58 @@ analysis:
   merge_rois: true
 ```
 Stage 3 完成後自動生成 `results/analysis/merged_all_rois.h5ad`；Stage 4 QC 自動從此檔載入。
+
+---
+
+## Section 23: Stage 4 UI 多 ROI 選擇器 + Heatmap 改善（2026-03-07）
+
+### 23-1. Stage 4 來源選擇 UI
+
+**需求**：Stage 4 讓使用者在執行 QC 前選擇：分析單一 ROI 還是合併所有 ROI。
+
+**後端變更**（`backend/src/api/analysis.py`）：
+- `QCParams` 新增 `merge_rois: Optional[bool]` 與 `roi_name: Optional[str]`
+- 新增 `GET /analysis/available_rois` endpoint：列出所有有 `proseg_cells.h5ad` 的 ROI
+- `run_qc` endpoint：in-memory 覆寫 config（不寫回 YAML），`roi_name` 指定時將該 ROI 移至列表第一位
+
+**前端變更**（`frontend/src/pages/Stage4_Analysis.tsx`）：
+- 新增 `analysisMode: 'single' | 'merge'` 狀態
+- Radio group 選擇模式；單一模式下顯示 ROI 下拉選單
+- 僅有多個 ROI 時才顯示選擇器
+- `handleRunQC` 依模式傳入 `merge_rois` / `roi_name`
+
+**前端 API**（`frontend/src/api/client.ts`）：
+- 新增 `getAvailableRois()`
+
+### 23-2. Heatmap 色域改善（Z-score + RdBu_r）
+
+**問題**：min-max scaling 使每個基因的最高表達 cluster 都達到顏色上限（亮黃），導致所有區塊飽和。
+
+**修復**（`backend/src/analysis/pipeline.py`，`run_heatmap_step`）：
+
+| 項目 | 舊值 | 新值 |
+|------|------|------|
+| 縮放方式 | min-max | Z-score + clip(-2.5, 2.5) |
+| 色圖 | `viridis` | `RdBu_r` |
+| 色域固定 | 無 | `vmin=-2.5, vmax=2.5` |
+| 色條標籤 | Scaled mean expr. | Z-score (mean expr.) |
+
+Z-score：藍 = 低於平均，白 = 平均，紅 = 高於平均；個別 outlier 不再撐爆色域。
+
+### 23-3. Heatmap 基因數控制 + 圖形比例修復
+
+**問題 1**：前端 `n_top_genes` 只控制 dotplot，heatmap 永遠使用全部 HVG（最多 2000 基因），修改無效。
+
+**問題 2**：大量基因時寬度封頂 60 吋、高度只跟 cluster 數相關，形成極扁熱圖。
+
+**修復**：
+
+| 層次 | 變更 |
+|------|------|
+| `HeatmapParams`（api/analysis.py）| 新增 `n_heatmap_genes: int = 50`（獨立控制熱圖基因數）|
+| `run_heatmap_step`（pipeline.py）| 接受 `n_heatmap_genes`，從 HVG 中取方差最高的前 N 個基因 |
+| 大小公式 | 寬度 `每基因 0.25 吋`，上限 80 吋；高度 `max(4, clusters×0.6+2, 寬度/4)`，確保高:寬 ≥ 1:4 |
+| 基因標籤閾值 | ≤80 個才顯示（原 ≤150）|
+| 前端 UI | 新增「熱圖基因數 (n_heatmap_genes)」slider；原「n_top_genes」改名為「Dotplot 每群基因數」|
+
+**選基因邏輯**：計算 HVG 在全部細胞的方差（稀疏矩陣用 E[X²]-E[X]²），取 top N，確保最具鑑別力的基因優先顯示。

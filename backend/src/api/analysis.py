@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 
-from backend.src.utils.config import load_config, save_config
+from backend.src.utils.config import load_config, save_state
 from backend.src.utils.logging import set_current_stage
 
 router = APIRouter()
@@ -38,6 +38,8 @@ class QCParams(BaseModel):
     max_pct_mito: Optional[float] = None
     n_top_genes: Optional[int] = None
     n_pcs: Optional[int] = None
+    merge_rois: Optional[bool] = None   # None = 使用 config 預設
+    roi_name: Optional[str] = None       # 單一 ROI 模式時指定（None = 取第一個）
 
 
 class UMAPExploreParams(BaseModel):
@@ -49,7 +51,18 @@ class UMAPExploreParams(BaseModel):
 
 class HeatmapParams(BaseModel):
     resolution: float
-    n_top_genes: int = 20
+    n_top_genes: int = 20       # dotplot：每 cluster 幾個 marker gene
+    n_heatmap_genes: int = 50   # heatmap：顯示方差最高的幾個 HVGs
+
+
+class AnnotateParams(BaseModel):
+    resolution: float
+    model_name: str = "Human_Colorectal_Cancer.pkl"
+
+
+class ApplyLabelsParams(BaseModel):
+    resolution: float
+    labels: dict[str, str]     # {cluster_id: cell_type_name}
 
 
 # ─────────────────────── 舊版整合 status ──────────────────────────
@@ -62,15 +75,18 @@ _task_lock = asyncio.Lock()
 _qc_status    = {"status": "idle", "progress": 0.0, "message": ""}
 _umap_status  = {"status": "idle", "progress": 0.0, "message": ""}
 _heat_status  = {"status": "idle", "progress": 0.0, "message": ""}
+_annot_status = {"status": "idle", "progress": 0.0, "message": ""}
 
-_qc_lock   = asyncio.Lock()
-_umap_lock = asyncio.Lock()
-_heat_lock = asyncio.Lock()
+_qc_lock    = asyncio.Lock()
+_umap_lock  = asyncio.Lock()
+_heat_lock  = asyncio.Lock()
+_annot_lock = asyncio.Lock()
 
 # 暫存最近一次的圖表資料（避免每次查詢都讀磁碟）
 _qc_images:    dict[str, str] = {}
 _umap_images:  dict[str, str] = {}
 _heatmap_images: dict[str, str] = {}
+_annot_suggestions: dict[str, str] = {}   # 最近一次 CellTypist 建議
 
 
 # ──────────────────── 舊版整合執行 /run ───────────────────────────
@@ -102,7 +118,7 @@ async def run_analysis(background_tasks: BackgroundTasks, params: Optional[Analy
     config = load_config()
     if params:
         _patch_config_from_analysis_params(config, params)
-        save_config(config)
+        save_state({"analysis": config.get("analysis", {})})
 
     background_tasks.add_task(_run_analysis, config)
     return {"status": "ok", "message": "分析已啟動"}
@@ -219,10 +235,37 @@ async def run_qc(background_tasks: BackgroundTasks, params: Optional[QCParams] =
     config = load_config()
     if params:
         _patch_config_from_qc_params(config, params)
-        save_config(config)
+        save_state({"analysis": config.get("analysis", {})})
+        # 分析來源選擇（in-memory 覆寫，不寫回 state）
+        if params.merge_rois is not None:
+            config.setdefault("analysis", {})["merge_rois"] = params.merge_rois
+        if params.roi_name is not None and not params.merge_rois:
+            # 將指定 ROI 移至列表第一位，供 run_qc_step 的 rois[0] 讀取
+            rois = config.get("rois", [])
+            target = next((r for r in rois if r.get("name") == params.roi_name), None)
+            if target:
+                config["rois"] = [target] + [r for r in rois if r.get("name") != params.roi_name]
 
     background_tasks.add_task(_run_qc, config)
     return {"status": "ok", "message": "QC 前處理已啟動"}
+
+
+@router.get("/available_rois")
+async def get_available_rois():
+    """列出所有已有 proseg_cells.h5ad 的 ROI（供 Stage 4 來源選擇）"""
+    try:
+        config = load_config()
+        from backend.src.utils.config import resolve_path
+        out_base = resolve_path(config["paths"]["output_dir"]) / "roi"
+        rois = config.get("rois", [])
+        result = []
+        for roi in rois:
+            name = roi.get("name", "")
+            h5ad = out_base / name / "proseg_cells.h5ad"
+            result.append({"name": name, "available": h5ad.exists()})
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 # ─────────────────────── Step 2: UMAP ─────────────────────────────
@@ -302,7 +345,7 @@ async def run_umap_explore(background_tasks: BackgroundTasks, params: Optional[U
     if p.n_pcs is not None:       clus["n_pcs"] = p.n_pcs
     if p.n_neighbors is not None: clus["n_neighbors"] = p.n_neighbors
     if p.min_dist is not None:    clus["min_dist"] = p.min_dist
-    save_config(config)
+    save_state({"analysis": {"clustering": clus}})
 
     background_tasks.add_task(_run_umap, config, p)
     return {"status": "ok", "message": "UMAP 探索已啟動"}
@@ -348,7 +391,7 @@ async def _run_heatmap(config: dict, p: HeatmapParams):
     try:
         from backend.src.analysis.pipeline import run_heatmap_step
         result = await asyncio.get_event_loop().run_in_executor(
-            None, run_heatmap_step, config, p.resolution, p.n_top_genes
+            None, run_heatmap_step, config, p.resolution, p.n_top_genes, p.n_heatmap_genes
         )
         _heatmap_images = result  # dict: {"heatmap": b64, "dotplot": b64}
         _heat_status = {"status": "done", "progress": 1.0, "message": "熱圖 + 點圖完成"}
@@ -403,3 +446,82 @@ def _patch_config_from_qc_params(config: dict, params: QCParams):
     if params.n_top_genes is not None:   hvg["n_top_genes"] = params.n_top_genes
     clus = cfg.setdefault("clustering", {})
     if params.n_pcs is not None:         clus["n_pcs"] = params.n_pcs
+
+
+# ─────────────────── Step 3: CellTypist 標註 endpoints ────────────
+
+@router.get("/cluster_info")
+async def get_cluster_info(resolution: float):
+    """取得指定 resolution 的 cluster ID 列表，以及已套用的標籤（若有）。"""
+    config = load_config()
+    try:
+        from backend.src.analysis.pipeline import get_cluster_ids
+        ids, existing_labels = get_cluster_ids(config, resolution)
+        return {"status": "ok", "data": {"cluster_ids": ids, "existing_labels": existing_labels}}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/celltypist_models")
+async def get_celltypist_models():
+    """回傳支援的 CellTypist 模型清單。"""
+    from backend.src.analysis.pipeline import CELLTYPIST_MODELS
+    return {"status": "ok", "data": CELLTYPIST_MODELS}
+
+
+async def _run_annotate(config: dict, p: AnnotateParams):
+    global _annot_status, _annot_suggestions
+    set_current_stage("analysis")
+    _annot_suggestions = {}
+    _annot_status = {
+        "status": "running", "progress": 0.0,
+        "message": f"CellTypist 標註中 (res={p.resolution}, model={p.model_name})...",
+    }
+    try:
+        from backend.src.analysis.pipeline import run_celltypist_annotation
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, run_celltypist_annotation, config, p.resolution, p.model_name
+        )
+        _annot_suggestions = result
+        _annot_status = {
+            "status": "done", "progress": 1.0,
+            "message": f"CellTypist 標註完成（{len(result)} 個 cluster）",
+        }
+    except Exception as e:
+        logger.error(f"CellTypist 標註失敗：{e}")
+        _annot_status = {"status": "error", "progress": 0.0, "message": str(e)}
+
+
+@router.post("/annotate")
+async def run_annotation(background_tasks: BackgroundTasks, params: AnnotateParams):
+    async with _annot_lock:
+        if _annot_status["status"] == "running":
+            return {"status": "error", "message": "標註任務執行中"}
+    config = load_config()
+    background_tasks.add_task(_run_annotate, config, params)
+    return {"status": "ok", "message": "CellTypist 標註已啟動"}
+
+
+@router.get("/annotate_status")
+async def get_annotate_status():
+    if _annot_status.get("status") == "done" and _annot_suggestions:
+        return {**_annot_status, "suggestions": _annot_suggestions}
+    return _annot_status
+
+
+@router.get("/annotate_suggestions")
+async def get_annotate_suggestions():
+    return {"status": "ok", "data": _annot_suggestions}
+
+
+@router.post("/apply_labels")
+async def apply_labels_endpoint(params: ApplyLabelsParams):
+    """同步套用標籤（操作快，不需要背景任務）。"""
+    config = load_config()
+    try:
+        from backend.src.analysis.pipeline import apply_cluster_labels
+        apply_cluster_labels(config, params.resolution, params.labels)
+        return {"status": "ok", "message": f"已套用 {len(params.labels)} 個 cluster 標籤"}
+    except Exception as e:
+        logger.error(f"套用標籤失敗：{e}")
+        return {"status": "error", "message": str(e)}

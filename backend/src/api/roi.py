@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks
 from fastapi.responses import Response as FastAPIResponse
 from pydantic import BaseModel
 
-from backend.src.utils.config import load_config, save_config
+from backend.src.utils.config import load_config, save_state
 from backend.src.utils.logging import set_current_stage
 
 router = APIRouter()
@@ -73,7 +73,7 @@ async def add_roi(roi: RoiConfig):
     rois = [r for r in rois if r.get("name") != roi.name]  # 去重
     rois.append(roi.model_dump(exclude_none=True))
     config["rois"] = rois
-    save_config(config)
+    save_state({"rois": rois})
     return {"status": "ok", "message": f"ROI '{roi.name}' 已新增"}
 
 
@@ -81,8 +81,7 @@ async def add_roi(roi: RoiConfig):
 async def delete_roi(roi_name: str):
     config = load_config()
     rois = [r for r in config.get("rois", []) if r.get("name") != roi_name]
-    config["rois"] = rois
-    save_config(config)
+    save_state({"rois": rois})
     return {"status": "ok", "message": f"ROI '{roi_name}' 已刪除"}
 
 

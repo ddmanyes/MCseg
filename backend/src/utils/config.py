@@ -1,6 +1,12 @@
 """
-配置管理：讀取、驗證 pipeline.yaml
+配置管理：讀取 pipeline.yaml（靜態設定）+ state.json（執行期狀態）
+
+- pipeline.yaml：使用者設定，程式永不覆寫
+- config/state.json：程式執行時寫入的動態狀態（paths、rois、params 等）
+- load_config()：回傳兩者深度合併的結果（state 優先）
+- save_state(updates)：只更新 state.json 的對應欄位
 """
+import json
 import logging
 import os
 from pathlib import Path
@@ -11,11 +17,45 @@ import yaml
 logger = logging.getLogger("pipeline.config")
 
 _DEFAULT_CONFIG_PATH = Path(__file__).parents[3] / "config" / "pipeline.yaml"
+_STATE_PATH = Path(__file__).parents[3] / "config" / "state.json"
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Deep merge：override 的值覆蓋 base，巢狀 dict 遞迴合併。"""
+    result = base.copy()
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+def load_state() -> dict[str, Any]:
+    """讀取 state.json（不存在時回傳空字典）。"""
+    if not _STATE_PATH.exists():
+        return {}
+    with open(_STATE_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_state(updates: dict[str, Any]) -> None:
+    """
+    將動態狀態寫入 state.json。
+    只傳入需要更新的部分，其餘已有狀態不受影響。
+    """
+    state = load_state()
+    state = _deep_merge(state, updates)
+    _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(_STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    logger.info(f"已更新 state.json：{list(updates.keys())}")
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """
-    讀取 pipeline.yaml 並回傳配置字典。
+    讀取 pipeline.yaml 並與 state.json 合併後回傳。
+    state.json 的值優先於 pipeline.yaml。
 
     Parameters
     ----------
@@ -30,19 +70,12 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
+    state = load_state()
+    if state:
+        config = _deep_merge(config, state)
+
     logger.info(f"已載入設定檔：{config_path}")
     return config
-
-
-def save_config(config: dict[str, Any], path: str | Path | None = None) -> None:
-    """將配置寫回 YAML 檔案。"""
-    config_path = Path(path) if path else _DEFAULT_CONFIG_PATH
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(config_path, "w", encoding="utf-8") as f:
-        yaml.dump(config, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
-
-    logger.info(f"已儲存設定檔：{config_path}")
 
 
 def resolve_path(p: str, base: Path | None = None) -> Path:

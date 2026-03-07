@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from backend.src.utils.config import load_config, resolve_path, save_config
+from backend.src.utils.config import load_config, resolve_path, save_state
 from backend.src.utils.discovery import scan_data_root
 
 router = APIRouter()
@@ -49,7 +49,7 @@ async def apply_paths(req: ApplyRequest):
                 paths[key] = value
 
         # 同時保存 data_root（方便下次掃描）
-        save_config(config)
+        save_state({"paths": config["paths"]})
         logger.info(f"已套用 {len(updates)} 項路徑設定")
         return {"status": "ok", "message": f"已更新 {len(updates)} 項路徑", "data": paths}
     except Exception as e:

@@ -58,13 +58,23 @@ export const runQC = (params?: object) => api.post('/analysis/run_qc', params ??
 export const getQCStatus = () => api.get('/analysis/qc_status')
 export const getQCImages = () => api.get('/analysis/qc_images')
 export const getOverlayHdUrl = (name: 'pre_qc' | 'post_qc') => `/api/analysis/overlay_hd/${name}`
+export const getAvailableRois = () => api.get('/analysis/available_rois')
 
 // Stage 4: Step 2 — UMAP 多解析度
 export const runUMAPExplore = (params?: object) => api.post('/analysis/run_umap', params ?? {})
 export const getUMAPExploreStatus = () => api.get('/analysis/umap_status')
 export const getUMAPImages = () => api.get('/analysis/umap_images')
 
-// Stage 4: Step 3 — Heatmap
+// Stage 4: Step 3 — 細胞類型標註
+export const getClusterInfo = (resolution: number) =>
+  api.get('/analysis/cluster_info', { params: { resolution } })
+export const getCelltypistModels = () => api.get('/analysis/celltypist_models')
+export const runAnnotate = (params: object) => api.post('/analysis/annotate', params)
+export const getAnnotateStatus = () => api.get('/analysis/annotate_status')
+export const getAnnotateSuggestions = () => api.get('/analysis/annotate_suggestions')
+export const applyLabels = (params: object) => api.post('/analysis/apply_labels', params)
+
+// Stage 4: Step 4 — Heatmap
 export const runHeatmap = (params: object) => api.post('/analysis/run_heatmap', params)
 export const getHeatmapStatus = () => api.get('/analysis/heatmap_status')
 export const getHeatmapImage = () => api.get('/analysis/heatmap')
