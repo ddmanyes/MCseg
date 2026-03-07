@@ -18,6 +18,73 @@ from backend.src.utils.config import resolve_path
 logger = logging.getLogger("pipeline.analysis")
 
 
+# ─────────────────────── multi-ROI merge ──────────────────────────
+
+def merge_all_rois(config: dict[str, Any]) -> Path:
+    """
+    合併所有 ROI 的 proseg_cells.h5ad，並將 local µm 座標加回全局偏移。
+
+    同一 H&E + Visium 來源不需要 batch correction。
+    輸出：{output_dir}/merged_all_rois.h5ad
+
+    Returns
+    -------
+    Path  輸出檔路徑
+    """
+    paths = config["paths"]
+    rois = config.get("rois", [])
+    out_base = resolve_path(paths["output_dir"]) / "roi"
+    output_dir = resolve_path(paths["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    adatas = []
+    for roi in rois:
+        roi_name = roi.get("name", "")
+        h5ad = out_base / roi_name / "proseg_cells.h5ad"
+        if not h5ad.exists():
+            logger.warning(f"找不到 {roi_name}/proseg_cells.h5ad，跳過")
+            continue
+
+        adata = sc.read_h5ad(str(h5ad))
+        adata.obs["roi"] = roi_name
+
+        # 加回全局座標偏移（local µm → global µm）
+        if "spatial" in adata.obsm and roi.get("x") is not None:
+            pixel_size_um = roi.get("pixel_size_um", 0.2737)
+            x_offset_um = float(roi["x"]) * pixel_size_um
+            y_offset_um = float(roi["y"]) * pixel_size_um
+            coords = adata.obsm["spatial"].copy()
+            coords[:, 0] += x_offset_um
+            coords[:, 1] += y_offset_um
+            adata.obsm["spatial"] = coords
+            logger.info(
+                f"  {roi_name}: {adata.n_obs:,} 細胞，"
+                f"偏移 x+{x_offset_um:.1f} µm, y+{y_offset_um:.1f} µm"
+            )
+        else:
+            logger.info(f"  {roi_name}: {adata.n_obs:,} 細胞（無座標偏移資訊）")
+
+        adatas.append(adata)
+
+    if not adatas:
+        raise ValueError("未找到任何 ROI 的 proseg_cells.h5ad，請先完成 Stage 3")
+
+    if len(adatas) == 1:
+        merged = adatas[0]
+        logger.info("只有 1 個 ROI，直接使用")
+    else:
+        merged = ad.concat(adatas, join="outer", fill_value=0)
+        logger.info(
+            f"ROI 合併完成：{merged.n_obs:,} 細胞，{merged.n_vars:,} 基因，"
+            f"{len(adatas)} 個 ROI"
+        )
+
+    out_path = output_dir / "merged_all_rois.h5ad"
+    merged.write_h5ad(str(out_path))
+    logger.info(f"已儲存合併結果：{out_path}")
+    return out_path
+
+
 # ─────────────────────────── helper ──────────────────────────────
 
 def _encode_image(path: Path) -> str:
@@ -134,19 +201,31 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
 
     paths = config["paths"]
     analysis_cfg = config.get("analysis", {})
+    rois = config.get("rois", [{"name": "test"}])
 
     out_base = resolve_path(paths["output_dir"]) / "roi"
-    roi_name = config.get("rois", [{"name": "text"}])[0].get("name", "text")
-    input_h5ad = out_base / roi_name / "proseg_cells.h5ad"
-    if not input_h5ad.exists():
-        raise FileNotFoundError(f"找不到 Proseg 輸出：{input_h5ad}")
-
-    fig_dir = resolve_path(paths["figure_dir"])
-    fig_dir.mkdir(parents=True, exist_ok=True)
     output_dir = resolve_path(paths["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+    fig_dir = resolve_path(paths["figure_dir"])
+    fig_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"QC Step：載入 {input_h5ad}")
+    # 多 ROI 合併模式
+    merge_mode = analysis_cfg.get("merge_rois", False) and len(rois) > 1
+    if merge_mode:
+        merged_path = output_dir / "merged_all_rois.h5ad"
+        if not merged_path.exists():
+            logger.info("merged_all_rois.h5ad 不存在，自動執行合併...")
+            merge_all_rois(config)
+        input_h5ad = merged_path
+        roi_name = None   # 合併模式不使用單一 ROI H&E 疊圖
+        logger.info(f"QC Step（合併模式）：載入 {input_h5ad}")
+    else:
+        roi_name = rois[0].get("name", "test")
+        input_h5ad = out_base / roi_name / "proseg_cells.h5ad"
+        if not input_h5ad.exists():
+            raise FileNotFoundError(f"找不到 Proseg 輸出：{input_h5ad}")
+        logger.info(f"QC Step：載入 {input_h5ad}")
+
     adata = sc.read_h5ad(str(input_h5ad))
     adata.uns["dataset_name"] = "proseg_cells"
     logger.info(f"  {adata.n_obs:,} 細胞, {adata.n_vars:,} 基因")
@@ -254,10 +333,11 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
         figures["elbow"] = _encode_image(elbow_path)
         logger.info("已儲存 pca_elbow.png")
 
-    # ── 6. 疊圖（H&E + 細胞重心，QC 前後比較） ──
-    if _pre_spatial is not None:
+    # ── 6. 疊圖（H&E + 細胞重心，QC 前後比較）──
+    # 合併模式（roi_name=None）跳過疊圖，因各 ROI H&E 座標系不同
+    if _pre_spatial is not None and roi_name is not None:
         he_path = out_base / roi_name / "he_crop.tif"
-        pixel_size_um = config.get("rois", [{}])[0].get("pixel_size_um", 0.2737)
+        pixel_size_um = rois[0].get("pixel_size_um", 0.2737)
         overlay_figs = _generate_overlay_images(
             _pre_spatial, _pre_obs_names, set(adata.obs_names),
             he_path, fig_dir, pixel_size_um,

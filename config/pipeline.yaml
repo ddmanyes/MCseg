@@ -31,14 +31,14 @@ segmentation:
     batch_size: 4
   strategy:
     name: LOGIC_A
-    dia_small: 30.0
+    dia_small: 5.0
     dia_large: 60.0
-    flow_threshold: 0.4
-    cellprob_threshold: -1.0
-    fragment_threshold: 200
+    flow_threshold: 0.8
+    cellprob_threshold: -2.0
+    fragment_threshold: 20
   postprocessing:
     enable_eosin_watershed: true
-    eosin_bg_threshold: 80
+    eosin_bg_threshold: 40
     enable_merge_enclosed: true
   tiling:
     block_size: 2048
@@ -111,6 +111,7 @@ proseg:
     scale_nm_px: 264.5833
     scale_um_px: 0.2645833
 analysis:
+  merge_rois: false   # 多 ROI 合併分析（同一 H&E + Visium，無需 batch correction）
   preprocessing:
     cellular:
       min_genes: 20

@@ -213,3 +213,12 @@ def run_tiled_proseg(config: dict) -> None:
             logger.warning(f"[{roi_name}] GeoJSON 同步更新失敗（非致命）：{_e}")
 
         logger.info(f"[{roi_name}] Tiled Proseg 處理完成！")
+
+    # 所有 ROI 跑完後，若啟用 merge_rois 則自動合併
+    if config.get("analysis", {}).get("merge_rois", False) and len(rois) > 1:
+        try:
+            from backend.src.analysis.pipeline import merge_all_rois
+            merged_path = merge_all_rois(config)
+            logger.info(f"所有 ROI 已合併：{merged_path}")
+        except Exception as _e:
+            logger.warning(f"ROI 合併失敗（非致命，可在 Stage 4 手動觸發）：{_e}")

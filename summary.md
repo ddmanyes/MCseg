@@ -641,3 +641,66 @@ logger.info(f"sdata elements: images={list(sdata.images.keys())}, shapes={list(s
 **最終決定**：三個 bug 均已確認，但因用戶決定以 `git restore` 返回先前版本，**所有 `pipeline.py` 修改均已還原**。`condition_tester.py` 的縮圖升級保留（commit `090104e`）。
 
 **後續**：若需重新修復，三個問題的修法均已明確記錄於此，可直接套用。
+
+---
+
+## Section 21: Xenium Explorer 細胞輪廓錯位根因分析與修復（2026-03-07）
+
+### 21-1. 問題描述
+開啟 Xenium Explorer bundle 後，細胞輪廓位置與 H&E 不對齊（與 Section 20-2/20-3 同類問題再次出現）。
+
+### 21-2. 根本原因：proseg_cells.h5ad 與 combined_proseg_results_qc.json 版本不一致
+
+| 檔案 | 來自的 Stage 3 run |
+|------|------------------|
+| `combined_proseg_results_qc.json` | 08:14 最舊一次 tile run（tile_y0_x0 含 125 cells）|
+| `proseg_cells.h5ad` | 08:43 中間一次 tile run（tile_y0_x0 含 ~154 cells）|
+| 當前 tile files | 最新 run（tile_y0_x0 含 243 cells，IDs 0–242）|
+
+三個版本錯開 → cell ID 比對率僅 35%（592/1693）→ 大量細胞沒有對應多邊形 → 位置異常。
+
+### 21-3. 結構性修復
+
+**一次性修復**：重跑 `merge_tiles` 與 `generate_combined_geojson`，強制從當前 tile files 同步兩個檔案。
+
+**根本修復**（`backend/src/proseg/runner.py`）：  
+在 `run_tiled_proseg` 的 `merge_tiles()` 呼叫後立即同步重建 `combined_proseg_results_qc.json`，確保兩者永遠來自同一次 tile run：
+
+```python
+# merge_tiles 完成後緊接著同步 GeoJSON
+from backend.src.export.xenium_exporter import generate_combined_geojson
+geojson = generate_combined_geojson(tile_proseg_dir=output_dir, ...)
+with open(geojson_path, "w") as f:
+    json.dump(geojson, f)
+```
+
+修復後比對率：98.9%（1480/1497 cells）。
+
+---
+
+## Section 22: 多 ROI 合併分析功能實作（2026-03-07）
+
+### 22-1. 背景
+當 `pipeline.yaml` 定義 2-3 個 ROI（來自同一 H&E + Visium），Stage 2/3 各自獨立處理。  
+新增合併功能讓 Stage 4 可以整合所有 ROI 一起做 QC + UMAP + Leiden。
+
+### 22-2. 設計決策
+- 同一 H&E + Visium → **無需 batch correction**
+- 座標還原：各 ROI local µm + (roi.x × pixel_size_um, roi.y × pixel_size_um) → 全局 µm
+- `obs["roi"]` 欄位記錄細胞來源，可在 UMAP 上著色
+
+### 22-3. 實作位置
+
+| 檔案 | 變更 |
+|------|------|
+| `config/pipeline.yaml` | 新增 `analysis.merge_rois: false`（預設關閉）|
+| `backend/src/analysis/pipeline.py` | 新增 `merge_all_rois(config)` 函數；修改 `run_qc_step` 支援合併模式 |
+| `backend/src/proseg/runner.py` | Stage 3 所有 ROI 完成後自動呼叫 `merge_all_rois`（若啟用）|
+
+### 22-4. 使用方式
+```yaml
+# pipeline.yaml
+analysis:
+  merge_rois: true
+```
+Stage 3 完成後自動生成 `results/analysis/merged_all_rois.h5ad`；Stage 4 QC 自動從此檔載入。
