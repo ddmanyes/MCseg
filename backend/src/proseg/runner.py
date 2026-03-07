@@ -8,33 +8,73 @@ from backend.src.proseg.pipeline import ProsegPipeline
 
 logger = logging.getLogger("pipeline.proseg.tiling")
 
-def merge_tiles(results_path: Path, output_file: Path):
+def merge_tiles(
+    results_path: Path,
+    output_file: Path,
+    tile_w: int = None,
+    tile_h: int = None,
+    coordinate_scale: float = None,
+):
+    """合併各 tile 的 h5ad，並按重心位置去重（移除 overlap 產生的重複邊界細胞）。
+
+    Parameters
+    ----------
+    tile_w, tile_h : int, optional
+        各 tile 的名義像素尺寸（來自 w_full//grid_nx）。提供時啟用空間去重。
+    coordinate_scale : float, optional
+        µm/px 換算係數（如 0.2737）。與 tile_w/tile_h 一起使用。
+    """
+    import re as _re
     logger.info(f"🔍 正在搜尋分塊結果於：{results_path}")
     tile_dirs = sorted([d for d in results_path.iterdir() if d.is_dir() and d.name.startswith("tile_")])
     logger.info(f"  - 找到 {len(tile_dirs)} 個分塊目錄")
-    
+
+    _pat = _re.compile(r"tile_y(\d+)_x(\d+)$")
+    do_spatial_clip = (tile_w is not None and tile_h is not None and coordinate_scale is not None)
+
     adatas = []
     for tile_dir in tile_dirs:
         h5ad_file = tile_dir / "proseg_integrated.h5ad"
         if not h5ad_file.exists():
             logger.warning(f"  ⚠️  分塊 {tile_dir.name} 缺少 H5AD，跳過")
             continue
-            
+
         logger.info(f"  📖 載入 {tile_dir.name}...")
         try:
             adata = ad.read_h5ad(h5ad_file)
             adata.obs['tile_id'] = tile_dir.name
             adata.obs_names = [f"{tile_dir.name}_{name}" for name in adata.obs_names]
+
+            # 空間去重：只保留重心落在此 tile 名義邊界內的細胞
+            # 去除因 overlap 而在相鄰 tile 被 Proseg 重複偵測的邊界細胞
+            if do_spatial_clip and "spatial" in adata.obsm:
+                m = _pat.match(tile_dir.name)
+                if m:
+                    iy, ix = int(m.group(1)), int(m.group(2))
+                    x_min_um = ix * tile_w * coordinate_scale
+                    x_max_um = (ix + 1) * tile_w * coordinate_scale
+                    y_min_um = iy * tile_h * coordinate_scale
+                    y_max_um = (iy + 1) * tile_h * coordinate_scale
+                    cx = adata.obsm["spatial"][:, 0]
+                    cy = adata.obsm["spatial"][:, 1]
+                    keep = (cx >= x_min_um) & (cx < x_max_um) & \
+                           (cy >= y_min_um) & (cy < y_max_um)
+                    n_before = adata.n_obs
+                    adata = adata[keep].copy()
+                    n_clipped = n_before - adata.n_obs
+                    if n_clipped:
+                        logger.info(f"     空間去重: 剪裁 {n_clipped} 個超出名義邊界的細胞")
+
             adatas.append(adata)
         except Exception as e:
             logger.error(f"  ❌ 載入失敗 {tile_dir.name}: {e}")
-            
+
     if not adatas:
         raise ValueError("❌ 未找到任何有效的分塊 AnnData 進行合併！")
-        
+
     logger.info(f"🔗 合併 {len(adatas)} 個分塊...")
     merged = ad.concat(adatas, join='outer', fill_value=0)
-    
+
     logger.info(f"💾 儲存合併結果至：{output_file}")
     merged.write_h5ad(output_file)
     logger.info(f"✅ 合併成功！總細胞數：{merged.n_obs:,}，總基因數：{merged.n_vars:,}")
@@ -144,6 +184,12 @@ def run_tiled_proseg(config: dict) -> None:
             # 每個 Tile 後主動清理記憶體
             gc.collect()
             
-        # 合併 Tile
-        merge_tiles(output_dir, final_h5ad)
+        # 合併 Tile（傳入幾何資訊以啟用空間去重）
+        merge_tiles(
+            output_dir,
+            final_h5ad,
+            tile_w=tile_w,
+            tile_h=tile_h,
+            coordinate_scale=roi_scale_um_px,
+        )
         logger.info(f"[{roi_name}] Tiled Proseg 處理完成！")

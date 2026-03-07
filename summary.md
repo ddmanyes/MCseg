@@ -432,6 +432,107 @@ logger.info(f"sdata elements: images={list(sdata.images.keys())}, shapes={list(s
 
 ---
 
+## 20. Stage 5 Xenium Explorer 座標對齊根本修復 + Tile 邊界去重 (2026-03-06)
+
+### 20-1. Xenium Explorer 雙重縮放 Bug（根本原因）
+
+**問題**：Xenium Explorer 開啟後，細胞遮罩（cell mask）與 H&E 背景嚴重錯位。
+
+**根本原因**：`xenium_exporter.py` 在呼叫 `spatialdata_xenium_explorer.write()` 前，手動將座標從 µm 換算為 px（÷XENIUM_UM_PX），但 SpatialData 內部已自動做此轉換，導致 **雙重縮放**（1.288× 放大）。
+
+**修復三處（`backend/src/export/xenium_exporter.py`）**：
+
+| 位置 | 修復前 | 修復後 |
+|------|--------|--------|
+| `_load_image()` | `ndimage.zoom(×1.288)` + `Identity()` | 直接用原圖 + `Scale([pixel_size_um, pixel_size_um])` |
+| `_load_polygons_and_table()` | `shapely_scale(÷XENIUM_UM_PX)` 換算至 px | 直接傳 µm 多邊形，不手動換算 |
+| `_load_transcripts()` | `tx_dd["x"] /= XENIUM_UM_PX` | 移除手動換算，直接傳 µm |
+
+---
+
+### 20-2. Tile 邊界重複細胞 → GeoJSON 邊界剪裁
+
+**問題**：各 tile 因 nucleus mask 有 200px padding，Proseg 在 padding 區偵測到相鄰 tile 的細胞，產生重複多邊形。舊的 combined JSON（3150 features）包含大量重複（實際 tile 總計 1878 cells）。
+
+**修復**（`generate_combined_geojson` in `xenium_exporter.py`）：
+- 每個 feature 計算重心 global µm
+- 只保留重心落在該 tile 名義邊界 `[ix×tile_w, (ix+1)×tile_w)` 內的細胞
+- 結果：1844 features，無重複，tile 間距 < 2µm
+
+---
+
+### 20-3. Tile Transcript Overlap（根本修復邊界細胞）
+
+**問題**：轉錄本嚴格切在 tile 邊界，邊界細胞只有半側轉錄本 → Proseg 分割品質差 → 邊界出現空白帶。
+
+**修復三層**：
+
+| 層 | 檔案 | 修改 |
+|----|------|------|
+| 轉錄本 filter | `pipeline.py` | transcript 範圍延伸 `padding` px 進相鄰 tile（overlap = padding = 200px） |
+| roi_offset 固定 | `pipeline.py` | 不從 transcript min 重算（避免雙重 padding），直接固定為 `max(0, roi_x - padding)` |
+| h5ad 去重 | `runner.py merge_tiles` | 按 obsm["spatial"] 重心裁剪到名義邊界，與 GeoJSON 去重邏輯一致 |
+
+**注意**：此修復需刪除舊 tile 結果並重跑 Stage 3 才能生效（Smart Resume 會跳過已有 tile）。
+
+---
+
+### 20-4. 診斷工具（已清除）
+
+本次工作期間在 `scripts/temp/` 建立了以下診斷腳本（封存時已刪除）：
+- `debug_geojson_overlay.py`：生成 GeoJSON 多邊形 vs H&E 疊圖、重心比較圖、tile 邊界色碼圖
+
+**診斷結果**：
+- GeoJSON 多邊形與 H&E 組織完美對齊（分割正確）
+- 重心偏移由 -71.6px 縮至 -15.2px（舊 combined JSON 過時所致，換新 JSON 後改善）
+
+---
+
+## 19. Stage 4 H&E 疊圖視覺化 + QC 參數修正 (2026-03-06)
+
+### 19-1. H&E 疊圖 QC 前後比較（新功能）
+
+**需求**：在 Stage 4 QC 後可視覺化細胞重心疊在 H&E 上，並觀察 QC 刪除了哪些細胞。
+
+**實作**（commit `80cdca9`）：
+
+| 產出檔案 | DPI | 說明 |
+|---------|-----|------|
+| `overlay_pre_qc.png` | 150 | QC 前全部細胞（青色），前端預覽用 |
+| `overlay_pre_qc_hd.png` | 300 | QC 前 HD 存檔，供下載 |
+| `overlay_post_qc.png` | 150 | 保留（綠）+ 刪除（紅）比較，前端預覽用 |
+| `overlay_post_qc_hd.png` | 300 | QC 後 HD 存檔，供下載 |
+
+**技術細節**：
+- 座標系：`obsm["spatial"]`（µm）÷ `pixel_size_um`（0.2737）→ HE 像素
+- 新函數 `_generate_overlay_images()` 於 `backend/src/analysis/pipeline.py`，在 `run_qc_step()` 過濾前後各記錄 obs_names，自動比對
+- 前端 Stage 4 新增 2 個 tab（H&E 疊圖 QC 前/後）+ HD 下載連結
+- 新 API：`GET /analysis/overlay_hd/{pre_qc|post_qc}` → FileResponse
+
+### 19-2. QC 預設參數修正（Visium HD 適配）
+
+**問題**：預設 `min_counts=100`、`max_pct_mito=20%` 對 Visium HD 過於嚴格，導致 75%+ 細胞被刪除。
+
+**根本原因**：
+- Visium HD 每顆 proseg 細胞 UMI 中位數僅 57（非 scRNA-seq 的 1000+）
+- 粒線體 % 中位數 34.5%（probe-based 空間資料本來就高）
+
+**修正**（`config/pipeline.yaml` + `Stage4_Analysis.tsx`）：
+
+| 參數 | 舊值 | 新值 | 原因 |
+|------|------|------|------|
+| `min_counts` | 100 | 5 | 中位數僅 57，舊值過嚴 |
+| `min_genes` | 20 | 10 | 空間資料基因稀疏 |
+| `max_pct_mito` | 20% | 80% | 空間資料 mt% 本來就高 |
+
+### 19-3. Violin Plot Y 軸修正
+
+**問題**：`max_genes=8000` 門檻線撐爆 y 軸，KDE 延伸到負值（-400）。
+
+**修正**：`pipeline.py` violin 繪圖後加 `ax.set_ylim(bottom=0, top=data_99*1.5)`，下限鎖 0，上限夾至 99th percentile × 1.5。
+
+---
+
 ## 18. Stage 2.5 縮圖升級 + 空腔幽靈細胞三個根本問題定位 (2026-03-06)
 
 ### 18-1. Stage 2.5 條件測試縮圖升級為 400×400

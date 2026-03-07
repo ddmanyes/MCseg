@@ -227,25 +227,34 @@ class ProsegPipeline:
             roi_x_px, roi_y_px, roi_w_px, roi_h_px = self.fixed_roi
             logger.info(f"  🔍 使用固定 ROI (Pixels): x={roi_x_px}, y={roi_y_px}, w={roi_w_px}, h={roi_h_px}")
 
-            # Convert fixed_roi (pixels) to Global Units (nm) for transcript filtering
-            roi_min_x_nm = roi_x_px * scale_x
-            roi_max_x_nm = (roi_x_px + roi_w_px) * scale_x
-            roi_min_y_nm = roi_y_px * scale_y
-            roi_max_y_nm = (roi_y_px + roi_h_px) * scale_y
+            # Transcript filter 延伸 padding 進相鄰 tile（overlap 策略）
+            # 確保邊界細胞在兩側 tile 都有完整轉錄本，Proseg 才能正確分割
+            # roi_offset 不從 transcript min 重算，直接固定為 tile 邊界，
+            # 使座標換算公式與 generate_combined_geojson 保持一致
+            tx_min_x_px = max(0, roi_x_px - self.padding)
+            tx_max_x_px = roi_x_px + roi_w_px + self.padding
+            tx_min_y_px = max(0, roi_y_px - self.padding)
+            tx_max_y_px = roi_y_px + roi_h_px + self.padding
 
             self.transcripts_df = self.transcripts_df[
-                (self.transcripts_df['x'] >= roi_min_x_nm) & (self.transcripts_df['x'] <= roi_max_x_nm) &
-                (self.transcripts_df['y'] >= roi_min_y_nm) & (self.transcripts_df['y'] <= roi_max_y_nm)
+                (self.transcripts_df['x'] >= tx_min_x_px * scale_x) &
+                (self.transcripts_df['x'] <= tx_max_x_px * scale_x) &
+                (self.transcripts_df['y'] >= tx_min_y_px * scale_y) &
+                (self.transcripts_df['y'] <= tx_max_y_px * scale_y)
             ].copy()
-            logger.info(f"  ✅ 篩選轉錄點位完成: 剩餘 {len(self.transcripts_df)} 個點位")
+            logger.info(f"  ✅ 篩選轉錄點位完成（含 overlap）: {len(self.transcripts_df)} 個點位")
+            logger.info(f"     transcript 範圍: x=[{tx_min_x_px}, {tx_max_x_px}]px  y=[{tx_min_y_px}, {tx_max_y_px}]px")
 
-            # Re-calculate or Set fixed ROI parameters
-            # roi format needs to be in label space (pixels)
-            self.roi_offset, roi = calculate_roi(
-                self.transcripts_df,
-                self.scale_factors,
-                padding=self.padding
-            )
+            # roi_offset 固定為 tile 邊界（含 padding），不從 transcript min 重算
+            # 避免 overlap 轉錄本把 roi_offset 拉到相鄰 tile 導致雙重 padding
+            roi_min_x = tx_min_x_px  # = max(0, roi_x_px - padding)
+            roi_min_y = tx_min_y_px  # = max(0, roi_y_px - padding)
+            roi_max_x = tx_max_x_px  # = roi_x_px + roi_w_px + padding
+            roi_max_y = tx_max_y_px  # = roi_y_px + roi_h_px + padding
+            self.roi_offset = (roi_min_x, roi_min_y)
+            roi = (roi_min_y, roi_max_y, roi_min_x, roi_max_x)
+            logger.info(f"     roi_offset 固定: ({roi_min_x}, {roi_min_y})  "
+                        f"mask 範圍: x=[{roi_min_x},{roi_max_x}] y=[{roi_min_y},{roi_max_y}]")
         else:
             self.roi_offset, roi = calculate_roi(
                 self.transcripts_df,

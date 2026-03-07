@@ -6,24 +6,14 @@ spatialdata_xenium_explorer 可讀取的 Xenium Explorer bundle。
 
 座標系設計
 ----------
-Xenium Explorer 內部硬編碼使用 0.2125 µm/px 作為像素單位。
-為確保影像與多邊形正確對齊，必須統一使用 XENIUM_UM_PX = 0.2125：
+遵循 SpatialData 慣例：shapes/points 以物理 µm 傳入，影像以 pixel 傳入並
+附加 Scale 轉換標記其解析度。spatialdata_xenium_explorer.write() 根據
+pixel_size=XENIUM_UM_PX 統一轉換，不在程式碼中手動換算以避免雙重縮放。
 
-1. 影像（morphology.ome.tif）：
-   - 從 Zarr 載入（Visium 原生 0.2737 µm/px）
-   - 縮放至 Xenium 原生解析度（×0.2737/0.2125 = ×1.288）
-   - 寫入時帶有 PhysicalSizeX=0.2125 OME 元資料
-
-2. 多邊形（cells.zarr）：
-   - GeoJSON µm → ÷ 0.2125 → Xenium 原生像素
-   - write_polygons 再乘以 0.2125 → 儲存為 µm
-
-3. 轉錄點（transcripts.zarr）：
-   - zarr/CSV µm → ÷ 0.2125 → Xenium 原生像素
-
-4. experiment.xenium：pixel_size = 0.2125
-
-如此 Xenium Explorer 以 0.2125 µm/px 解析全部資料，確保正確對齊。
+1. 影像：原始 pixel + Scale([pixel_size_um, pixel_size_um]) 轉換
+2. 多邊形：GeoJSON µm → ShapesModel（Identity，物理 µm）
+3. 轉錄點：CSV/zarr µm → PointsModel（Identity，物理 µm）
+4. experiment.xenium：pixel_size = XENIUM_UM_PX = 0.2125
 
 移植自：Proseg-Zarr-Integration/scripts/export_to_xenium_full.py
 """
@@ -180,11 +170,12 @@ class XeniumExporter:
 
     def _load_image(self) -> Optional[sd.models.Image2DModel]:
         """
-        從 Zarr 惰性載入影像，並重新縮放至 Xenium 原生解析度（0.2125 µm/px）。
+        從 Zarr 惰性載入影像，附加 Scale 轉換（pixel_size_um µm/px）。
 
-        Xenium Explorer 內部硬編碼使用 0.2125 µm/px 作為像素單位，
-        因此影像必須縮放至對應解析度，polygon 座標才能正確對齊。
-        縮放比例 = self.pixel_size_um / XENIUM_UM_PX（例如 0.2737 / 0.2125 = 1.288）。
+        spatialdata_xenium_explorer.write() 遵循 SpatialData 慣例：
+        影像座標系為 pixel，透過 Scale 轉換告知 library 每 pixel 的物理尺寸（µm）。
+        Library 在 write() 時自行根據 pixel_size 將影像重採樣到 Xenium 輸出解析度。
+        不在此手動縮放影像，避免座標空間錯亂。
         """
         if self.zarr_path is None or not self.zarr_path.exists():
             logger.info("未提供 zarr_path，跳過影像層。")
@@ -194,36 +185,28 @@ class XeniumExporter:
             import dask.array as da
             import numpy as np
             import zarr
-            from scipy.ndimage import zoom as ndimage_zoom
+            from spatialdata.transformations import Scale
 
             logger.info(f"載入 Zarr 影像：{self.zarr_path}")
             z = zarr.open(str(self.zarr_path), mode="r")
             img_array = z["images"]["tissue_hires_image"]["0"]
 
-            # 統一為 (c, y, x) 格式並計算至 numpy
+            # 統一為 (c, y, x) 格式
             raw = np.array(img_array)
             if raw.shape[0] not in (1, 3):
                 raw = raw.transpose((2, 0, 1))
 
-            # 縮放至 Xenium 原生解析度（0.2125 µm/px）
-            scale_factor = self.pixel_size_um / XENIUM_UM_PX  # e.g. 0.2737/0.2125 = 1.288
-            if abs(scale_factor - 1.0) > 0.01:
-                logger.info(
-                    f"縮放影像至 Xenium 原生解析度：×{scale_factor:.4f} "
-                    f"({self.pixel_size_um} → {XENIUM_UM_PX} µm/px)"
-                )
-                scaled = ndimage_zoom(raw, zoom=(1, scale_factor, scale_factor), order=1)
-                logger.info(f"縮放完成：{raw.shape} → {scaled.shape}")
-            else:
-                scaled = raw
+            dask_img = da.from_array(raw, chunks=(1, 2048, 2048))
 
-            dask_img = da.from_array(scaled, chunks=(1, 2048, 2048))
-
+            # Scale 轉換：告知 spatialdata 每 pixel = self.pixel_size_um µm
+            # library 根據此資訊與 write() 的 pixel_size 自行處理重採樣
             sd_image = Image2DModel.parse(
                 dask_img, dims=("c", "y", "x"),
-                transformations={"global": Identity()},
+                transformations={"global": Scale(
+                    [self.pixel_size_um, self.pixel_size_um], axes=("y", "x")
+                )},
             )
-            logger.info(f"影像載入完成，shape={dask_img.shape}")
+            logger.info(f"影像載入完成，shape={dask_img.shape}，pixel_size={self.pixel_size_um} µm/px")
             return sd_image
 
         except Exception as exc:
@@ -301,23 +284,16 @@ class XeniumExporter:
                 if not poly_um.is_valid or poly_um.is_empty:
                     continue
 
-                # µm → Xenium 原生像素（0.2125 µm/px）
-                # Xenium Explorer 硬編碼使用 0.2125 µm/px，必須統一使用此值
-                poly_px = shapely_scale(
-                    poly_um,
-                    xfact=1.0 / XENIUM_UM_PX,
-                    yfact=1.0 / XENIUM_UM_PX,
-                    origin=(0, 0),
-                )
-
-                # 平滑化（消除 watershed 鋸齒）
-                poly_px = self._smooth_polygon(poly_px)
+                # 保持 µm 座標傳入 SpatialData（SpatialData 慣例：全域座標為物理 µm）
+                # spatialdata_xenium_explorer.write() 根據 pixel_size 自行轉換為 Xenium px
+                # 不在此手動 ÷ XENIUM_UM_PX，否則 library 又除一次造成雙重縮放
+                poly_out = self._smooth_polygon(poly_um)
 
                 # Xenium Explorer 要求全部為 MultiPolygon
-                if poly_px.geom_type == "Polygon":
-                    poly_px = shapely.geometry.MultiPolygon([poly_px])
+                if poly_out.geom_type == "Polygon":
+                    poly_out = shapely.geometry.MultiPolygon([poly_out])
 
-                polygons.append(poly_px)
+                polygons.append(poly_out)
                 valid_cell_ids.append(full_id)
 
             except Exception:
@@ -394,9 +370,8 @@ class XeniumExporter:
             logger.info(f"載入轉錄點 CSV：{self.transcripts_csv_path}")
             tx_dd = dd.read_csv(str(self.transcripts_csv_path))
 
-            # µm → Xenium 原生像素（0.2125 µm/px）
-            tx_dd["x"] = tx_dd["x"] / XENIUM_UM_PX
-            tx_dd["y"] = tx_dd["y"] / XENIUM_UM_PX
+            # 保持 µm 座標（SpatialData 慣例），不手動 ÷ XENIUM_UM_PX
+            # spatialdata_xenium_explorer.write() 根據 pixel_size 自行轉換
 
             # 預覽欄位名稱
             sample = pd.read_csv(self.transcripts_csv_path, nrows=3)
@@ -444,9 +419,7 @@ class XeniumExporter:
             logger.info(f"從 zarr 載入轉錄點：{parquet_path}")
             tx_dd = dd.read_parquet(str(parquet_path))
 
-            # µm → Xenium 原生像素（0.2125 µm/px）
-            tx_dd["x"] = tx_dd["x"] / XENIUM_UM_PX
-            tx_dd["y"] = tx_dd["y"] / XENIUM_UM_PX
+            # 保持 µm 座標（SpatialData 慣例），不手動 ÷ XENIUM_UM_PX
 
             sd_points = PointsModel.parse(
                 tx_dd,
@@ -633,6 +606,13 @@ def generate_combined_geojson(
         x_offset_um = x_start_px * coordinate_scale
         y_offset_um = y_start_px * coordinate_scale
 
+        # 名義 tile 邊界（µm）—— 用於剪裁超出 tile 範圍的重疊多邊形
+        # Proseg 因 mask padding 會讓多邊形延伸進相鄰 tile，造成重複細胞
+        x_tile_min_um = ix * tile_w * coordinate_scale
+        x_tile_max_um = min((ix + 1) * tile_w, w_full if w_full else (ix + 1) * tile_w) * coordinate_scale
+        y_tile_min_um = iy * tile_h * coordinate_scale
+        y_tile_max_um = min((iy + 1) * tile_h, h_full if h_full else (iy + 1) * tile_h) * coordinate_scale
+
         try:
             with gzip.open(str(json_path), "rt") as f:
                 data = _json.load(f)
@@ -640,6 +620,7 @@ def generate_combined_geojson(
             logger.warning(f"讀取 {tile_dir.name} GeoJSON 失敗：{exc}，略過")
             continue
 
+        skipped = 0
         for feat in data.get("features", []):
             cell_idx = feat["properties"].get("cell", 0)
             full_id = f"{tile_dir.name}_{cell_idx}"
@@ -655,13 +636,25 @@ def generate_combined_geojson(
                     for poly in geom["coordinates"]
                 ]
                 new_geom = {"type": "MultiPolygon", "coordinates": new_coords}
+                # 用第一個 polygon 的外環計算重心
+                flat = new_coords[0][0]
             elif geom_type == "Polygon":
                 new_coords = [
                     [[c[0] + x_offset_um, c[1] + y_offset_um] for c in ring]
                     for ring in geom["coordinates"]
                 ]
                 new_geom = {"type": "Polygon", "coordinates": new_coords}
+                flat = new_coords[0]
             else:
+                continue
+
+            # 邊界剪裁：重心必須落在此 tile 的名義範圍內
+            # 避免因 mask padding 導致相鄰 tile 出現重複多邊形
+            cx = sum(c[0] for c in flat) / len(flat)
+            cy = sum(c[1] for c in flat) / len(flat)
+            if not (x_tile_min_um <= cx < x_tile_max_um and
+                    y_tile_min_um <= cy < y_tile_max_um):
+                skipped += 1
                 continue
 
             all_features.append({
@@ -669,6 +662,9 @@ def generate_combined_geojson(
                 "properties": {"full_id": full_id},
                 "geometry": new_geom,
             })
+
+        if skipped:
+            logger.debug(f"  {tile_dir.name}: 剪裁 {skipped} 個超出名義邊界的多邊形")
 
     logger.info(
         f"合併 {len(tile_dirs)} 個 tile，共 {len(all_features)} 個多邊形。"
