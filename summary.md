@@ -1,4 +1,4 @@
-# Visium HD Pipeline 2 — 開發進度總結（更新：2026-03-08）
+# Visium HD Pipeline 2 — 開發進度總結（更新：2026-03-08 Session 2）
 
 ---
 
@@ -15,7 +15,7 @@
 | Stage 4 | Scanpy QC + UMAP + Leiden | ✅ |
 | Stage 5 | Xenium Explorer + Loupe Browser 匯出 | ✅ |
 
-## 本 Session 完成（2026-03-08）
+## 本 Session 完成（2026-03-08 Session 1）
 
 - Stage 1 預覽圖互動座標（hover 十字準線 + badge，點擊自動填快速預覽座標）
 - NumberInput / RoiNumCell 鍵盤輸入修復（localStr + isEditing ref）
@@ -25,6 +25,49 @@
 - eosin_bg_threshold fallback 改從 postprocessing 讀取（之前誤讀 preprocessing）
 - 統一 JPEG 品質常數 _PREVIEW_JPEG_QUALITY = 85
 - Git commit: 2bc2052
+
+## 本 Session 完成（2026-03-08 Session 2）
+
+### Stage 4 程式碼審查與改善
+
+**前端（Stage4_Analysis.tsx）**：
+- 合併 `ChartView` / `UMAPChartView` 為統一元件（新增 `fullWidthKeys` prop）
+- 修復 `useEffect` dependency array（加入 `chartDataMap`）
+- 新增 `applyLabelError` state + try/catch in `handleApplyLabels`
+- 新增 `.catch()` 至 `handleAnnotateResChange`
+- `handleRunQC` 加入 `setClusterMeta({})` 清除舊標籤狀態
+
+**後端（api/analysis.py）**：
+- `_annot_suggestions` type 修正：`dict[str, Any]`（補 `Any` import）
+
+**後端（analysis/pipeline.py）**：
+- `get_cluster_ids()` return type annotation 修正：`-> tuple[list[str], dict[str, str]]`
+
+### 多 ROI 合併匯出 Bug 修復（Xenium Explorer）
+
+**問題**：合併 ROI 模式下 Xenium 匯出失敗：
+```
+[WARNING] 刪除 3349 個無有效多邊形的細胞
+[ERROR] Reindexing only valid with uniquely valued Index objects
+```
+
+**根本原因**：
+1. `merge_all_rois()` 呼叫 `ad.concat()` 合併多個 ROI 的 h5ad，每個 ROI 的 obs_names 均從 0 開始，造成重複 index
+2. `_load_polygons_and_table()` 呼叫 `adata[valid_cell_ids].copy()` → pandas `.loc[]` 在重複 index 上失敗
+3. `_run_xenium()` 只讀取第一個 ROI 的 GeoJSON，其他 ROI 的細胞找不到多邊形而被刪除
+
+**修復 1（`backend/src/analysis/pipeline.py`，`merge_all_rois()`）**：
+```python
+# 加前綴避免多 ROI 合併後 obs_names 重複
+adata.obs_names = [f"{roi_name}__{name}" for name in adata.obs_names]
+```
+
+**修復 2（`backend/src/api/export.py`，`_run_xenium()`）**：
+- 偵測合併模式：`merged_h5ad = output_dir_base / "umap_computed.h5ad"` + `len(rois) > 1`
+- 合併模式下從所有 ROI 的 GeoJSON 各自讀取，並在每個 feature 的 `full_id` 加上 `{roi_name}__` 前綴
+- 合併後儲存至 `combined_all_rois.json`，確保 full_id 與 obs_names 一致
+
+**注意**：需重新執行 Stage 4 QC（合併模式）才能套用 obs_names 前綴修復，之後再執行 UMAP → Xenium 匯出。
 
 ---
 

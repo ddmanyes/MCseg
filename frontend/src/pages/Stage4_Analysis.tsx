@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { usePipelineStore } from '../stores/pipelineStore'
 import Terminal from '../components/shared/Terminal'
 import useStageLog from '../hooks/useStageLog'
@@ -85,11 +85,24 @@ function NumberField({
   )
 }
 
-function ChartView({ images, tabs, compact = false }: { images: Record<string, string>; tabs: { key: string; label: string }[]; compact?: boolean }) {
+// fullWidthKeys：指定哪些 tab key 要全寬顯示，其餘縮小為 50%
+// 未傳入時預設全部全寬
+function ChartView({
+  images, tabs, fullWidthKeys,
+}: {
+  images: Record<string, string>
+  tabs: { key: string; label: string }[]
+  fullWidthKeys?: string[]
+}) {
   const available = tabs.filter(t => images[t.key])
   const [active, setActive] = useState(available[0]?.key ?? '')
-  useEffect(() => { if (available.length && !images[active]) setActive(available[0].key) }, [images])
+  useEffect(() => {
+    if (available.length && !images[active]) setActive(available[0].key)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [images, active])
   if (!available.length) return null
+
+  const isFullWidth = fullWidthKeys ? fullWidthKeys.includes(active) : true
 
   return (
     <div className="mt-4">
@@ -111,42 +124,7 @@ function ChartView({ images, tabs, compact = false }: { images: Record<string, s
       {images[active] && (
         <img
           src={`data:image/png;base64,${images[active]}`}
-          className={`rounded-lg ${compact ? 'max-w-[50%]' : 'max-w-full'}`}
-          alt={active}
-        />
-      )}
-    </div>
-  )
-}
-
-// UMAP 專用：個別解析度圖縮小為 50%，Grid 全寬
-function UMAPChartView({ images, tabs }: { images: Record<string, string>; tabs: { key: string; label: string }[] }) {
-  const available = tabs.filter(t => images[t.key])
-  const [active, setActive] = useState(available[0]?.key ?? '')
-  useEffect(() => { if (available.length && !images[active]) setActive(available[0].key) }, [images])
-  if (!available.length) return null
-
-  return (
-    <div className="mt-4">
-      <div className="flex gap-1 border-b border-surface-border mb-3">
-        {available.map(t => (
-          <button
-            key={t.key}
-            onClick={() => setActive(t.key)}
-            className={`px-3 py-1.5 text-xs font-medium rounded-t transition-colors ${
-              active === t.key
-                ? 'bg-surface-card text-brand-primary border-b-2 border-brand-primary'
-                : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {images[active] && (
-        <img
-          src={`data:image/png;base64,${images[active]}`}
-          className={`rounded-lg ${active === 'grid' ? 'max-w-full' : 'max-w-[50%]'}`}
+          className={`rounded-lg ${isFullWidth ? 'max-w-full' : 'max-w-[50%]'}`}
           alt={active}
         />
       )}
@@ -159,6 +137,7 @@ function UMAPChartView({ images, tabs }: { images: Record<string, string>; tabs:
 export default function Stage4_Analysis() {
   useStageLog('analysis')
   const { updateStage } = usePipelineStore()
+  const queryClient = useQueryClient()
 
   // ── 分析來源選擇 ──
   const [analysisMode, setAnalysisMode] = useState<'single' | 'merge'>('single')
@@ -187,8 +166,27 @@ export default function Stage4_Analysis() {
   // ── 標註參數 ──
   const [annotateRes, setAnnotateRes] = useState<string>('')
   const [annotateModel, setAnnotateModel] = useState('Human_Colorectal_Cancer.pkl')
+  const [annotateMode, setAnnotateMode] = useState<'dual' | 'single'>('dual')
+  const [immuneConfThreshold, setImmuneConfThreshold] = useState(0.5)
   const [celltypistModels, setCelltypistModels] = useState<Record<string, string>>({})
   const [clusterLabels, setClusterLabels] = useState<Record<string, string>>({})   // cluster_id → label
+  const [clusterMeta, setClusterMeta] = useState<Record<string, {
+    confidence: number
+    source: string
+    uncertain?: boolean
+    state?: string | null
+    state_score?: number
+    tier3_label?: string
+    tier3_conf?: number
+    immune_label?: string
+    immune_conf?: number
+    crc_label?: string
+    crc_conf?: number
+  }>>({})
+  const [scoreThreshold, setScoreThreshold] = useState(0.3)
+  const [uncertainThreshold, setUncertainThreshold] = useState(0.7)
+  const [enableTier3, setEnableTier3] = useState(false)
+  const [tier3ConfThreshold, setTier3ConfThreshold] = useState(0.6)
   const [labelApplied, setLabelApplied] = useState(false)
 
   // ── Heatmap 參數 ──
@@ -203,6 +201,7 @@ export default function Stage4_Analysis() {
   } | null>(null)
   const [histLoading, setHistLoading] = useState(false)
   const [histError, setHistError] = useState('')
+  const [applyLabelError, setApplyLabelError] = useState('')
   const [logScales, setLogScales] = useState<Record<string, boolean>>({})
 
   // ── 儲存圖表 ──
@@ -301,13 +300,40 @@ export default function Stage4_Analysis() {
     }
   }, [heatSt?.status])
 
-  // CellTypist 完成後自動填入建議標籤（suggestions 已嵌入 status 回應）
+  // CellTypist 完成後自動填入建議標籤 + 信心分數
   useEffect(() => {
     if (annotSt?.status === 'done' && annotSt?.suggestions) {
-      const suggestions = annotSt.suggestions as Record<string, string>
-      if (Object.keys(suggestions).length > 0) {
-        setClusterLabels(prev => ({ ...prev, ...suggestions }))
-      }
+      const suggestions = annotSt.suggestions as Record<string, {
+        label: string; confidence: number; source: string
+        immune_label?: string; immune_conf?: number
+        crc_label?: string; crc_conf?: number
+      } | string>  // 相容舊格式
+      if (Object.keys(suggestions).length === 0) return
+      const labels: Record<string, string> = {}
+      const meta: Record<string, { confidence: number; source: string; immune_label?: string; immune_conf?: number; crc_label?: string; crc_conf?: number }> = {}
+      Object.entries(suggestions).forEach(([cluster, info]) => {
+        if (typeof info === 'string') {
+          labels[cluster] = info
+          meta[cluster] = { confidence: 0, source: 'single' }
+        } else {
+          labels[cluster] = info.label
+          meta[cluster] = {
+            confidence: info.confidence,
+            source: info.source,
+            uncertain: info.uncertain,
+            state: info.state,
+            state_score: info.state_score,
+            tier3_label: info.tier3_label,
+            tier3_conf: info.tier3_conf,
+            immune_label: info.immune_label,
+            immune_conf: info.immune_conf,
+            crc_label: info.crc_label,
+            crc_conf: info.crc_conf,
+          }
+        }
+      })
+      setClusterLabels(prev => ({ ...prev, ...labels }))
+      setClusterMeta(meta)
     }
   }, [annotSt?.status])
 
@@ -387,6 +413,7 @@ export default function Stage4_Analysis() {
     setUmapImages({})
     setHeatmapImages({})
     setClusterLabels({})
+    setClusterMeta({})
     setLabelApplied(false)
     updateStage('analysis', { status: 'running', progress: 0, message: 'QC 前處理中...' })
     const mergeFlag = analysisMode === 'merge' && hasMultipleRois
@@ -415,19 +442,43 @@ export default function Stage4_Analysis() {
 
   const handleRunAnnotate = async () => {
     if (!annotateRes) return
-    await runAnnotate({ resolution: parseFloat(annotateRes), model_name: annotateModel })
+    // 先清空舊的 meta，使 UI 進入等待狀態
+    setClusterMeta({})
+    await runAnnotate({
+      resolution: parseFloat(annotateRes),
+      model_name: annotateModel,
+      mode: annotateMode,
+      immune_conf_threshold: immuneConfThreshold,
+      score_threshold: scoreThreshold,
+      uncertain_threshold: uncertainThreshold,
+      enable_tier3: enableTier3,
+      tier3_conf_threshold: tier3ConfThreshold,
+    })
+    // 強制 refetch：解決第二次點擊時 refetchInterval 因 status='done' 停止 poll 的問題
+    queryClient.invalidateQueries({ queryKey: ['annotate_status'] })
   }
 
   const handleApplyLabels = async () => {
     if (!annotateRes || !Object.keys(clusterLabels).length) return
-    const r = await applyLabels({ resolution: parseFloat(annotateRes), labels: clusterLabels })
-    if (r.data?.status === 'ok') setLabelApplied(true)
+    setApplyLabelError('')
+    try {
+      const r = await applyLabels({ resolution: parseFloat(annotateRes), labels: clusterLabels })
+      if (r.data?.status === 'ok') {
+        setLabelApplied(true)
+      } else {
+        setApplyLabelError(r.data?.message ?? '套用失敗')
+      }
+    } catch (e: unknown) {
+      setApplyLabelError(e instanceof Error ? e.message : '套用失敗')
+    }
   }
 
   const handleAnnotateResChange = (res: string) => {
     setAnnotateRes(res)
     setClusterLabels({})
+    setClusterMeta({})
     setLabelApplied(false)
+    setApplyLabelError('')
     getClusterInfo(parseFloat(res)).then(r => {
       if (r.data?.data) {
         const { cluster_ids, existing_labels } = r.data.data
@@ -436,6 +487,8 @@ export default function Stage4_Analysis() {
         setClusterLabels(init)
         if (Object.values(existing_labels).some((v: unknown) => v)) setLabelApplied(true)
       }
+    }).catch((e: unknown) => {
+      setApplyLabelError(`載入 cluster 資訊失敗：${e instanceof Error ? e.message : String(e)}`)
     })
   }
 
@@ -713,7 +766,7 @@ export default function Stage4_Analysis() {
           const resTabs = availableResolutions.map(r => ({ key: r, label: `Res = ${r}` }))
           const allTabs = [...resTabs, { key: 'grid', label: '全覽 Grid' }]
           return (
-            <UMAPChartView images={umapImages} tabs={allTabs} />
+            <ChartView images={umapImages} tabs={allTabs} fullWidthKeys={['grid']} />
           )
         })()}
       </div>
@@ -803,7 +856,7 @@ export default function Stage4_Analysis() {
           </div>
         </div>
 
-        {/* 解析度選擇 */}
+        {/* 解析度 + 模型 + 模式設定 */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 bg-surface-darker p-4 rounded-lg border border-surface-border mt-4">
           <div>
             <label className="block text-xs text-gray-400 mb-1">標註解析度</label>
@@ -820,9 +873,8 @@ export default function Stage4_Analysis() {
             </select>
           </div>
 
-          {/* CellTypist 自動標註 */}
           <div>
-            <label className="block text-xs text-gray-400 mb-1">CellTypist 模型</label>
+            <label className="block text-xs text-gray-400 mb-1">組織模型（CRC / 器官）</label>
             <select
               className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
               value={annotateModel}
@@ -837,7 +889,94 @@ export default function Stage4_Analysis() {
             </select>
           </div>
 
-          <div className="flex flex-col justify-end">
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">標註模式</label>
+            <select
+              className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
+              value={annotateMode}
+              onChange={e => setAnnotateMode(e.target.value as 'dual' | 'single')}
+            >
+              <option value="dual">雙模型（免疫 + 組織）— 推薦</option>
+              <option value="single">單模型（僅組織模型）</option>
+            </select>
+          </div>
+
+          {annotateMode === 'dual' && (<>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                免疫識別閾值：<span className="text-gray-200">{immuneConfThreshold.toFixed(2)}</span>
+                <span className="ml-1 text-gray-600">（低於此值→組織模型）</span>
+              </label>
+              <input
+                type="range" min="0.1" max="0.9" step="0.05"
+                value={immuneConfThreshold}
+                onChange={e => setImmuneConfThreshold(parseFloat(e.target.value))}
+                className="w-full accent-brand-primary"
+              />
+              <div className="flex justify-between text-xs text-gray-600 mt-0.5">
+                <span>寬鬆</span><span>嚴格</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                信心警告閾值：<span className="text-gray-200">{uncertainThreshold.toFixed(2)}</span>
+                <span className="ml-1 text-gray-600">（低於此值→橘色警告）</span>
+              </label>
+              <input
+                type="range" min="0.3" max="0.95" step="0.05"
+                value={uncertainThreshold}
+                onChange={e => setUncertainThreshold(parseFloat(e.target.value))}
+                className="w-full accent-orange-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                基因評分閾值：<span className="text-gray-200">{scoreThreshold.toFixed(2)}</span>
+                <span className="ml-1 text-gray-600">（低於此值→不附加功能狀態）</span>
+              </label>
+              <input
+                type="range" min="0.1" max="0.8" step="0.05"
+                value={scoreThreshold}
+                onChange={e => setScoreThreshold(parseFloat(e.target.value))}
+                className="w-full accent-purple-400"
+              />
+            </div>
+            {/* Tier 3 開關 */}
+            <div className="col-span-full border-t border-gray-700 pt-3 mt-1">
+              <div className="flex items-center gap-3 mb-2">
+                <input
+                  type="checkbox"
+                  id="tier3-toggle"
+                  checked={enableTier3}
+                  onChange={e => setEnableTier3(e.target.checked)}
+                  className="w-4 h-4 accent-indigo-400 cursor-pointer"
+                />
+                <label htmlFor="tier3-toggle" className="text-xs text-gray-300 cursor-pointer">
+                  <span className="font-medium text-indigo-300">Tier 3：啟用精細免疫亞型</span>
+                  <span className="ml-2 text-gray-500">（Immune_All_Low.pkl — 98 種亞型，首次使用需下載）</span>
+                </label>
+              </div>
+              {enableTier3 && (
+                <div className="ml-7">
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Tier3 替換閾值：<span className="text-gray-200">{tier3ConfThreshold.toFixed(2)}</span>
+                    <span className="ml-1 text-gray-600">（低於此值只顯示不替換標籤）</span>
+                  </label>
+                  <input
+                    type="range" min="0.3" max="0.9" step="0.05"
+                    value={tier3ConfThreshold}
+                    onChange={e => setTier3ConfThreshold(parseFloat(e.target.value))}
+                    className="w-full accent-indigo-400"
+                  />
+                  <p className="text-xs text-yellow-600 mt-1">
+                    ⚠ Tier 3 會對每個免疫 cluster 額外跑一次模型，標註時間約增加 50%
+                  </p>
+                </div>
+              )}
+            </div>
+          </>)}
+
+          <div className={`flex flex-col justify-end ${annotateMode === 'dual' ? '' : 'col-start-3'}`}>
             <RunButton
               label="CellTypist 自動標註"
               onClick={handleRunAnnotate}
@@ -856,33 +995,105 @@ export default function Stage4_Analysis() {
             <div className="flex items-center justify-between mb-3">
               <p className="text-xs text-gray-400 font-medium">
                 Cluster 標籤（共 {Object.keys(clusterLabels).length} 個）
-                <span className="ml-2 text-gray-500">— 可直接編輯，或點擊「CellTypist 自動標註」填入建議</span>
+                <span className="ml-2 text-gray-500">— 可直接編輯，標註來源以色塊標示</span>
               </p>
-              <button
-                onClick={handleApplyLabels}
-                disabled={!umapDone || !annotateRes}
-                className="px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary-dark disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed transition-colors"
-              >
-                套用標籤
-              </button>
+              <div className="flex flex-col items-end gap-1">
+                <button
+                  onClick={handleApplyLabels}
+                  disabled={!umapDone || !annotateRes}
+                  className="px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary-dark disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed transition-colors"
+                >
+                  套用標籤
+                </button>
+                {applyLabelError && (
+                  <p className="text-xs text-red-400">{applyLabelError}</p>
+                )}
+              </div>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-64 overflow-y-auto">
+
+            {/* 圖例 */}
+            {Object.keys(clusterMeta).length > 0 && (
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3 text-xs text-gray-500">
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-400 inline-block"/>免疫（Immune_All_High）</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-sky-400 inline-block"/>組織模型</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-400 inline-block"/>需確認（信心不足）</span>
+                <span className="ml-2">信心：<span className="text-green-400">●</span>≥{uncertainThreshold.toFixed(1)} / <span className="text-yellow-400">●</span>中 / <span className="text-red-400">●</span>低</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-80 overflow-y-auto pr-1">
               {Object.entries(clusterLabels)
                 .sort(([a], [b]) => parseInt(a) - parseInt(b))
-                .map(([clusterId, label]) => (
-                  <div key={clusterId} className="flex items-center gap-2">
-                    <span className="text-xs text-gray-400 shrink-0 w-14 text-right">
-                      Cluster {clusterId}
-                    </span>
-                    <input
-                      type="text"
-                      value={label}
-                      placeholder="輸入細胞類型..."
-                      className="flex-1 bg-surface-highlight border border-gray-600 rounded px-2 py-0.5 text-xs text-gray-200 focus:outline-none focus:border-brand-primary"
-                      onChange={e => setClusterLabels(prev => ({ ...prev, [clusterId]: e.target.value }))}
-                    />
-                  </div>
-                ))}
+                .map(([clusterId, label]) => {
+                  const meta = clusterMeta[clusterId]
+                  const conf = meta?.confidence ?? 0
+                  const source = meta?.source ?? ''
+                  const uncertain = meta?.uncertain ?? false
+                  const state = meta?.state
+                  const stateScore = meta?.state_score ?? 0
+
+                  const sourceDot = uncertain
+                    ? 'bg-orange-400'
+                    : source === 'immune' ? 'bg-purple-400'
+                    : source === 'crc' ? 'bg-sky-400'
+                    : 'bg-gray-500'
+
+                  const confColor = conf >= uncertainThreshold
+                    ? 'text-green-400'
+                    : conf >= 0.5 ? 'text-yellow-400'
+                    : 'text-red-400'
+
+                  const rowBorder = uncertain
+                    ? 'border border-orange-900/50 bg-orange-950/20 rounded'
+                    : ''
+
+                  const tooltipLines = [
+                    meta?.tier3_label ? `Tier3 精細亞型: ${meta.tier3_label} (conf=${(meta.tier3_conf ?? 0).toFixed(2)})` : '',
+                    meta?.immune_label ? `Tier1 免疫: ${meta.immune_label} (${(meta.immune_conf ?? 0).toFixed(2)})` : '',
+                    meta?.crc_label ? `Tier1 組織: ${meta.crc_label} (${(meta.crc_conf ?? 0).toFixed(2)})` : '',
+                    state ? `Tier2 功能狀態: ${state} (score=${stateScore.toFixed(3)})` : '',
+                    uncertain ? '⚠ 信心不足，建議手動確認' : '',
+                  ].filter(Boolean).join('\n')
+
+                  return (
+                    <div key={clusterId} className={`flex items-center gap-2 px-1 py-0.5 ${rowBorder}`}>
+                      <span className="text-xs text-gray-400 shrink-0 w-8 text-right font-mono">
+                        {clusterId}
+                      </span>
+                      {meta && (
+                        <span
+                          className={`w-2 h-2 rounded-full shrink-0 ${sourceDot} cursor-help`}
+                          title={tooltipLines}
+                        />
+                      )}
+                      <input
+                        type="text"
+                        value={label}
+                        placeholder="輸入細胞類型..."
+                        className={`flex-1 bg-surface-highlight border rounded px-2 py-0.5 text-xs text-gray-200 focus:outline-none focus:border-brand-primary ${
+                          uncertain ? 'border-orange-700' : 'border-gray-600'
+                        }`}
+                        onChange={e => setClusterLabels(prev => ({ ...prev, [clusterId]: e.target.value }))}
+                      />
+                      {/* 功能狀態 badge */}
+                      {state && (
+                        <span className="text-xs px-1 py-0.5 rounded bg-purple-900/60 text-purple-300 shrink-0 font-mono" title={`基因評分: ${stateScore.toFixed(3)}`}>
+                          {state.replace('_', ' ')}
+                        </span>
+                      )}
+                      {/* 信心分數 */}
+                      {meta && !state && (
+                        <span className={`text-xs font-mono shrink-0 w-10 text-right ${confColor}`} title={tooltipLines}>
+                          {conf.toFixed(2)}
+                        </span>
+                      )}
+                      {/* uncertain 警告圖示 */}
+                      {uncertain && (
+                        <span className="text-orange-400 shrink-0 text-xs" title="信心不足，建議手動確認">⚠</span>
+                      )}
+                    </div>
+                  )
+                })}
             </div>
           </div>
         )}

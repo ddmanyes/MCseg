@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 
 from backend.src.utils.config import load_config, save_state
 from backend.src.utils.logging import set_current_stage
@@ -58,6 +58,12 @@ class HeatmapParams(BaseModel):
 class AnnotateParams(BaseModel):
     resolution: float
     model_name: str = "Human_Colorectal_Cancer.pkl"
+    mode: str = "dual"                      # "dual" | "single"
+    immune_conf_threshold: float = 0.5      # 免疫標籤最低信心閾值（dual mode）
+    score_threshold: float = 0.3            # 基因評分：低於此值視為無顯著功能狀態
+    uncertain_threshold: float = 0.7        # 低於此信心值標記 uncertain（前端警告色）
+    enable_tier3: bool = False              # 啟用 Immune_All_Low 精細亞型（需額外下載）
+    tier3_conf_threshold: float = 0.6       # Tier3 標籤替換最低信心閾值
 
 
 class ApplyLabelsParams(BaseModel):
@@ -86,7 +92,7 @@ _annot_lock = asyncio.Lock()
 _qc_images:    dict[str, str] = {}
 _umap_images:  dict[str, str] = {}
 _heatmap_images: dict[str, str] = {}
-_annot_suggestions: dict[str, str] = {}   # 最近一次 CellTypist 建議
+_annot_suggestions: dict[str, Any] = {}   # 最近一次 CellTypist 建議
 
 
 # ──────────────────── 舊版整合執行 /run ───────────────────────────
@@ -558,14 +564,18 @@ async def _run_annotate(config: dict, p: AnnotateParams):
     global _annot_status, _annot_suggestions
     set_current_stage("analysis")
     _annot_suggestions = {}
+    mode_label = "雙模型" if p.mode == "dual" else "單模型"
     _annot_status = {
         "status": "running", "progress": 0.0,
-        "message": f"CellTypist 標註中 (res={p.resolution}, model={p.model_name})...",
+        "message": f"CellTypist 標註中 [{mode_label}] (res={p.resolution}, model={p.model_name})...",
     }
     try:
         from backend.src.analysis.pipeline import run_celltypist_annotation
         result = await asyncio.get_event_loop().run_in_executor(
-            None, run_celltypist_annotation, config, p.resolution, p.model_name
+            None, run_celltypist_annotation, config, p.resolution,
+            p.model_name, p.mode, p.immune_conf_threshold,
+            p.score_threshold, p.uncertain_threshold,
+            p.enable_tier3, p.tier3_conf_threshold,
         )
         _annot_suggestions = result
         _annot_status = {

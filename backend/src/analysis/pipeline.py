@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import scanpy as sc
 import anndata as ad
 
@@ -16,6 +17,160 @@ from backend.src.analysis.clustering import Analyzer
 from backend.src.utils.config import resolve_path
 
 logger = logging.getLogger("pipeline.analysis")
+
+
+# ─────────────────── CRC TME 基因評分常數 ─────────────────────────
+
+# 每個功能狀態的 marker gene panel（CRC TME 文獻彙整）
+TME_PANELS: dict[str, list[str]] = {
+    "T_exhausted":  ["PDCD1", "LAG3", "TIGIT", "HAVCR2", "TOX", "CTLA4"],
+    "T_effector":   ["GZMB", "PRF1", "IFNG", "TNF", "NKG7", "GNLY"],
+    "Treg":         ["FOXP3", "IL2RA", "CTLA4", "IKZF2", "TNFRSF9"],
+    "Macro_M2_TAM": ["CD163", "MRC1", "FOLR2", "TREM2", "C1QA", "C1QB"],
+    "Macro_M1":     ["CD80", "CD86", "IL1B", "CXCL10", "CXCL9", "TNF"],
+    "cDC_mature":   ["CCR7", "LAMP3", "FSCN1", "MARCKSL1"],
+    "Plasma":       ["MZB1", "JCHAIN", "XBP1", "IGHG1", "IGKC"],
+    "NK_cytotox":   ["GNLY", "NKG7", "KLRB1", "KLRD1", "NCR1"],
+}
+
+# 哪個 CellTypist 大類標籤應該優先跑哪幾個 panel
+IMMUNE_PANEL_MAP: dict[str, list[str]] = {
+    "cd8":        ["T_exhausted", "T_effector"],
+    "cd4":        ["Treg", "T_effector"],
+    "regulatory": ["Treg"],
+    "t cell":     ["T_exhausted", "T_effector", "Treg"],
+    "macrophage": ["Macro_M2_TAM", "Macro_M1"],
+    "monocyte":   ["Macro_M2_TAM", "Macro_M1"],
+    "cdc":        ["cDC_mature"],
+    "dendritic":  ["cDC_mature"],
+    "plasma":     ["Plasma"],
+    "nk":         ["NK_cytotox"],
+}
+
+_PANEL_STATE_LABELS: dict[str, str] = {
+    "T_exhausted":  "exhausted",
+    "T_effector":   "effector",
+    "Treg":         "Treg",
+    "Macro_M2_TAM": "M2/TAM",
+    "Macro_M1":     "M1",
+    "cDC_mature":   "mature DC",
+    "Plasma":       "plasma",
+    "NK_cytotox":   "cytotoxic",
+}
+
+
+def _panel_to_state(panel_name: str) -> str:
+    return _PANEL_STATE_LABELS.get(panel_name, panel_name)
+
+
+def _relevant_panels_for_label(immune_label: str) -> list[str]:
+    """根據 CellTypist 大類標籤，回傳應跑的 panel 名稱列表。"""
+    label_lower = immune_label.lower()
+    panels: list[str] = []
+    for keyword, panel_list in IMMUNE_PANEL_MAP.items():
+        if keyword in label_lower:
+            panels.extend(panel_list)
+    # 去重保序
+    seen: set[str] = set()
+    result = []
+    for p in panels:
+        if p not in seen:
+            seen.add(p)
+            result.append(p)
+    return result
+
+
+def refine_immune_labels(
+    adata_ct,
+    leiden_key: str,
+    cluster_info: dict[str, dict],
+    score_threshold: float = 0.3,
+    uncertain_threshold: float = 0.7,
+) -> dict[str, dict]:
+    """
+    對 source="immune" 的 cluster 執行兩件事：
+
+    A) conf >= uncertain_threshold：
+       - 跑 sc.tl.score_genes() 匹配功能狀態 panel
+       - 若最高分 > score_threshold，在標籤後附加 [狀態]
+
+    C) conf < uncertain_threshold：
+       - 標記 uncertain=True（前端顯示警告色）
+
+    cluster_info 在原地修改後回傳。
+    """
+    available_genes = set(adata_ct.var_names)
+    leiden_vals = adata_ct.obs[leiden_key].astype(str).values
+
+    # 預計算所有有效 panel 的基因評分
+    panel_scores: dict[str, np.ndarray] = {}
+    for panel_name, genes in TME_PANELS.items():
+        valid = [g for g in genes if g in available_genes]
+        if len(valid) < 2:
+            logger.info(f"  [gene score] {panel_name}: 可用基因 {len(valid)}/{len(genes)}，跳過")
+            continue
+        sc.tl.score_genes(adata_ct, gene_list=valid, score_name=f"_tme_{panel_name}", use_raw=False)
+        panel_scores[panel_name] = adata_ct.obs[f"_tme_{panel_name}"].values
+        logger.info(f"  [gene score] {panel_name}: {len(valid)} genes 評分完成")
+
+    if not panel_scores:
+        logger.warning("  [gene score] 無任何 panel 可用（基因數量不足），跳過精細化")
+        for info in cluster_info.values():
+            if info.get("source") == "immune":
+                info["uncertain"] = info.get("confidence", 0) < uncertain_threshold
+                info["state"] = None
+                info["state_score"] = 0.0
+        return cluster_info
+
+    for cluster, info in cluster_info.items():
+        if info.get("source") != "immune":
+            info["uncertain"] = False
+            info["state"] = None
+            info["state_score"] = 0.0
+            continue
+
+        conf = info.get("confidence", 0.0)
+
+        # C：低信心 → 標記 uncertain，不做基因評分
+        if conf < uncertain_threshold:
+            info["uncertain"] = True
+            info["state"] = None
+            info["state_score"] = 0.0
+            continue
+
+        info["uncertain"] = False
+        immune_label = info.get("label", "")
+        mask = leiden_vals == cluster
+
+        # 決定要跑哪些 panel
+        target_panels = _relevant_panels_for_label(immune_label)
+        if not target_panels:
+            target_panels = list(panel_scores.keys())  # 無對應 → 跑全部
+
+        # A：選出得分最高的 panel
+        best_panel: str | None = None
+        best_score = score_threshold  # 低於此值視為無顯著狀態
+        for pname in target_panels:
+            if pname not in panel_scores:
+                continue
+            avg = float(np.mean(panel_scores[pname][mask]))
+            if avg > best_score:
+                best_score = avg
+                best_panel = pname
+
+        if best_panel:
+            state_label = _panel_to_state(best_panel)
+            info["label"] = f"{immune_label} [{state_label}]"
+            info["state"] = best_panel
+            info["state_score"] = round(best_score, 4)
+            logger.info(
+                f"  Cluster {cluster}: {immune_label} → [{state_label}]  score={best_score:.3f}"
+            )
+        else:
+            info["state"] = None
+            info["state_score"] = 0.0
+
+    return cluster_info
 
 
 # ─────────────────────── multi-ROI merge ──────────────────────────
@@ -47,6 +202,9 @@ def merge_all_rois(config: dict[str, Any]) -> Path:
 
         adata = sc.read_h5ad(str(h5ad))
         adata.obs["roi"] = roi_name
+
+        # 加前綴避免多 ROI 合併後 obs_names 重複（防止後續 Xenium 匯出 Reindex 錯誤）
+        adata.obs_names = [f"{roi_name}__{name}" for name in adata.obs_names]
 
         # 加回全局座標偏移（local µm → global µm）
         if "spatial" in adata.obsm and roi.get("x") is not None:
@@ -455,7 +613,7 @@ CELLTYPIST_MODELS: dict[str, str] = {
 }
 
 
-def get_cluster_ids(config: dict[str, Any], resolution: float) -> list[str]:
+def get_cluster_ids(config: dict[str, Any], resolution: float) -> tuple[list[str], dict[str, str]]:
     """取得指定 resolution 的 cluster ID 列表（字串排序）。"""
     paths = config["paths"]
     output_dir = resolve_path(paths["output_dir"])
@@ -482,63 +640,106 @@ def get_cluster_ids(config: dict[str, Any], resolution: float) -> list[str]:
     return ids, existing_labels
 
 
-def run_celltypist_annotation(
-    config: dict[str, Any],
-    resolution: float,
-    model_name: str = "Human_Colorectal_Cancer.pkl",
-) -> dict[str, str]:
-    """
-    使用 CellTypist 對每個 Leiden cluster 進行多數投票標註。
-
-    Returns
-    -------
-    dict  {cluster_id (str): cell_type_label (str)}
-    """
+def _load_celltypist_model(model_name: str):
+    """載入 CellTypist 模型，本地不存在時自動下載。"""
+    from celltypist import models as ct_models
     try:
-        import celltypist
-        from celltypist import models as ct_models
-    except ImportError:
-        raise ImportError("請先安裝 celltypist：uv add celltypist")
-
-    paths = config["paths"]
-    output_dir = resolve_path(paths["output_dir"])
-    umap_h5ad = output_dir / "umap_computed.h5ad"
-    if not umap_h5ad.exists():
-        raise FileNotFoundError(f"找不到 UMAP 資料：{umap_h5ad}")
-
-    logger.info(f"CellTypist 標註：載入 {umap_h5ad}")
-    adata = sc.read_h5ad(str(umap_h5ad))
-
-    leiden_key = f"leiden_{resolution}"
-    if leiden_key not in adata.obs.columns:
-        raise ValueError(f"找不到 resolution={resolution} 的 Leiden 結果")
-
-    # CellTypist 需要 log1p(CPM)——從 raw counts 重建
-    if "counts" in adata.layers:
-        import anndata as _ad
-        import numpy as np
-        adata_ct = _ad.AnnData(
-            X=adata.layers["counts"].copy(),
-            obs=adata.obs.copy(),
-            var=adata.var.copy(),
-        )
-        sc.pp.normalize_total(adata_ct, target_sum=1e4)
-        sc.pp.log1p(adata_ct)
-        logger.info("  從 layers['counts'] 重建 log1p(CPM) 資料")
-    else:
-        adata_ct = adata.copy()
-        logger.warning("  找不到 layers['counts']，直接使用 adata.X（可能為已縮放資料）")
-
-    # 載入模型（本地不存在時自動下載）
-    logger.info(f"  載入模型：{model_name}")
-    try:
-        model = ct_models.Model.load(model_name)
+        return ct_models.Model.load(model_name)
     except Exception:
         logger.info(f"  本地找不到模型，嘗試下載 {model_name}...")
         ct_models.download_models(model=model_name)
-        model = ct_models.Model.load(model_name)
+        return ct_models.Model.load(model_name)
 
-    # 執行標註（majority voting per Leiden cluster）
+
+def _tier3_immune_subtype(
+    celltypist,
+    adata_ct,
+    leiden_key: str,
+    cluster_info: dict[str, dict],
+    tier3_model: str = "Immune_All_Low.pkl",
+    tier3_conf_threshold: float = 0.6,
+) -> dict[str, dict]:
+    """
+    Tier 3：對 source=immune 且非 uncertain 的 cluster，
+    改用 Immune_All_Low.pkl（98 種亞型）重新標註，
+    獲得比 Immune_All_High（~21 種）更精細的亞型。
+
+    例：
+      Tier1「T cells」 → Tier3「MAIT cells」/ 「CD8-TEMRA」/ 「Tfh」
+      Tier1「Macrophages」 → Tier3「Alveolar macrophages」/ 「Iron-recycling macrophages」
+      Tier1「cDC2」 → Tier3「cDC2_CD1C」/ 「cDC2_CLEC10A」
+
+    tier3_conf_threshold：低於此值只紀錄不替換標籤，保留 Tier1 結果。
+    """
+    immune_clusters = [
+        c for c, info in cluster_info.items()
+        if info.get("source") == "immune" and not info.get("uncertain", False)
+    ]
+    if not immune_clusters:
+        logger.info("  [Tier3] 無符合條件的免疫 cluster，跳過")
+        return cluster_info
+
+    logger.info(f"  [Tier3] 載入 {tier3_model}（高解析度 ~98 亞型）...")
+    try:
+        model = _load_celltypist_model(tier3_model)
+    except Exception as e:
+        logger.warning(f"  [Tier3] 模型載入失敗，跳過：{e}")
+        return cluster_info
+
+    logger.info(f"  [Tier3] 對 {len(immune_clusters)} 個免疫 cluster 執行精細標註...")
+    predictions = celltypist.annotate(
+        adata_ct,
+        model=model,
+        majority_voting=True,
+        over_clustering=leiden_key,
+    )
+    adata_pred = predictions.to_adata()
+    leiden_vals = adata_ct.obs[leiden_key].astype(str).values
+
+    for cluster in immune_clusters:
+        mask = leiden_vals == cluster
+        mv_labels = adata_pred.obs.loc[mask, "majority_voting"]
+        conf_col = adata_pred.obs.loc[mask, "conf_score"] if "conf_score" in adata_pred.obs.columns else None
+
+        if len(mv_labels) == 0:
+            continue
+
+        tier3_label = str(mv_labels.value_counts().index[0])
+        tier3_conf = float(conf_col.mean()) if conf_col is not None else 0.0
+
+        cluster_info[cluster]["tier3_label"] = tier3_label
+        cluster_info[cluster]["tier3_conf"] = round(tier3_conf, 4)
+
+        if tier3_conf >= tier3_conf_threshold:
+            # 保留 Tier2 附加的功能狀態 suffix
+            existing_state = cluster_info[cluster].get("state")
+            state_suffix = f" [{_panel_to_state(existing_state)}]" if existing_state else ""
+            cluster_info[cluster]["label"] = f"{tier3_label}{state_suffix}"
+            logger.info(
+                f"  Cluster {cluster}: Tier3 → {tier3_label}{state_suffix}"
+                f"  (conf={tier3_conf:.2f} ✓)"
+            )
+        else:
+            logger.info(
+                f"  Cluster {cluster}: Tier3 → {tier3_label}"
+                f"  (conf={tier3_conf:.2f} < {tier3_conf_threshold}，保留 Tier1 標籤)"
+            )
+
+    return cluster_info
+
+
+def _annotate_one_model(
+    celltypist,
+    adata_ct,
+    model_name: str,
+    leiden_key: str,
+    clusters: list[str],
+) -> dict[str, tuple[str, float]]:
+    """
+    執行單一模型的 majority voting，回傳每個 cluster 的 (標籤, 平均信心分數)。
+    """
+    logger.info(f"  載入模型：{model_name}")
+    model = _load_celltypist_model(model_name)
     logger.info(f"  執行 majority voting (over_clustering={leiden_key})")
     predictions = celltypist.annotate(
         adata_ct,
@@ -548,18 +749,152 @@ def run_celltypist_annotation(
     )
     adata_pred = predictions.to_adata()
 
-    cluster_labels: dict[str, str] = {}
-    for cluster in sorted(adata.obs[leiden_key].astype(str).unique(), key=lambda x: int(x)):
-        mask = adata.obs[leiden_key].astype(str) == cluster
+    results: dict[str, tuple[str, float]] = {}
+    leiden_vals = adata_ct.obs[leiden_key].astype(str).values
+    for cluster in clusters:
+        mask = leiden_vals == cluster
         mv_labels = adata_pred.obs.loc[mask, "majority_voting"]
-        majority = mv_labels.value_counts().index[0] if len(mv_labels) > 0 else "Unknown"
-        cluster_labels[cluster] = str(majority)
+        conf_scores = adata_pred.obs.loc[mask, "conf_score"] if "conf_score" in adata_pred.obs.columns else None
+        if len(mv_labels) == 0:
+            results[cluster] = ("Unknown", 0.0)
+            continue
+        majority = str(mv_labels.value_counts().index[0])
+        avg_conf = float(conf_scores.mean()) if conf_scores is not None else 0.0
+        results[cluster] = (majority, avg_conf)
+    return results
 
-    logger.info(f"CellTypist 標註完成：{len(cluster_labels)} 個 cluster")
-    for c, lbl in sorted(cluster_labels.items(), key=lambda x: int(x[0])):
-        logger.info(f"  Cluster {c} → {lbl}")
 
-    return cluster_labels
+def run_celltypist_annotation(
+    config: dict[str, Any],
+    resolution: float,
+    model_name: str = "Human_Colorectal_Cancer.pkl",
+    mode: str = "dual",
+    immune_conf_threshold: float = 0.5,
+    score_threshold: float = 0.3,
+    uncertain_threshold: float = 0.7,
+    enable_tier3: bool = False,
+    tier3_conf_threshold: float = 0.6,
+) -> dict[str, dict]:
+    """
+    使用 CellTypist 對每個 Leiden cluster 進行多數投票標註。
+
+    mode="dual"   : 先跑 Immune_All_High，再跑 model_name（CRC/組織），按信心選勝者
+    mode="single" : 只跑 model_name
+
+    Returns
+    -------
+    dict  {cluster_id: {"label", "confidence", "source",
+                         "immune_label", "immune_conf",   # dual only
+                         "crc_label",   "crc_conf"}}      # dual only
+    """
+    try:
+        import celltypist
+    except ImportError:
+        raise ImportError("請先安裝 celltypist：uv add celltypist")
+
+    paths = config["paths"]
+    output_dir = resolve_path(paths["output_dir"])
+    umap_h5ad = output_dir / "umap_computed.h5ad"
+    if not umap_h5ad.exists():
+        raise FileNotFoundError(f"找不到 UMAP 資料：{umap_h5ad}")
+
+    logger.info(f"CellTypist 標註：載入 {umap_h5ad}  [mode={mode}]")
+    adata = sc.read_h5ad(str(umap_h5ad))
+
+    leiden_key = f"leiden_{resolution}"
+    if leiden_key not in adata.obs.columns:
+        raise ValueError(f"找不到 resolution={resolution} 的 Leiden 結果")
+
+    # CellTypist 需要 log1p(CPM)——從 raw counts 重建
+    if "counts" in adata.layers:
+        import anndata as _ad
+        adata_ct = _ad.AnnData(
+            X=adata.layers["counts"].copy(),
+            obs=adata.obs.copy(),
+            var=adata.var.copy(),
+        )
+        adata_ct.var_names_make_unique()
+        adata_ct.obs_names_make_unique()
+        sc.pp.normalize_total(adata_ct, target_sum=1e4)
+        sc.pp.log1p(adata_ct)
+        logger.info("  從 layers['counts'] 重建 log1p(CPM) 資料")
+    else:
+        adata_ct = adata.copy()
+        adata_ct.var_names_make_unique()
+        adata_ct.obs_names_make_unique()
+        logger.warning("  找不到 layers['counts']，直接使用 adata.X（可能為已縮放資料）")
+
+    clusters = sorted(adata_ct.obs[leiden_key].astype(str).unique(), key=lambda x: int(x))
+
+    if mode == "dual":
+        immune_model = "Immune_All_High.pkl"
+        logger.info(f"  [雙模型] 免疫模型：{immune_model}，組織模型：{model_name}")
+        logger.info(f"  [雙模型] 免疫信心閾值：{immune_conf_threshold}")
+
+        immune_results = _annotate_one_model(celltypist, adata_ct, immune_model, leiden_key, clusters)
+        crc_results = _annotate_one_model(celltypist, adata_ct, model_name, leiden_key, clusters)
+
+        cluster_info: dict[str, dict] = {}
+        for cluster in clusters:
+            immune_label, immune_conf = immune_results[cluster]
+            crc_label, crc_conf = crc_results[cluster]
+
+            # 免疫優先：非 Non-immune 且信心超過閾值
+            if immune_label != "Non-immune" and immune_conf >= immune_conf_threshold:
+                source, label, confidence = "immune", immune_label, immune_conf
+            else:
+                source, label, confidence = "crc", crc_label, crc_conf
+
+            cluster_info[cluster] = {
+                "label": label,
+                "confidence": round(confidence, 4),
+                "source": source,
+                "immune_label": immune_label,
+                "immune_conf": round(immune_conf, 4),
+                "crc_label": crc_label,
+                "crc_conf": round(crc_conf, 4),
+            }
+            logger.info(
+                f"  Cluster {cluster:>2} → [{source:>6}] {label}"
+                f"  (immune={immune_label} {immune_conf:.2f} | crc={crc_label} {crc_conf:.2f})"
+            )
+    else:
+        single_results = _annotate_one_model(celltypist, adata_ct, model_name, leiden_key, clusters)
+        cluster_info = {}
+        for cluster in clusters:
+            label, confidence = single_results[cluster]
+            cluster_info[cluster] = {
+                "label": label,
+                "confidence": round(confidence, 4),
+                "source": "single",
+            }
+            logger.info(f"  Cluster {cluster:>2} → {label}  (conf={confidence:.2f})")
+
+    # Tier 2 (A+C)：基因評分精細化（僅 dual mode）
+    if mode == "dual":
+        logger.info("  [Tier2] 對免疫 cluster 執行基因評分精細化...")
+        cluster_info = refine_immune_labels(
+            adata_ct,
+            leiden_key,
+            cluster_info,
+            score_threshold=score_threshold,
+            uncertain_threshold=uncertain_threshold,
+        )
+
+    # Tier 3：Immune_All_Low.pkl 亞型精細化（選用）
+    if mode == "dual" and enable_tier3:
+        logger.info("  [Tier3] 啟用精細免疫亞型標註（Immune_All_Low.pkl）...")
+        cluster_info = _tier3_immune_subtype(
+            celltypist,
+            adata_ct,
+            leiden_key,
+            cluster_info,
+            tier3_model="Immune_All_Low.pkl",
+            tier3_conf_threshold=tier3_conf_threshold,
+        )
+
+    logger.info(f"CellTypist 標註完成：{len(cluster_info)} 個 cluster")
+    return cluster_info
 
 
 def apply_cluster_labels(
