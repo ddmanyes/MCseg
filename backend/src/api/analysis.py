@@ -160,6 +160,91 @@ def _load_disk_images(keys_paths: list[tuple[str, Path]]) -> dict[str, str]:
     return result
 
 
+# ─────────────────────── raw_histogram ────────────────────────────
+
+def _find_raw_h5ad(roi_dir: Path) -> "Path | None":
+    """尋找 ROI 目錄內的原始 h5ad（優先 proseg_cells，次選 adata_002um/008um）。"""
+    for name in ("proseg_cells.h5ad", "adata_002um.h5ad", "adata_008um.h5ad"):
+        p = roi_dir / name
+        if p.exists():
+            return p
+    return None
+
+
+def _hist_metric(arr: "np.ndarray", label: str, unit: str = "", n_bins: int = 60) -> dict:
+    import numpy as np
+    arr = arr[np.isfinite(arr)]
+    if len(arr) == 0:
+        return {}
+    counts, bin_edges = np.histogram(arr, bins=n_bins)
+    median = float(np.median(arr))
+    mad = float(np.median(np.abs(arr - median)))
+    return {
+        "label": label,
+        "unit": unit,
+        "bin_edges": bin_edges.tolist(),
+        "counts": counts.tolist(),
+        "mad_min": round(max(0.0, median - 3 * mad), 2),
+        "mad_max": round(median + 3 * mad, 2),
+        "p5":  round(float(np.percentile(arr, 5)), 2),
+        "p50": round(median, 2),
+        "p95": round(float(np.percentile(arr, 95)), 2),
+        "p99": round(float(np.percentile(arr, 99)), 2),
+        "mean": round(float(arr.mean()), 2),
+    }
+
+
+@router.get("/raw_histogram")
+async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = False):
+    """讀取原始 h5ad，on-the-fly 計算 QC metrics，回傳直方圖 JSON 供前端 SVG 渲染。"""
+    import numpy as np
+    import anndata as ad
+    import scanpy as sc
+
+    config = load_config()
+    from backend.src.utils.config import resolve_path
+    out_base = resolve_path(config["paths"]["output_dir"]) / "roi"
+    rois = config.get("rois", [])
+
+    try:
+        if merge_rois and len(rois) > 1:
+            adatas = []
+            for roi in rois:
+                h5ad = _find_raw_h5ad(out_base / roi.get("name", ""))
+                if h5ad:
+                    adatas.append(sc.read_h5ad(str(h5ad)))
+            if not adatas:
+                return {"status": "error", "message": "找不到任何 ROI 的 h5ad 檔"}
+            adata = ad.concat(adatas, join="outer", fill_value=0) if len(adatas) > 1 else adatas[0]
+        else:
+            target = roi_name or (rois[0].get("name") if rois else None)
+            if not target:
+                return {"status": "error", "message": "未指定 ROI"}
+            h5ad = _find_raw_h5ad(out_base / target)
+            if not h5ad:
+                return {"status": "error", "message": f"找不到 {target} 的 h5ad 檔（請先完成 Stage 1-3）"}
+            adata = sc.read_h5ad(str(h5ad))
+
+        # 計算 QC metrics（不過濾，只計算分布）
+        adata.var["mt"] = adata.var_names.str.lower().str.startswith("mt-")
+        sc.pp.calculate_qc_metrics(adata, qc_vars=["mt"], percent_top=None, log1p=False, inplace=True)
+
+        metrics: dict[str, dict] = {}
+        obs = adata.obs
+        if "total_counts" in obs:
+            metrics["total_counts"] = _hist_metric(obs["total_counts"].values, "Transcripts Per Cell")
+        if "n_genes_by_counts" in obs:
+            metrics["n_genes_by_counts"] = _hist_metric(obs["n_genes_by_counts"].values, "Genes Per Cell")
+        if "cell_area" in obs:
+            metrics["cell_area"] = _hist_metric(obs["cell_area"].values, "Cell Size", "µm²")
+
+        return {"status": "ok", "data": {"n_cells": int(adata.n_obs), "metrics": metrics}}
+
+    except Exception as e:
+        logger.error(f"raw_histogram 失敗：{e}")
+        return {"status": "error", "message": str(e)}
+
+
 # ─────────────────────── Step 1: QC ───────────────────────────────
 
 @router.get("/qc_status")

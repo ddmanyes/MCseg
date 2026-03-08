@@ -30,6 +30,9 @@ export const getSegmentationStatus = () => api.get('/segmentation/status')
 export const getSegmentationPreview = (roi?: string) => api.get('/segmentation/preview', { params: roi ? { roi_name: roi } : {} })
 export const runSegmentationPreview = (body: object) => api.post('/segmentation/run_preview', body)
 export const previewPreproc = (body: object) => api.post('/segmentation/preview_preproc', body)
+export const getRoiSegOverrides = () => api.get('/segmentation/roi_overrides')
+export const saveRoiSegOverrides = (overrides: Record<string, Record<string, unknown>>) =>
+  api.put('/segmentation/roi_overrides', overrides)
 
 // Stage 2: Zarr
 export const buildZarr = () => api.post('/zarr/build')
@@ -52,6 +55,10 @@ export const getProsegStatus = () => api.get('/proseg/status')
 export const runAnalysis = (params?: object) => api.post('/analysis/run', params ?? {})
 export const getAnalysisStatus = () => api.get('/analysis/status')
 export const getUmap = () => api.get('/analysis/umap')
+
+// Stage 4: 原始分布直方圖
+export const getRawHistogram = (roiName?: string, mergeRois?: boolean) =>
+  api.get('/analysis/raw_histogram', { params: { roi_name: roiName, merge_rois: mergeRois } })
 
 // Stage 4: Step 1 — QC 前處理
 export const runQC = (params?: object) => api.post('/analysis/run_qc', params ?? {})

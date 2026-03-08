@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { usePipelineStore } from '../stores/pipelineStore'
 import Terminal from '../components/shared/Terminal'
@@ -10,7 +10,9 @@ import {
   getConfig, getOverlayHdUrl, getAvailableRois,
   getClusterInfo, getCelltypistModels,
   runAnnotate, getAnnotateStatus, applyLabels,
+  getRawHistogram,
 } from '../api/client'
+import QcHistogram, { type HistogramMetric } from '../components/shared/QcHistogram'
 
 // ── 小工具 ────────────────────────────────────────────────────────
 
@@ -194,6 +196,15 @@ export default function Stage4_Analysis() {
   const [nTopGenes, setNTopGenes] = useState(20)
   const [nHeatmapGenes, setNHeatmapGenes] = useState(50)
 
+  // ── 原始分布直方圖 ──
+  const [histData, setHistData] = useState<{
+    n_cells: number
+    metrics: Record<string, HistogramMetric>
+  } | null>(null)
+  const [histLoading, setHistLoading] = useState(false)
+  const [histError, setHistError] = useState('')
+  const [logScales, setLogScales] = useState<Record<string, boolean>>({})
+
   // ── 儲存圖表 ──
   const [qcImages, setQcImages] = useState<Record<string, string>>({})
   const [umapImages, setUmapImages] = useState<Record<string, string>>({})
@@ -327,6 +338,41 @@ export default function Stage4_Analysis() {
       .map(s => parseFloat(s.trim()))
       .filter(v => !isNaN(v) && v > 0)
   }, [resolutionInput])
+
+  // ── 直方圖 handlers ──
+  const handleLoadHist = async () => {
+    setHistLoading(true)
+    setHistError('')
+    try {
+      const mergeFlag = analysisMode === 'merge' && hasMultipleRois
+      const res = await getRawHistogram(
+        mergeFlag ? undefined : (selectedRoi || undefined),
+        mergeFlag,
+      )
+      if (res.data?.status === 'ok') {
+        setHistData(res.data.data)
+      } else {
+        setHistError(res.data?.message ?? '載入失敗')
+      }
+    } catch (e: unknown) {
+      setHistError(e instanceof Error ? e.message : '載入失敗')
+    } finally {
+      setHistLoading(false)
+    }
+  }
+
+  const handleApplyMad = () => {
+    if (!histData) return
+    const m = histData.metrics
+    setQcParams(p => ({
+      ...p,
+      ...(m.total_counts    ? { min_counts: Math.ceil(m.total_counts.mad_min) }     : {}),
+      ...(m.n_genes_by_counts ? {
+        min_genes: Math.ceil(m.n_genes_by_counts.mad_min),
+        max_genes: Math.ceil(m.n_genes_by_counts.mad_max),
+      } : {}),
+    }))
+  }
 
   // ── 處理函式 ──
   const handleRunQC = async () => {
@@ -465,6 +511,95 @@ export default function Stage4_Analysis() {
               </span>
             </label>
           </div>
+        </div>
+
+        {/* ── 原始分布預覽 ── */}
+        <div className="bg-surface-darker rounded-lg border border-surface-border p-4 mt-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-xs font-medium text-gray-300">原始分布預覽</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                觀察細胞數量分布後再設定 QC 閾值｜
+                <span className="text-red-400">紅線</span> = min，
+                <span className="text-orange-400">橙線</span> = max，
+                <span className="text-green-500">綠虛線</span> = MAD建議
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {histData && (
+                <button
+                  onClick={handleApplyMad}
+                  className="px-3 py-1 rounded text-xs font-medium bg-green-800/40 border border-green-700 text-green-300 hover:bg-green-700/50 transition-colors"
+                >
+                  套用 MAD 建議值
+                </button>
+              )}
+              <button
+                onClick={handleLoadHist}
+                disabled={histLoading}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-card border border-gray-600 text-gray-300 hover:border-brand-primary hover:text-brand-primary disabled:opacity-50 transition-colors"
+              >
+                {histLoading ? '載入中...' : histData ? '重新載入' : '載入原始分布'}
+              </button>
+            </div>
+          </div>
+
+          {histError && (
+            <p className="text-xs text-red-400 mb-2">{histError}</p>
+          )}
+
+          {histData && (
+            <div className={`grid gap-6 ${Object.keys(histData.metrics).length === 3 ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-1 md:grid-cols-2'}`}>
+              {/* Transcripts Per Cell */}
+              {histData.metrics.total_counts && (
+                <QcHistogram
+                  metric={histData.metrics.total_counts}
+                  minVal={qcParams.min_counts}
+                  maxVal={null}
+                  showMin={true}
+                  showMax={false}
+                  onMinChange={v => setQcParams(p => ({ ...p, min_counts: v ?? 0 }))}
+                  onMaxChange={() => {}}
+                  logScale={!!logScales.total_counts}
+                  onLogScaleToggle={() => setLogScales(s => ({ ...s, total_counts: !s.total_counts }))}
+                  totalCells={histData.n_cells}
+                />
+              )}
+
+              {/* Genes Per Cell */}
+              {histData.metrics.n_genes_by_counts && (
+                <QcHistogram
+                  metric={histData.metrics.n_genes_by_counts}
+                  minVal={qcParams.min_genes}
+                  maxVal={qcParams.max_genes}
+                  showMin={true}
+                  showMax={true}
+                  onMinChange={v => setQcParams(p => ({ ...p, min_genes: v ?? 0 }))}
+                  onMaxChange={v => setQcParams(p => ({ ...p, max_genes: v ?? 99999 }))}
+                  logScale={!!logScales.n_genes_by_counts}
+                  onLogScaleToggle={() => setLogScales(s => ({ ...s, n_genes_by_counts: !s.n_genes_by_counts }))}
+                  totalCells={histData.n_cells}
+                />
+              )}
+
+              {/* Cell Size (Proseg only) */}
+              {histData.metrics.cell_area && (
+                <QcHistogram
+                  metric={histData.metrics.cell_area}
+                  minVal={null}
+                  maxVal={null}
+                  showMin={false}
+                  showMax={false}
+                  showMad={true}
+                  onMinChange={() => {}}
+                  onMaxChange={() => {}}
+                  logScale={!!logScales.cell_area}
+                  onLogScaleToggle={() => setLogScales(s => ({ ...s, cell_area: !s.cell_area }))}
+                  totalCells={histData.n_cells}
+                />
+              )}
+            </div>
+          )}
         </div>
 
         {/* QC 參數 */}
