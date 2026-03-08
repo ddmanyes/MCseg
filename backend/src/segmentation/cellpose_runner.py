@@ -403,14 +403,44 @@ def run_segmentation(config: dict):
 
 # ── Per-ROI segmentation (Stage 1 主要執行路徑) ──────────────────────────────
 
+# 可被 ROI 覆寫的欄位 → (seg_cfg section, key)
+_ROI_OVERRIDE_FIELD_MAP: dict[str, tuple[str, str]] = {
+    "model_type":         ("cellpose_model", "model_type"),
+    "dia_small":          ("strategy",       "dia_small"),
+    "dia_large":          ("strategy",       "dia_large"),
+    "flow_threshold":     ("strategy",       "flow_threshold"),
+    "cellprob_threshold": ("strategy",       "cellprob_threshold"),
+    "fragment_threshold": ("strategy",       "fragment_threshold"),
+    "eosin_bg_threshold": ("postprocessing", "eosin_bg_threshold"),
+}
 
-def run_segmentation_rois(config: dict, progress_callback=None):
-    """對所有 ROI 的 he_crop.tif 執行分割，結果分別存至各 ROI 目錄。"""
+
+def _merge_roi_params(global_seg_cfg: dict, roi_overrides: dict) -> dict:
+    """將 ROI 特定覆寫合併進全域分割設定（深複製，不修改原始設定）。"""
+    import copy
+    cfg = copy.deepcopy(global_seg_cfg)
+    for key, (section, field) in _ROI_OVERRIDE_FIELD_MAP.items():
+        if key in roi_overrides and roi_overrides[key] is not None:
+            cfg.setdefault(section, {})[field] = roi_overrides[key]
+    return cfg
+
+
+def run_segmentation_rois(config: dict, progress_callback=None,
+                          roi_overrides: dict | None = None,
+                          target_roi: str | None = None):
+    """對所有（或指定）ROI 的 he_crop.tif 執行分割，結果分別存至各 ROI 目錄。
+
+    Args:
+        roi_overrides: {roi_name: {field: value}} 形式的 ROI 個別參數覆寫。
+                       未指定的欄位沿用全域 config 設定。
+        target_roi: 若指定，只重跑此 ROI（單 ROI 重做模式）。
+    """
     paths      = config.get("paths", {})
     output_dir = paths.get("output_dir", "results/analysis")
     rois       = config.get("rois", [])
     seg_cfg    = config.get("segmentation", {})
     roi_base   = Path(output_dir) / "roi"
+    overrides  = roi_overrides or {}
 
     # 按 config rois 順序收集
     roi_paths: list[tuple[str, Path]] = []
@@ -432,6 +462,14 @@ def run_segmentation_rois(config: dict, progress_callback=None):
     if not roi_paths:
         raise ValueError("找不到 he_crop.tif，請先在 Stage 0 執行 ROI 裁切")
 
+    # 單 ROI 重做模式：過濾只留指定的 ROI
+    if target_roi:
+        filtered = [(name, path) for name, path in roi_paths if name == target_roi]
+        if not filtered:
+            raise ValueError(f"找不到 ROI '{target_roi}' 的 he_crop.tif")
+        roi_paths = filtered
+        logger.info(f"單 ROI 重做模式：只處理 {target_roi}")
+
     n = len(roi_paths)
     logger.info(f"找到 {n} 個 ROI 待分割")
 
@@ -440,7 +478,13 @@ def run_segmentation_rois(config: dict, progress_callback=None):
             progress_callback(i / n, f"ROI {i+1}/{n}: {roi_name}")
         logger.info("=" * 50)
         logger.info(f"處理 ROI: {roi_name} ({i+1}/{n})")
-        _run_single_roi_segmentation(he_crop_path, roi_name, seg_cfg)
+
+        roi_specific = overrides.get(roi_name, {})
+        effective_seg_cfg = _merge_roi_params(seg_cfg, roi_specific) if roi_specific else seg_cfg
+        if roi_specific:
+            logger.info(f"  套用個別參數覆寫：{roi_specific}")
+
+        _run_single_roi_segmentation(he_crop_path, roi_name, effective_seg_cfg)
 
     logger.info(f"所有 {n} 個 ROI 分割完成")
 

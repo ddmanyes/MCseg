@@ -1,10 +1,20 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
 import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
-import { runSegmentation, getSegmentationStatus, getSegmentationPreview, runSegmentationPreview, previewPreproc } from '../api/client'
+import { runSegmentation, getSegmentationStatus, getSegmentationPreview, runSegmentationPreview, previewPreproc, getRoiSegOverrides, saveRoiSegOverrides } from '../api/client'
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
+
+interface RoiOverride {
+  model_type?: string | null
+  dia_small?: number | null
+  dia_large?: number | null
+  flow_threshold?: number | null
+  cellprob_threshold?: number | null
+  fragment_threshold?: number | null
+  eosin_bg_threshold?: number | null
+}
 
 interface SegParams {
   mode: 'roi' | 'full'
@@ -145,12 +155,67 @@ export default function Stage1_Segmentation() {
   const [preprocInfo, setPreprocInfo] = useState<string | null>(null)
   const [preprocLoading, setPreprocLoading] = useState(false)
 
+  // ── ROI 個別參數覆寫 ────────────────────────────────────────────────────
+  const [roiOverrides, setRoiOverrides] = useState<Record<string, RoiOverride>>({})
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => {
+    getRoiSegOverrides().then(res => {
+      if (res.data?.data) setRoiOverrides(res.data.data)
+    }).catch(() => { })
+  }, [])
+
+  const _persistOverrides = (next: Record<string, RoiOverride>) => {
+    clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => {
+      saveRoiSegOverrides(next as Record<string, Record<string, unknown>>).catch(() => { })
+    }, 600)
+  }
+
+  const updateRoiField = (roiName: string, field: keyof RoiOverride, value: unknown) => {
+    const next = { ...roiOverrides, [roiName]: { ...roiOverrides[roiName], [field]: value } }
+    setRoiOverrides(next)
+    _persistOverrides(next)
+  }
+
+  const clearRoiField = (roiName: string, field: keyof RoiOverride) => {
+    const next = { ...roiOverrides, [roiName]: { ...roiOverrides[roiName], [field]: null } }
+    setRoiOverrides(next)
+    _persistOverrides(next)
+  }
+
+  const resetRoiRow = (roiName: string) => {
+    const next = { ...roiOverrides }
+    delete next[roiName]
+    setRoiOverrides(next)
+    saveRoiSegOverrides(next as Record<string, Record<string, unknown>>).catch(() => { })
+  }
+
+  const resetAllOverrides = () => {
+    setRoiOverrides({})
+    saveRoiSegOverrides({}).catch(() => { })
+  }
+
   const set = <K extends keyof SegParams>(key: K, value: SegParams[K]) =>
     setParams(prev => ({ ...prev, [key]: value }))
 
-  const handleRun = async () => {
-    updateStage('segmentation', { status: 'running', progress: 0, message: '啟動 Cellpose...' })
-    await runSegmentation(params)
+  const [runningRoi, setRunningRoi] = useState<string | null>(null)  // null = 全部, name = 單一 ROI
+
+  const _buildCleanOverrides = () => Object.fromEntries(
+    Object.entries(roiOverrides).filter(([, ov]) => Object.values(ov).some(v => v != null))
+  )
+
+  const handleRunAll = async () => {
+    updateStage('segmentation', { status: 'running', progress: 0, message: '啟動 Cellpose（全部 ROI）...' })
+    setRunningRoi(null)
+    await runSegmentation({ ...params, roi_overrides: _buildCleanOverrides() })
+    refetchStatus()
+  }
+
+  const handleRunSingleRoi = async (roiName: string) => {
+    updateStage('segmentation', { status: 'running', progress: 0, message: `啟動 Cellpose（${roiName}）...` })
+    setRunningRoi(roiName)
+    await runSegmentation({ ...params, roi_overrides: _buildCleanOverrides(), target_roi: roiName })
     refetchStatus()
   }
 
@@ -261,8 +326,6 @@ export default function Stage1_Segmentation() {
         status={stage.status}
         progress={stage.progress}
         message={stage.message}
-        onRun={handleRun}
-        runLabel="執行分割"
       >
         {/* 參數面板 */}
         <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -390,6 +453,187 @@ export default function Stage1_Segmentation() {
           </div>
         </div>
       </StageCard>
+
+      {/* ── ROI 個別參數覆寫 ──────────────────────────────────────────────── */}
+      {rois.length > 0 && (
+        <div className="rounded-xl bg-surface border border-surface-border p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-200">ROI 個別參數覆寫 &amp; 執行分割</h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                針對特定 ROI 覆寫參數後單獨重跑，或全部一起執行
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={resetAllOverrides}
+                className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                全部重置
+              </button>
+              <button
+                onClick={handleRunAll}
+                disabled={stage.status === 'running'}
+                className="px-4 py-1.5 text-sm rounded-lg font-medium transition-colors
+                           bg-brand-primary text-white hover:bg-brand-primary/90
+                           disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {stage.status === 'running' && runningRoi === null ? '執行中...' : '全部執行分割'}
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs border-collapse">
+              <thead>
+                <tr className="text-gray-500 border-b border-gray-700">
+                  <th className="text-left py-2 pr-4 font-medium w-36">ROI</th>
+                  <th className="text-center py-2 px-2 font-medium">模型</th>
+                  <th className="text-center py-2 px-2 font-medium">小徑 (px)</th>
+                  <th className="text-center py-2 px-2 font-medium">大徑 (px)</th>
+                  <th className="text-center py-2 px-2 font-medium">Flow</th>
+                  <th className="text-center py-2 px-2 font-medium">Cell Prob</th>
+                  <th className="text-center py-2 px-2 font-medium">Fragment</th>
+                  <th className="text-center py-2 px-2 font-medium">重新分割</th>
+                  <th className="py-2 px-2 w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rois.map(roi => {
+                  const ov: RoiOverride = roiOverrides[roi.name] ?? {}
+                  const hasAny = Object.values(ov).some(v => v != null)
+
+                  // 小工具：顯示「全域」按鈕或數字輸入
+                  const NumCell = ({
+                    field, defaultVal, step = 0.5, min, max,
+                  }: {
+                    field: keyof RoiOverride; defaultVal: number; step?: number; min?: number; max?: number
+                  }) => {
+                    const val = ov[field]
+                    return val != null ? (
+                      <div className="flex items-center justify-center gap-0.5">
+                        <input
+                          type="number"
+                          value={val as number}
+                          step={step}
+                          min={min}
+                          max={max}
+                          onChange={e => updateRoiField(roi.name, field, parseFloat(e.target.value))}
+                          className="w-16 px-1 py-0.5 bg-gray-800 border border-blue-500 rounded text-gray-100 text-xs text-right focus:outline-none"
+                        />
+                        <button
+                          onClick={() => clearRoiField(roi.name, field)}
+                          className="text-gray-500 hover:text-red-400 leading-none px-0.5"
+                          title="還原為全域"
+                        >×</button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => updateRoiField(roi.name, field, defaultVal)}
+                        className="mx-auto block px-2 py-0.5 rounded bg-gray-700/60 text-gray-500 hover:bg-gray-600 hover:text-gray-200 transition-colors"
+                      >
+                        全域
+                      </button>
+                    )
+                  }
+
+                  return (
+                    <tr
+                      key={roi.name}
+                      className={`border-b border-gray-800/60 ${hasAny ? 'border-l-2 border-l-blue-500' : 'border-l-2 border-l-transparent'}`}
+                    >
+                      <td className="py-2 pr-4 pl-1">
+                        <span className="text-gray-200 font-medium">{roi.name}</span>
+                        {roi.tissue && <span className="text-gray-600 ml-1.5 text-xs">{roi.tissue}</span>}
+                      </td>
+
+                      {/* 模型類型 */}
+                      <td className="py-2 px-2">
+                        {ov.model_type != null ? (
+                          <div className="flex items-center justify-center gap-0.5">
+                            <select
+                              value={ov.model_type}
+                              onChange={e => updateRoiField(roi.name, 'model_type', e.target.value)}
+                              className="px-1 py-0.5 bg-gray-800 border border-blue-500 rounded text-gray-100 text-xs focus:outline-none"
+                            >
+                              <option value="cyto2">cyto2</option>
+                              <option value="cyto3">cyto3</option>
+                              <option value="nuclei">nuclei</option>
+                            </select>
+                            <button
+                              onClick={() => clearRoiField(roi.name, 'model_type')}
+                              className="text-gray-500 hover:text-red-400 leading-none px-0.5"
+                              title="還原為全域"
+                            >×</button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => updateRoiField(roi.name, 'model_type', params.model_type)}
+                            className="mx-auto block px-2 py-0.5 rounded bg-gray-700/60 text-gray-500 hover:bg-gray-600 hover:text-gray-200 transition-colors"
+                          >
+                            全域
+                          </button>
+                        )}
+                      </td>
+
+                      <td className="py-2 px-2">
+                        <NumCell field="dia_small" defaultVal={params.dia_small} step={0.5} min={4} max={50} />
+                      </td>
+                      <td className="py-2 px-2">
+                        <NumCell field="dia_large" defaultVal={params.dia_large} step={0.5} min={10} max={100} />
+                      </td>
+                      <td className="py-2 px-2">
+                        <NumCell field="flow_threshold" defaultVal={params.flow_threshold} step={0.05} min={0} max={2} />
+                      </td>
+                      <td className="py-2 px-2">
+                        <NumCell field="cellprob_threshold" defaultVal={params.cellprob_threshold} step={0.5} min={-6} max={6} />
+                      </td>
+                      <td className="py-2 px-2">
+                        <NumCell field="fragment_threshold" defaultVal={params.fragment_threshold} step={10} min={0} max={500} />
+                      </td>
+
+                      {/* 單 ROI 重新分割 */}
+                      <td className="py-2 px-2 text-center">
+                        <button
+                          onClick={() => handleRunSingleRoi(roi.name)}
+                          disabled={stage.status === 'running'}
+                          title={`只重跑 ${roi.name}`}
+                          className={`px-2 py-0.5 rounded text-xs font-medium transition-colors
+                            ${stage.status === 'running' && runningRoi === roi.name
+                              ? 'bg-blue-800/60 text-blue-300 cursor-not-allowed'
+                              : stage.status === 'running'
+                                ? 'opacity-40 cursor-not-allowed bg-gray-700 text-gray-400'
+                                : 'bg-blue-700/40 border border-blue-600 text-blue-300 hover:bg-blue-600/60'
+                            }`}
+                        >
+                          {stage.status === 'running' && runningRoi === roi.name ? '執行中...' : '執行分割'}
+                        </button>
+                      </td>
+
+                      {/* 重置整列 */}
+                      <td className="py-2 px-2">
+                        {hasAny && (
+                          <button
+                            onClick={() => resetRoiRow(roi.name)}
+                            className="text-gray-600 hover:text-red-400 transition-colors text-xs"
+                            title="重置此 ROI 所有覆寫"
+                          >
+                            重置
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-xs text-gray-600">
+            ⓘ 點擊「全域」啟用個別設定（顯示藍框輸入）；點擊「×」還原；有覆寫的 ROI 列顯示藍色左邊線
+          </p>
+        </div>
+      )}
 
       {/* ── 快速 Patch 預覽 ─────────────────────────────────────────────────── */}
       <div className="rounded-xl bg-surface border border-surface-border p-4 space-y-4">

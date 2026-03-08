@@ -6,7 +6,7 @@ interface StageCardProps {
   status: StageStatus
   progress?: number
   message?: string
-  onRun: () => void
+  onRun?: () => void
   children?: React.ReactNode
   runLabel?: string
   disabled?: boolean
@@ -22,18 +22,20 @@ export default function StageCard({
     <div className="bg-surface-card rounded-xl border border-surface-border p-5 space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="font-semibold text-gray-200">{title}</h3>
-        <button
-          onClick={onRun}
-          disabled={isRunning || disabled}
-          className={clsx(
-            'px-4 py-1.5 rounded-lg text-sm font-medium transition-colors',
-            isRunning || disabled
-              ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
-              : 'bg-primary text-white hover:bg-primary-dark'
-          )}
-        >
-          {isRunning ? '執行中...' : runLabel}
-        </button>
+        {onRun && (
+          <button
+            onClick={onRun}
+            disabled={isRunning || disabled}
+            className={clsx(
+              'px-4 py-1.5 rounded-lg text-sm font-medium transition-colors',
+              isRunning || disabled
+                ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                : 'bg-primary text-white hover:bg-primary-dark'
+            )}
+          >
+            {isRunning ? '執行中...' : runLabel}
+          </button>
+        )}
       </div>
 
       {/* Progress bar */}

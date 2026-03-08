@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 
-from backend.src.utils.config import load_config, resolve_path
+from backend.src.utils.config import load_config, load_state, save_state, resolve_path
 from backend.src.utils.logging import set_current_stage
 
 router = APIRouter()
@@ -34,6 +34,12 @@ class SegmentationParams(BaseModel):
     eosin_bg_threshold: Optional[int] = None
     block_size: Optional[int] = None
     overlap: Optional[int] = None
+    # ROI 個別參數覆寫：{roi_name: {field: value}}
+    # 欄位可含 model_type / dia_small / dia_large / flow_threshold /
+    #          cellprob_threshold / fragment_threshold / eosin_bg_threshold
+    roi_overrides: Optional[dict] = None
+    # 若指定，只重跑這一個 ROI（單 ROI 重做）
+    target_roi: Optional[str] = None
 
 
 class PreviewRequest(BaseModel):
@@ -246,13 +252,20 @@ async def _run_segmentation(config: dict):
         _task_status.update({"progress": progress, "message": message})
 
     mode = config.get("_mode", "roi")
+    roi_overrides: dict = config.pop("_roi_overrides", None)
+    if roi_overrides is None:
+        roi_overrides = load_state().get("roi_seg_overrides", {})
+    target_roi: str | None = config.pop("_target_roi", None)
+
     try:
         if mode == "full":
             from backend.src.segmentation.cellpose_runner import run_segmentation
             await asyncio.get_event_loop().run_in_executor(None, run_segmentation, config)
         else:
             from backend.src.segmentation.cellpose_runner import run_segmentation_rois
-            await asyncio.get_event_loop().run_in_executor(None, run_segmentation_rois, config, _progress)
+            import functools
+            fn = functools.partial(run_segmentation_rois, config, _progress, roi_overrides, target_roi)
+            await asyncio.get_event_loop().run_in_executor(None, fn)
         _task_status = {"status": "done", "progress": 1.0, "message": "分割完成"}
     except Exception as e:
         logger.error(f"分割失敗：{e}")
@@ -267,8 +280,27 @@ async def run_segmentation(background_tasks: BackgroundTasks, params: Segmentati
         config = load_config()
         config = _apply_overrides(config, params)
         config["_mode"] = params.mode
+        config["_target_roi"] = params.target_roi
+        # 儲存 ROI 覆寫至 state.json，並注入 config 傳給背景任務
+        overrides = params.roi_overrides or {}
+        save_state({"roi_seg_overrides": overrides})
+        config["_roi_overrides"] = overrides
         background_tasks.add_task(_run_segmentation, config)
     return {"status": "ok", "message": "細胞分割已啟動"}
+
+
+@router.get("/roi_overrides")
+async def get_roi_overrides():
+    """取得目前儲存的 ROI 個別分割參數覆寫。"""
+    state = load_state()
+    return {"status": "ok", "data": state.get("roi_seg_overrides", {})}
+
+
+@router.put("/roi_overrides")
+async def put_roi_overrides(body: dict):
+    """儲存 ROI 個別分割參數覆寫（{roi_name: {field: value}}）。"""
+    save_state({"roi_seg_overrides": body})
+    return {"status": "ok"}
 
 
 @router.post("/preview_preproc")
