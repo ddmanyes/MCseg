@@ -16,6 +16,8 @@ logger = logging.getLogger("pipeline.api.segmentation")
 _task_status = {"status": "idle", "progress": 0.0, "message": ""}
 _task_lock = asyncio.Lock()
 
+_PREVIEW_JPEG_QUALITY = 85  # 所有 preview endpoint 統一 JPEG 品質
+
 
 class SegmentationParams(BaseModel):
     """前端傳入的分割參數覆寫（所有欄位皆可選）"""
@@ -181,11 +183,11 @@ def _run_preview_sync(he_crop_path: Path, req: PreviewRequest, config: dict) -> 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
     buf = io.BytesIO()
-    Image.fromarray(overlay.astype(np.uint8)).save(buf, "JPEG", quality=85)
+    Image.fromarray(overlay.astype(np.uint8)).save(buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
 
     # ── Macenko 前處理圖（Cellpose 實際看到的輸入）────────────────────────────
     mac_buf = io.BytesIO()
-    Image.fromarray(input_img.astype(np.uint8)).save(mac_buf, "JPEG", quality=85)
+    Image.fromarray(input_img.astype(np.uint8)).save(mac_buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
 
     # ── Flow Direction（HSV 光流方向圖）─────────────────────────────────────
     # Cellpose 4.x flows: [0]=XY viz (H,W,3), [1]=dP (2,H,W), [2]=cellprob (H,W)
@@ -200,13 +202,14 @@ def _run_preview_sync(he_crop_path: Path, req: PreviewRequest, config: dict) -> 
     # 把 merged 邊界疊在 flow 圖上（白色）方便對照細胞位置
     flow_rgb[boundaries] = [255, 255, 255]
     flow_buf = io.BytesIO()
-    Image.fromarray(flow_rgb).save(flow_buf, "JPEG", quality=85)
+    Image.fromarray(flow_rgb).save(flow_buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
 
     # ── Cyto Mask (Eosin Watershed) ───────────────────────────────────────────
     cyto_b64 = None
-    enable_cyto = req.enable_eosin_watershed if hasattr(req, 'enable_eosin_watershed') and getattr(req, 'enable_eosin_watershed') is not None else prep.get("enable_eosin_watershed", False)
+    pp = seg_cfg.get("postprocessing", {})
+    enable_cyto = req.enable_eosin_watershed if req.enable_eosin_watershed is not None else pp.get("enable_eosin_watershed", False)
     if enable_cyto and patch.ndim == 3 and patch.shape[-1] == 3:
-        bg_thresh = req.eosin_bg_threshold if hasattr(req, 'eosin_bg_threshold') and getattr(req, 'eosin_bg_threshold') is not None else prep.get("eosin_bg_threshold", 40)
+        bg_thresh = req.eosin_bg_threshold if req.eosin_bg_threshold is not None else pp.get("eosin_bg_threshold", 40)
         # 兒素主要標記組織在：用最大通道亮度判斷被刑物（純白空直 = 所有通道都露忧）
         # 背景（空直）：Brightness 高 → 廢止 Proseg 擴展
         # 組織（細胞質+核）：Brightness 中/低 → 允許 Proseg 在此擴展
@@ -221,7 +224,7 @@ def _run_preview_sync(he_crop_path: Path, req: PreviewRequest, config: dict) -> 
         cyto_overlay[border] = [0, 255, 200]
         cyto_overlay = np.clip(cyto_overlay, 0, 255).astype(np.uint8)
         cyto_buf = io.BytesIO()
-        Image.fromarray(cyto_overlay).save(cyto_buf, "JPEG", quality=85)
+        Image.fromarray(cyto_overlay).save(cyto_buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
         cyto_b64 = base64.b64encode(cyto_buf.getvalue()).decode()
 
     return {
@@ -285,6 +288,10 @@ async def run_segmentation(background_tasks: BackgroundTasks, params: Segmentati
         overrides = params.roi_overrides or {}
         save_state({"roi_seg_overrides": overrides})
         config["_roi_overrides"] = overrides
+        # 在鎖內設為 running，防止第二個請求在背景任務實際啟動前通過 running 檢查
+        _task_status["status"] = "running"
+        _task_status["progress"] = 0.0
+        _task_status["message"] = "初始化..."
         background_tasks.add_task(_run_segmentation, config)
     return {"status": "ok", "message": "細胞分割已啟動"}
 
@@ -386,9 +393,10 @@ async def preview_preproc(req: PreviewRequest):
         
         # ── 計算 Cyto Mask (如果開啟 Eosin Watershed) ─────────────────────────────────
         cyto_b64 = None
-        enable_cyto = req.enable_eosin_watershed if hasattr(req, 'enable_eosin_watershed') and getattr(req, 'enable_eosin_watershed') is not None else prep.get("enable_eosin_watershed", False)
+        _pp = seg_cfg.get("postprocessing", {})
+        enable_cyto = req.enable_eosin_watershed if req.enable_eosin_watershed is not None else _pp.get("enable_eosin_watershed", False)
         if enable_cyto and patch.ndim == 3 and patch.shape[-1] == 3:
-            bg_thresh = req.eosin_bg_threshold if hasattr(req, 'eosin_bg_threshold') and getattr(req, 'eosin_bg_threshold') is not None else prep.get("eosin_bg_threshold", 40)
+            bg_thresh = req.eosin_bg_threshold if req.eosin_bg_threshold is not None else _pp.get("eosin_bg_threshold", 40)
             brightness = patch.astype(np.float32).max(axis=2)
             is_background = (brightness > (255 - bg_thresh))
             cyto_mask = ~is_background
@@ -399,17 +407,17 @@ async def preview_preproc(req: PreviewRequest):
             cyto_overlay[border] = [0, 255, 200]
             cyto_overlay = np.clip(cyto_overlay, 0, 255).astype(np.uint8)
             cyto_buf = io.BytesIO()
-            Image.fromarray(cyto_overlay).save(cyto_buf, "JPEG", quality=85)
+            Image.fromarray(cyto_overlay).save(cyto_buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
             cyto_b64 = base64.b64encode(cyto_buf.getvalue()).decode()
 
         # 原圖 (Patch) 為對照
         raw_buf = io.BytesIO()
-        Image.fromarray(patch.astype(np.uint8)).save(raw_buf, "JPEG", quality=85)
+        Image.fromarray(patch.astype(np.uint8)).save(raw_buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
 
         # Macenko 前處理圖（Cellpose 實際看到的輸入）
         input_img_for_mac_buf = np.stack([gray_clahe, gray_clahe, gray_clahe], axis=-1)
         mac_buf = io.BytesIO()
-        Image.fromarray(input_img_for_mac_buf.astype(np.uint8)).save(mac_buf, "JPEG", quality=85)
+        Image.fromarray(input_img_for_mac_buf.astype(np.uint8)).save(mac_buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
 
         # Determine method string for the return dictionary
         method_return_dict = "Macenko Hematoxylin + CLAHE" if (normalize and patch.ndim==3 and patch.shape[-1]==3 and normalizer.fit(patch)) else "RGB2GRAY + CLAHE"
@@ -613,6 +621,8 @@ async def get_preview(roi_name: Optional[str] = None):
                 "roi":            target,
                 "n_cells":        n_cells,
                 "available_rois": available_rois,
+                "orig_w":         w,   # 原始 he_crop.tif 寬（px），供前端座標換算
+                "orig_h":         h,   # 原始 he_crop.tif 高（px）
             },
         }
     except Exception as e:

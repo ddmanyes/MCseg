@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
 import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
-import { runSegmentation, getSegmentationStatus, getSegmentationPreview, runSegmentationPreview, previewPreproc, getRoiSegOverrides, saveRoiSegOverrides } from '../api/client'
+import { runSegmentation, getSegmentationStatus, getSegmentationPreview, runSegmentationPreview, previewPreproc, getRoiSegOverrides, saveRoiSegOverrides, listRois } from '../api/client'
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
 
@@ -72,6 +72,15 @@ function NumberInput({
   label: string; value: number; onChange: (v: number) => void
   step?: number; min?: number; max?: number; hint?: string; tooltip?: string
 }) {
+  // 本地字串 state：允許鍵盤輸入中間狀態（如 "-1."、"0."）不被 React 重新渲染覆寫
+  const [localStr, setLocalStr] = useState(String(value))
+  const isEditing = useRef(false)
+
+  useEffect(() => {
+    // 只在非編輯狀態（例如快速預設切換）才同步父元件值
+    if (!isEditing.current) setLocalStr(String(value))
+  }, [value])
+
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="flex-1 flex items-center">
@@ -81,11 +90,21 @@ function NumberInput({
       </div>
       <input
         type="number"
-        value={value}
+        value={localStr}
         step={step}
         min={min}
         max={max}
-        onChange={e => onChange(parseFloat(e.target.value))}
+        onFocus={() => { isEditing.current = true }}
+        onChange={e => {
+          setLocalStr(e.target.value)
+          const n = parseFloat(e.target.value)
+          if (!isNaN(n)) onChange(n)
+        }}
+        onBlur={() => {
+          isEditing.current = false
+          // 離開輸入框時若為無效值，還原為父元件值
+          if (isNaN(parseFloat(localStr))) setLocalStr(String(value))
+        }}
         className="w-24 px-2 py-1 text-sm text-right bg-gray-800 border border-gray-600
                    rounded text-gray-100 focus:outline-none focus:border-blue-500"
       />
@@ -124,9 +143,64 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
+/** ROI 覆寫表格的數字輸入格——需要本地 string state 才能流暢鍵盤輸入 */
+function RoiNumCell({
+  val, defaultVal, onUpdate, onClear, step = 0.5, min, max,
+}: {
+  val: number | null; defaultVal: number
+  onUpdate: (v: number) => void; onClear: () => void
+  step?: number; min?: number; max?: number
+}) {
+  const [localStr, setLocalStr] = useState(val != null ? String(val) : '')
+  const isEditing = useRef(false)
+
+  useEffect(() => {
+    if (!isEditing.current && val != null) setLocalStr(String(val))
+    if (val == null) setLocalStr('')
+  }, [val])
+
+  if (val == null) {
+    return (
+      <button
+        onClick={() => onUpdate(defaultVal)}
+        className="mx-auto block px-2 py-0.5 rounded bg-gray-700/60 text-gray-500 hover:bg-gray-600 hover:text-gray-200 transition-colors"
+      >
+        全域
+      </button>
+    )
+  }
+  return (
+    <div className="flex items-center justify-center gap-0.5">
+      <input
+        type="number"
+        value={localStr}
+        step={step}
+        min={min}
+        max={max}
+        onFocus={() => { isEditing.current = true }}
+        onChange={e => {
+          setLocalStr(e.target.value)
+          const n = parseFloat(e.target.value)
+          if (!isNaN(n)) onUpdate(n)
+        }}
+        onBlur={() => {
+          isEditing.current = false
+          if (isNaN(parseFloat(localStr))) setLocalStr(String(val))
+        }}
+        className="w-16 px-1 py-0.5 bg-gray-800 border border-blue-500 rounded text-gray-100 text-xs text-right focus:outline-none"
+      />
+      <button
+        onClick={onClear}
+        className="text-gray-500 hover:text-red-400 leading-none px-0.5"
+        title="還原為全域"
+      >×</button>
+    </div>
+  )
+}
+
 export default function Stage1_Segmentation() {
   useStageLog('segmentation')
-  const { stages, updateStage, rois } = usePipelineStore()
+  const { stages, updateStage, rois, setRois } = usePipelineStore()
   const stage = stages['segmentation']
   const { refetch: refetchStatus } = useStageStatus('segmentation', getSegmentationStatus, 3000)
   const [params, setParams] = useState<SegParams>(DEFAULT_PARAMS)
@@ -137,6 +211,12 @@ export default function Stage1_Segmentation() {
   const [previewRoi, setPreviewRoi] = useState('')
   const [previewAvail, setPreviewAvail] = useState<string[]>([])
   const [previewNCells, setPreviewNCells] = useState<number | null>(null)
+  const previewImgRef = useRef<HTMLImageElement>(null)
+  const [previewOrigSize, setPreviewOrigSize] = useState<{ w: number; h: number } | null>(null)
+  const [previewHover, setPreviewHover] = useState<{
+    dx: number; dy: number; ix: number; iy: number; nearRight: boolean; nearBottom: boolean
+  } | null>(null)
+  const [previewClickMsg, setPreviewClickMsg] = useState('')
 
   // ── Quick preview state ─────────────────────────────────────────────────
   const [prevRoi, setPrevRoi] = useState('')
@@ -163,6 +243,12 @@ export default function Stage1_Segmentation() {
     getRoiSegOverrides().then(res => {
       if (res.data?.data) setRoiOverrides(res.data.data)
     }).catch(() => { })
+    // 重整頁面後 store 清空，自動補載 ROI 清單
+    if (rois.length === 0) {
+      listRois().then(res => {
+        if (res.data?.data) setRois(res.data.data)
+      }).catch(() => { })
+    }
   }, [])
 
   const _persistOverrides = (next: Record<string, RoiOverride>) => {
@@ -230,8 +316,44 @@ export default function Stage1_Segmentation() {
       if (d.available_rois) setPreviewAvail(d.available_rois)
       if (d.roi) setPreviewRoi(d.roi)
       if (d.n_cells != null) setPreviewNCells(d.n_cells)
+      if (d.orig_w && d.orig_h) setPreviewOrigSize({ w: d.orig_w, h: d.orig_h })
+      setPreviewClickMsg('')
     }
   }
+
+  const handlePreviewImgMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const img = previewImgRef.current
+    if (!img || !previewOrigSize) return
+    const rect = img.getBoundingClientRect()
+    const dx = e.clientX - rect.left
+    const dy = e.clientY - rect.top
+    setPreviewHover({
+      dx, dy,
+      ix: Math.round(dx / rect.width * previewOrigSize.w),
+      iy: Math.round(dy / rect.height * previewOrigSize.h),
+      nearRight: dx > rect.width * 0.65,
+      nearBottom: dy > rect.height * 0.75,
+    })
+  }, [previewOrigSize])
+
+  const handlePreviewImgClick = useCallback(() => {
+    if (!previewHover) return
+    setPrevRoi(previewRoi)
+    setPrevX(previewHover.ix)
+    setPrevY(previewHover.iy)
+    setPreviewClickMsg(`已選取 (x=${previewHover.ix}, y=${previewHover.iy}) → 快速預覽座標已更新`)
+  }, [previewHover, previewRoi])
+
+  // 參數改變時清除過時的快速預覽圖，避免誤以為舊圖是新參數的結果
+  useEffect(() => {
+    setQuickSrc(null)
+    setQuickMacenko(null)
+    setQuickFlows(null)
+    setQuickCyto(null)
+    setQuickInfo(null)
+    setQuickError(null)
+    setPreprocSrc(null)
+  }, [params])
 
   const handleQuickPreview = async () => {
     setPrevLoading(true)
@@ -494,6 +616,7 @@ export default function Stage1_Segmentation() {
                   <th className="text-center py-2 px-2 font-medium">Flow</th>
                   <th className="text-center py-2 px-2 font-medium">Cell Prob</th>
                   <th className="text-center py-2 px-2 font-medium">Fragment</th>
+                  <th className="text-center py-2 px-2 font-medium">Eosin BG</th>
                   <th className="text-center py-2 px-2 font-medium">重新分割</th>
                   <th className="py-2 px-2 w-8"></th>
                 </tr>
@@ -502,40 +625,6 @@ export default function Stage1_Segmentation() {
                 {rois.map(roi => {
                   const ov: RoiOverride = roiOverrides[roi.name] ?? {}
                   const hasAny = Object.values(ov).some(v => v != null)
-
-                  // 小工具：顯示「全域」按鈕或數字輸入
-                  const NumCell = ({
-                    field, defaultVal, step = 0.5, min, max,
-                  }: {
-                    field: keyof RoiOverride; defaultVal: number; step?: number; min?: number; max?: number
-                  }) => {
-                    const val = ov[field]
-                    return val != null ? (
-                      <div className="flex items-center justify-center gap-0.5">
-                        <input
-                          type="number"
-                          value={val as number}
-                          step={step}
-                          min={min}
-                          max={max}
-                          onChange={e => updateRoiField(roi.name, field, parseFloat(e.target.value))}
-                          className="w-16 px-1 py-0.5 bg-gray-800 border border-blue-500 rounded text-gray-100 text-xs text-right focus:outline-none"
-                        />
-                        <button
-                          onClick={() => clearRoiField(roi.name, field)}
-                          className="text-gray-500 hover:text-red-400 leading-none px-0.5"
-                          title="還原為全域"
-                        >×</button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => updateRoiField(roi.name, field, defaultVal)}
-                        className="mx-auto block px-2 py-0.5 rounded bg-gray-700/60 text-gray-500 hover:bg-gray-600 hover:text-gray-200 transition-colors"
-                      >
-                        全域
-                      </button>
-                    )
-                  }
 
                   return (
                     <tr
@@ -577,19 +666,34 @@ export default function Stage1_Segmentation() {
                       </td>
 
                       <td className="py-2 px-2">
-                        <NumCell field="dia_small" defaultVal={params.dia_small} step={0.5} min={4} max={50} />
+                        <RoiNumCell val={ov.dia_small ?? null} defaultVal={params.dia_small} step={0.5} min={4} max={50}
+                          onUpdate={v => updateRoiField(roi.name, 'dia_small', v)}
+                          onClear={() => clearRoiField(roi.name, 'dia_small')} />
                       </td>
                       <td className="py-2 px-2">
-                        <NumCell field="dia_large" defaultVal={params.dia_large} step={0.5} min={10} max={100} />
+                        <RoiNumCell val={ov.dia_large ?? null} defaultVal={params.dia_large} step={0.5} min={10} max={100}
+                          onUpdate={v => updateRoiField(roi.name, 'dia_large', v)}
+                          onClear={() => clearRoiField(roi.name, 'dia_large')} />
                       </td>
                       <td className="py-2 px-2">
-                        <NumCell field="flow_threshold" defaultVal={params.flow_threshold} step={0.05} min={0} max={2} />
+                        <RoiNumCell val={ov.flow_threshold ?? null} defaultVal={params.flow_threshold} step={0.05} min={0} max={2}
+                          onUpdate={v => updateRoiField(roi.name, 'flow_threshold', v)}
+                          onClear={() => clearRoiField(roi.name, 'flow_threshold')} />
                       </td>
                       <td className="py-2 px-2">
-                        <NumCell field="cellprob_threshold" defaultVal={params.cellprob_threshold} step={0.5} min={-6} max={6} />
+                        <RoiNumCell val={ov.cellprob_threshold ?? null} defaultVal={params.cellprob_threshold} step={0.5} min={-6} max={6}
+                          onUpdate={v => updateRoiField(roi.name, 'cellprob_threshold', v)}
+                          onClear={() => clearRoiField(roi.name, 'cellprob_threshold')} />
                       </td>
                       <td className="py-2 px-2">
-                        <NumCell field="fragment_threshold" defaultVal={params.fragment_threshold} step={10} min={0} max={500} />
+                        <RoiNumCell val={ov.fragment_threshold ?? null} defaultVal={params.fragment_threshold} step={10} min={0} max={500}
+                          onUpdate={v => updateRoiField(roi.name, 'fragment_threshold', v)}
+                          onClear={() => clearRoiField(roi.name, 'fragment_threshold')} />
+                      </td>
+                      <td className="py-2 px-2">
+                        <RoiNumCell val={ov.eosin_bg_threshold ?? null} defaultVal={params.eosin_bg_threshold} step={5} min={0} max={200}
+                          onUpdate={v => updateRoiField(roi.name, 'eosin_bg_threshold', v)}
+                          onClear={() => clearRoiField(roi.name, 'eosin_bg_threshold')} />
                       </td>
 
                       {/* 單 ROI 重新分割 */}
@@ -641,7 +745,7 @@ export default function Stage1_Segmentation() {
           <div>
             <h3 className="text-sm font-semibold text-gray-200">快速 Patch 預覽</h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              從 he_crop.tif 取一小塊國 Cellpose，不需先執行完整分割 · 使用上方當前參數
+              從 he_crop.tif 取一小塊跑 Cellpose，不需先執行完整分割 · 使用上方當前參數
             </p>
           </div>
           <div className="flex gap-2">
@@ -840,9 +944,52 @@ export default function Stage1_Segmentation() {
                 {previewTab === 'flows' && 'Cellpose 小尺寸 dP 光流方向圖（色相 = 方向，飽和度 = 強度）'}
                 {previewTab === 'cyto' && 'Eosin 背景過濾遮罩（亮色 = 組織，暗色 = 空腔）'}
               </p>
-              <div className="rounded-lg overflow-hidden border border-surface-border">
-                <img src={previewTab === 'cyto' ? (previewCyto ?? previewSrc!) : previewTab === 'flows' ? (previewFlows ?? previewSrc!) : previewSrc!} alt="segmentation preview" className="w-full" />
+              {/* 互動預覽圖：懸停顯示座標，點擊填入快速測試 */}
+              <div
+                className="relative rounded-lg overflow-hidden border border-surface-border cursor-crosshair select-none"
+                onMouseMove={handlePreviewImgMove}
+                onMouseLeave={() => setPreviewHover(null)}
+                onClick={handlePreviewImgClick}
+              >
+                <img
+                  ref={previewImgRef}
+                  src={previewTab === 'cyto' ? (previewCyto ?? previewSrc!) : previewTab === 'flows' ? (previewFlows ?? previewSrc!) : previewSrc!}
+                  alt="segmentation preview"
+                  className="w-full block"
+                />
+                {/* 十字線 */}
+                {previewHover && (
+                  <>
+                    <div className="absolute top-0 bottom-0 w-px bg-yellow-400/70 pointer-events-none"
+                      style={{ left: previewHover.dx }} />
+                    <div className="absolute left-0 right-0 h-px bg-yellow-400/70 pointer-events-none"
+                      style={{ top: previewHover.dy }} />
+                    {/* 座標 badge */}
+                    <div
+                      className="absolute bg-black/85 text-yellow-300 text-xs font-mono px-2 py-1 rounded pointer-events-none whitespace-nowrap z-10"
+                      style={{
+                        left: previewHover.nearRight ? previewHover.dx - 8 : previewHover.dx + 8,
+                        top: previewHover.nearBottom ? previewHover.dy - 30 : previewHover.dy + 8,
+                        transform: previewHover.nearRight ? 'translateX(-100%)' : undefined,
+                      }}
+                    >
+                      x={previewHover.ix}, y={previewHover.iy}
+                    </div>
+                  </>
+                )}
+                {/* 提示：未懸停時 */}
+                {!previewHover && previewOrigSize && (
+                  <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-black/65 text-gray-400 text-xs px-3 py-1 rounded-full pointer-events-none whitespace-nowrap">
+                    懸停顯示座標 · 點擊選取 → 小片段測試
+                  </div>
+                )}
               </div>
+              {/* 點擊後回饋訊息 */}
+              {previewClickMsg && (
+                <p className="text-xs text-yellow-400 bg-yellow-900/20 rounded px-3 py-1.5">
+                  ✓ {previewClickMsg}，可至上方「快速 Patch 預覽」調整參數後執行測試
+                </p>
+              )}
             </div>
           )}
         </div>
