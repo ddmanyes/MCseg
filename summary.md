@@ -1,4 +1,36 @@
-# Visium HD Pipeline 2 - Stage 1 Segmentation 功能開發與修復進度總結
+# Visium HD Pipeline 2 — 開發進度總結（更新：2026-03-08）
+
+---
+
+## 已完成 Stage 總覽
+
+| Stage | 功能 | 狀態 |
+|-------|------|------|
+| Setup | 資料自動掃描（discovery.py）| ✅ |
+| Stage 0 | ROI 裁切（BTF tile-by-tile）| ✅ |
+| Stage 1 | Cellpose + Logic A + 互動預覽 | ✅ |
+| Stage 2 | Zarr 建構（macOS `._*` 防護）| ✅ |
+| Stage 2.5 | Proseg 條件測試（Top 3 縮圖 + 排序表）| ✅ |
+| Stage 3 | Proseg 完整執行 | ✅ |
+| Stage 4 | Scanpy QC + UMAP + Leiden | ✅ |
+| Stage 5 | Xenium Explorer + Loupe Browser 匯出 | ✅ |
+
+## 本 Session 完成（2026-03-08）
+
+- Stage 1 預覽圖互動座標（hover 十字準線 + badge，點擊自動填快速預覽座標）
+- NumberInput / RoiNumCell 鍵盤輸入修復（localStr + isEditing ref）
+- ROI 覆寫表格新增 Eosin BG 欄位（per-ROI eosin_bg_threshold）
+- params 變更時自動清除過時快速預覽
+- 後端 /run 競態條件修正（status 在 lock 內設定）
+- eosin_bg_threshold fallback 改從 postprocessing 讀取（之前誤讀 preprocessing）
+- 統一 JPEG 品質常數 _PREVIEW_JPEG_QUALITY = 85
+- Git commit: 2bc2052
+
+---
+
+# 原始詳細紀錄（Detailed Historical Notes）
+
+## 1. Eosin 細胞質遮罩 (Cyto Mask) 邏輯重構與修復
 
 ## 1. Eosin 細胞質遮罩 (Cyto Mask) 邏輯重構與修復
 
