@@ -344,11 +344,11 @@ def get_overview(config: dict) -> dict:
     binned_002 = _Path(config["paths"].get("binned_002", ""))
     scalef_path = binned_002 / "spatial" / "scalefactors_json.json"
     scalef = 0.1
-    mpp = 0.2737
+    mpp = VISIUM_UM_PX
     if scalef_path.exists():
         scalef_data = _json.loads(scalef_path.read_text())
         scalef = scalef_data.get("tissue_hires_scalef", 0.1)
-        mpp = scalef_data.get("microns_per_pixel", 0.2737)
+        mpp = scalef_data.get("microns_per_pixel", VISIUM_UM_PX)
 
     hires_path = binned_002 / "spatial" / "tissue_hires_image.png"
     if not hires_path.exists():

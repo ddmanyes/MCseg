@@ -13,6 +13,7 @@ import scanpy as sc
 import anndata as ad
 
 from backend.src.analysis.preprocessing import Preprocessor
+from backend.src.utils.constants import VISIUM_UM_PX
 from backend.src.analysis.clustering import Analyzer
 from backend.src.utils.config import resolve_path
 
@@ -208,7 +209,7 @@ def merge_all_rois(config: dict[str, Any]) -> Path:
 
         # 加回全局座標偏移（local µm → global µm）
         if "spatial" in adata.obsm and roi.get("x") is not None:
-            pixel_size_um = roi.get("pixel_size_um", 0.2737)
+            pixel_size_um = roi.get("pixel_size_um", VISIUM_UM_PX)
             x_offset_um = float(roi["x"]) * pixel_size_um
             y_offset_um = float(roi["y"]) * pixel_size_um
             coords = adata.obsm["spatial"].copy()
@@ -564,7 +565,7 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
     if _pre_spatial is not None and roi_name is not None:
         # 單一 ROI 模式：生成標準疊圖（回傳給前端）
         he_path = out_base / roi_name / "he_crop.tif"
-        pixel_size_um = rois[0].get("pixel_size_um", 0.2737)
+        pixel_size_um = rois[0].get("pixel_size_um", VISIUM_UM_PX)
         overlay_figs = _generate_overlay_images(
             _pre_spatial, _pre_obs_names, set(adata.obs_names),
             he_path, fig_dir, pixel_size_um,
@@ -591,7 +592,7 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
             # merge_all_rois() 在合併時已加入全域座標偏移（µm），
             # 需減去各 ROI 的全域偏移，還原為 he_crop.tif 的本地座標（µm）
             roi_spatial_global = _pre_spatial[idx_arr]
-            px_um = roi_cfg.get("pixel_size_um", 0.2737)
+            px_um = roi_cfg.get("pixel_size_um", VISIUM_UM_PX)
             if roi_cfg.get("x") is not None:
                 x_offset_um = float(roi_cfg["x"]) * px_um
                 y_offset_um = float(roi_cfg["y"]) * px_um

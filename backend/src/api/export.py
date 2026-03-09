@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 
 from backend.src.utils.config import load_config, resolve_path
+from backend.src.utils.constants import VISIUM_UM_PX
 from backend.src.utils.logging import set_current_stage
 
 router = APIRouter()
@@ -133,7 +134,7 @@ async def _run_xenium(config: dict, req: ExportRequest):
                     continue
                 roi_out_dir   = output_dir_base / "roi" / rn
                 mask_path     = roi_out_dir / "segmentation_masks.npy"
-                pixel_size_um = float(roi.get("pixel_size_um", 0.2737))
+                pixel_size_um = float(roi.get("pixel_size_um", VISIUM_UM_PX))
 
                 if not mask_path.exists():
                     logger.warning(f"  [{rn}] 找不到遮罩，跳過")
@@ -142,8 +143,8 @@ async def _run_xenium(config: dict, req: ExportRequest):
                 roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
 
                 # 加入全域座標偏移
-                roi_x_um = roi.get("x", 0) * roi.get("pixel_size_um", 0.2737)
-                roi_y_um = roi.get("y", 0) * roi.get("pixel_size_um", 0.2737)
+                roi_x_um = roi.get("x", 0) * roi.get("pixel_size_um", VISIUM_UM_PX)
+                roi_y_um = roi.get("y", 0) * roi.get("pixel_size_um", VISIUM_UM_PX)
                 for feat in roi_geo.get("features", []):
                     orig_id = feat["properties"].get("full_id", "")
                     feat["properties"]["full_id"] = f"{rn}__{orig_id}"
@@ -156,7 +157,7 @@ async def _run_xenium(config: dict, req: ExportRequest):
                 json.dump({"type": "FeatureCollection", "features": all_features}, f)
 
             h5ad_path = merged_h5ad if not req.input_h5ad else Path(req.input_h5ad)
-            roi_pixel_size_um = rois[0].get("pixel_size_um", 0.2737) if rois else 0.2737
+            roi_pixel_size_um = rois[0].get("pixel_size_um", VISIUM_UM_PX) if rois else VISIUM_UM_PX
 
             he_image_path = resolve_path(paths.get("he_image", "")) if paths.get("he_image") else None
             he_crop_bounds = None
@@ -171,7 +172,7 @@ async def _run_xenium(config: dict, req: ExportRequest):
             roi_name    = rois[0].get("name", "") if rois else ""
             roi_out_dir = output_dir_base / "roi" / roi_name if roi_name else output_dir_base
             mask_path   = roi_out_dir / "segmentation_masks.npy"
-            pixel_size_um = float(rois[0].get("pixel_size_um", 0.2737)) if rois else 0.2737
+            pixel_size_um = float(rois[0].get("pixel_size_um", VISIUM_UM_PX)) if rois else VISIUM_UM_PX
 
             if not mask_path.exists():
                 raise FileNotFoundError(f"找不到 {roi_name} 的 segmentation_masks.npy，請先完成 Stage 1")

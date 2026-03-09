@@ -9,6 +9,7 @@ from fastapi.responses import Response as FastAPIResponse
 from pydantic import BaseModel
 
 from backend.src.utils.config import load_config, save_state
+from backend.src.utils.constants import VISIUM_UM_PX
 from backend.src.utils.logging import set_current_stage
 
 router = APIRouter()
@@ -47,7 +48,7 @@ class RoiConfig(BaseModel):
     y: Optional[int] = None
     width_px: Optional[int] = None
     height_px: Optional[int] = None
-    pixel_size_um: float = 0.2737
+    pixel_size_um: float = VISIUM_UM_PX
     # 格式 B：µm
     x_um: Optional[float] = None
     y_um: Optional[float] = None
