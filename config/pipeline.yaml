@@ -37,8 +37,6 @@ segmentation:
     cellprob_threshold: -2.0
     fragment_threshold: 20
   postprocessing:
-    enable_eosin_watershed: true
-    eosin_bg_threshold: 40
     enable_merge_enclosed: true
   tiling:
     block_size: 2048

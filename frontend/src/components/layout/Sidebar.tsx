@@ -4,14 +4,12 @@ import { usePipelineStore } from '../../stores/pipelineStore'
 import type { StageStatus } from '../../types/pipeline'
 
 const STAGES = [
-  { path: '/data',         label: '📂',        sub: '資料設定',    stage: 'data',         dep: null },
-  { path: '/roi',          label: 'Stage 0',   sub: 'ROI 裁切',    stage: 'roi',          dep: null },
-  { path: '/segmentation', label: 'Stage 1',   sub: '細胞分割',    stage: 'segmentation', dep: 'roi' },
-  { path: '/zarr',         label: 'Stage 2',   sub: 'Zarr 建構',   stage: 'zarr',         dep: 'segmentation' },
-  { path: '/conditions',   label: 'Stage 2.5', sub: '條件測試',    stage: 'conditions',   dep: 'zarr' },
-  { path: '/proseg',       label: 'Stage 3',   sub: 'Proseg 執行', stage: 'proseg',       dep: 'zarr' },
-  { path: '/analysis',     label: 'Stage 4',   sub: '下游分析',    stage: 'analysis',     dep: 'proseg' },
-  { path: '/export',       label: 'Stage 5',   sub: 'Browser 匯出',stage: 'export',       dep: 'analysis' },
+  { path: '/data',         label: '📂',      sub: '資料設定',    stage: 'data',         dep: null },
+  { path: '/roi',          label: 'Stage 0', sub: 'ROI 裁切',    stage: 'roi',          dep: null },
+  { path: '/segmentation', label: 'Stage 1', sub: '細胞分割',    stage: 'segmentation', dep: 'roi' },
+  { path: '/count',        label: 'Stage 2', sub: 'RNA 計數',    stage: 'count',        dep: 'segmentation' },
+  { path: '/analysis',     label: 'Stage 3', sub: '下游分析',    stage: 'analysis',     dep: 'count' },
+  { path: '/export',       label: 'Stage 4', sub: 'Browser 匯出',stage: 'export',       dep: 'analysis' },
 ]
 
 function StatusDot({ status }: { status: StageStatus }) {
@@ -37,7 +35,7 @@ export default function Sidebar() {
     <aside className="w-52 bg-surface-card border-r border-surface-border flex flex-col py-4">
       <div className="px-4 mb-6">
         <h1 className="text-sm font-bold text-primary leading-tight">VisiumHD</h1>
-        <p className="text-xs text-gray-400">Pipeline v2</p>
+        <p className="text-xs text-gray-400">Pipeline v3</p>
       </div>
       <nav className="flex-1 space-y-1 px-2">
         {STAGES.map(({ path, label, sub, stage, dep }) => {

@@ -108,7 +108,7 @@ async def _run_analysis(config: dict):
     _task_status = {"status": "running", "progress": 0.0, "message": "執行聚類分析..."}
     try:
         from backend.src.analysis.pipeline import run_analysis_pipeline
-        await asyncio.get_event_loop().run_in_executor(None, run_analysis_pipeline, config)
+        await asyncio.get_running_loop().run_in_executor(None, run_analysis_pipeline, config)
         _task_status = {"status": "done", "progress": 1.0, "message": "分析完成"}
     except Exception as e:
         logger.error(f"分析失敗：{e}")
@@ -169,8 +169,8 @@ def _load_disk_images(keys_paths: list[tuple[str, Path]]) -> dict[str, str]:
 # ─────────────────────── raw_histogram ────────────────────────────
 
 def _find_raw_h5ad(roi_dir: Path) -> "Path | None":
-    """尋找 ROI 目錄內的原始 h5ad（優先 proseg_cells，次選 adata_002um/008um）。"""
-    for name in ("proseg_cells.h5ad", "adata_002um.h5ad", "adata_008um.h5ad"):
+    """尋找 ROI 目錄內的原始 h5ad（優先 cellpose_cells，次選 adata_002um/008um）。"""
+    for name in ("cellpose_cells.h5ad", "adata_002um.h5ad", "adata_008um.h5ad"):
         p = roi_dir / name
         if p.exists():
             return p
@@ -179,19 +179,25 @@ def _find_raw_h5ad(roi_dir: Path) -> "Path | None":
 
 def _hist_metric(arr: "np.ndarray", label: str, unit: str = "", n_bins: int = 60) -> dict:
     import numpy as np
-    arr = arr[np.isfinite(arr)]
+    arr = arr[np.isfinite(arr) & (arr >= 0)]
     if len(arr) == 0:
         return {}
     counts, bin_edges = np.histogram(arr, bins=n_bins)
     median = float(np.median(arr))
-    mad = float(np.median(np.abs(arr - median)))
+    # MAD 在 log1p 空間計算後轉回線性空間，適合 count data（高度右偏分布）
+    # 等同 scran::isOutlier(log=TRUE)，避免線性 MAD 下界恆為 0 的問題
+    log_arr = np.log1p(arr)
+    log_median = float(np.median(log_arr))
+    log_mad = float(np.median(np.abs(log_arr - log_median)))
+    mad_min = float(max(0.0, np.expm1(log_median - 3 * log_mad)))
+    mad_max = float(np.expm1(log_median + 3 * log_mad))
     return {
         "label": label,
         "unit": unit,
         "bin_edges": bin_edges.tolist(),
         "counts": counts.tolist(),
-        "mad_min": round(max(0.0, median - 3 * mad), 2),
-        "mad_max": round(median + 3 * mad, 2),
+        "mad_min": round(mad_min, 2),
+        "mad_max": round(mad_max, 2),
         "p5":  round(float(np.percentile(arr, 5)), 2),
         "p50": round(median, 2),
         "p95": round(float(np.percentile(arr, 95)), 2),
@@ -228,7 +234,7 @@ async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = F
                 return {"status": "error", "message": "未指定 ROI"}
             h5ad = _find_raw_h5ad(out_base / target)
             if not h5ad:
-                return {"status": "error", "message": f"找不到 {target} 的 h5ad 檔（請先完成 Stage 1-3）"}
+                return {"status": "error", "message": f"找不到 {target} 的 h5ad 檔（請先完成 Stage 1-2）"}
             adata = sc.read_h5ad(str(h5ad))
 
         # 計算 QC metrics（不過濾，只計算分布）
@@ -241,8 +247,8 @@ async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = F
             metrics["total_counts"] = _hist_metric(obs["total_counts"].values, "Transcripts Per Cell")
         if "n_genes_by_counts" in obs:
             metrics["n_genes_by_counts"] = _hist_metric(obs["n_genes_by_counts"].values, "Genes Per Cell")
-        if "cell_area" in obs:
-            metrics["cell_area"] = _hist_metric(obs["cell_area"].values, "Cell Size", "µm²")
+        if "cell_area_um2" in obs:
+            metrics["cell_area"] = _hist_metric(obs["cell_area_um2"].values, "Cell Size", "µm²")
 
         return {"status": "ok", "data": {"n_cells": int(adata.n_obs), "metrics": metrics}}
 
@@ -309,7 +315,7 @@ async def _run_qc(config: dict):
     _qc_status = {"status": "running", "progress": 0.0, "message": "執行 QC 前處理..."}
     try:
         from backend.src.analysis.pipeline import run_qc_step
-        result = await asyncio.get_event_loop().run_in_executor(None, run_qc_step, config)
+        result = await asyncio.get_running_loop().run_in_executor(None, run_qc_step, config)
         _qc_images = result
         _qc_status = {"status": "done", "progress": 1.0, "message": f"QC 完成，已產生 {len(result)} 張圖表"}
     except Exception as e:
@@ -343,7 +349,7 @@ async def run_qc(background_tasks: BackgroundTasks, params: Optional[QCParams] =
 
 @router.get("/available_rois")
 async def get_available_rois():
-    """列出所有已有 proseg_cells.h5ad 的 ROI（供 Stage 4 來源選擇）"""
+    """列出所有已有 cellpose_cells.h5ad 的 ROI（供 Stage 3 來源選擇）"""
     try:
         config = load_config()
         from backend.src.utils.config import resolve_path
@@ -352,9 +358,9 @@ async def get_available_rois():
         result = []
         for roi in rois:
             name = roi.get("name", "")
-            h5ad = out_base / name / "proseg_cells.h5ad"
+            h5ad = out_base / name / "cellpose_cells.h5ad"
             result.append({"name": name, "available": h5ad.exists()})
-        return {"status": "ok", "data": result}
+        return {"status": "ok", "data": result}  # noqa: E501
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -401,7 +407,7 @@ async def _run_umap(config: dict, p: UMAPExploreParams):
     try:
         from backend.src.analysis.pipeline import run_umap_step
         clus_cfg = config.get("analysis", {}).get("clustering", {})
-        result = await asyncio.get_event_loop().run_in_executor(
+        result = await asyncio.get_running_loop().run_in_executor(
             None,
             run_umap_step,
             config,
@@ -481,7 +487,7 @@ async def _run_heatmap(config: dict, p: HeatmapParams):
     _heat_status = {"status": "running", "progress": 0.0, "message": f"產生熱圖 + 點圖 (res={p.resolution})..."}
     try:
         from backend.src.analysis.pipeline import run_heatmap_step
-        result = await asyncio.get_event_loop().run_in_executor(
+        result = await asyncio.get_running_loop().run_in_executor(
             None, run_heatmap_step, config, p.resolution, p.n_top_genes, p.n_heatmap_genes
         )
         _heatmap_images = result  # dict: {"heatmap": b64, "dotplot": b64}
@@ -571,7 +577,7 @@ async def _run_annotate(config: dict, p: AnnotateParams):
     }
     try:
         from backend.src.analysis.pipeline import run_celltypist_annotation
-        result = await asyncio.get_event_loop().run_in_executor(
+        result = await asyncio.get_running_loop().run_in_executor(
             None, run_celltypist_annotation, config, p.resolution,
             p.model_name, p.mode, p.immune_conf_threshold,
             p.score_threshold, p.uncertain_threshold,
@@ -607,6 +613,38 @@ async def get_annotate_status():
 @router.get("/annotate_suggestions")
 async def get_annotate_suggestions():
     return {"status": "ok", "data": _annot_suggestions}
+
+
+@router.get("/roi_overlays")
+async def get_roi_overlays():
+    """回傳各 ROI 的 QC 前後疊圖（per-ROI 命名，供多 ROI 比較視圖）。
+
+    Returns
+    -------
+    {roi_name: {pre_qc?: base64, post_qc?: base64}}
+    """
+    try:
+        fig_dir = _get_fig_dir()
+        config = load_config()
+        rois = config.get("rois", [])
+        result: dict[str, dict[str, str]] = {}
+        for roi in rois:
+            name = roi.get("name", "")
+            if not name:
+                continue
+            entry: dict[str, str] = {}
+            for stage in ("pre_qc", "post_qc"):
+                path = fig_dir / f"overlay_{name}_{stage}.png"
+                if path.exists():
+                    entry[stage] = base64.b64encode(path.read_bytes()).decode()
+            if entry:
+                result[name] = entry
+        if not result:
+            return {"status": "error", "message": "尚未產生 ROI 疊圖，請先執行 QC"}
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        logger.error(f"roi_overlays 失敗：{e}")
+        return {"status": "error", "message": str(e)}
 
 
 @router.post("/apply_labels")

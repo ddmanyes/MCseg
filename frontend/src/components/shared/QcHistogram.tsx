@@ -96,9 +96,23 @@ export default function QcHistogram({
   const xMin = bin_edges[0]
   const xMax = bin_edges[n]
 
-  // X scale helpers
-  const xScale  = useCallback((v: number) => PAD_L + ((v - xMin) / (xMax - xMin)) * chartW, [xMin, xMax, chartW])
-  const xInvert = useCallback((px: number) => xMin + ((px - PAD_L) / chartW) * (xMax - xMin), [xMin, xMax, chartW])
+  // X scale helpers — linear
+  const xScaleLin  = useCallback((v: number) => PAD_L + ((v - xMin) / (xMax - xMin)) * chartW, [xMin, xMax, chartW])
+  const xInvertLin = useCallback((px: number) => xMin + ((px - PAD_L) / chartW) * (xMax - xMin), [xMin, xMax, chartW])
+
+  // X scale helpers — log₁₀(x+1)
+  const logXMin = Math.log10(xMin + 1)
+  const logXMax = Math.log10(xMax + 1)
+  const xScaleLog  = useCallback((v: number) =>
+    PAD_L + ((Math.log10(v + 1) - logXMin) / (logXMax - logXMin)) * chartW,
+  [logXMin, logXMax, chartW])
+  const xInvertLog = useCallback((px: number) => {
+    const logV = logXMin + ((px - PAD_L) / chartW) * (logXMax - logXMin)
+    return Math.max(0, Math.pow(10, logV) - 1)
+  }, [logXMin, logXMax, chartW])
+
+  const xScale  = logScale ? xScaleLog  : xScaleLin
+  const xInvert = logScale ? xInvertLog : xInvertLin
 
   // Y scale
   const yData = logScale ? counts.map(c => Math.log10(c + 1)) : counts
@@ -133,19 +147,42 @@ export default function QcHistogram({
 
   const handleMouseUp = useCallback(() => { dragging.current = null }, [])
 
-  // X-axis ticks (5 evenly spaced)
-  const xTicks = Array.from({ length: 5 }, (_, i) => {
-    const v = xMin + (i / 4) * (xMax - xMin)
-    return { x: xScale(v), label: fmtNum(v) }
-  })
+  // X-axis ticks
+  const xTicks = logScale
+    ? (() => {
+        const ticks: { x: number; label: string }[] = []
+        for (let d = 0; d <= 5; d++) {
+          const v = d === 0 ? 0 : Math.pow(10, d) - 1
+          if (v > xMax * 1.05) break
+          const px = xScaleLog(v)
+          if (px >= PAD_L - 2 && px <= PAD_L + chartW + 2)
+            ticks.push({ x: px, label: d === 0 ? '0' : fmtNum(Math.pow(10, d)) })
+        }
+        return ticks
+      })()
+    : Array.from({ length: 5 }, (_, i) => {
+        const v = xMin + (i / 4) * (xMax - xMin)
+        return { x: xScaleLin(v), label: fmtNum(v) }
+      })
 
-  // Y-axis ticks (4 levels)
-  const yTicks = [0, 0.33, 0.66, 1].map(f => ({
-    y: PAD_T + CHART_H * (1 - f),
-    label: logScale
-      ? fmtNum(Math.pow(10, f * yMax) - 1)
-      : fmtNum(f * yMax),
-  }))
+  // Y-axis ticks
+  const yTicks = logScale
+    ? (() => {
+        const ticks: { y: number; label: string }[] = []
+        for (let d = 0; d <= 5; d++) {
+          const count = d === 0 ? 1 : Math.pow(10, d)  // 1, 10, 100, 1K, 10K...
+          const logVal = Math.log10(count + 1)
+          if (logVal > yMax * 1.05) break
+          const yPos = yScale(logVal)
+          if (yPos >= PAD_T - 2 && yPos <= PAD_T + CHART_H + 2)
+            ticks.push({ y: yPos, label: fmtNum(count) })
+        }
+        return ticks
+      })()
+    : [0, 0.33, 0.66, 1].map(f => ({
+        y: PAD_T + CHART_H * (1 - f),
+        label: fmtNum(f * yMax),
+      }))
 
   // Threshold line renderer
   const ThresholdLine = ({
@@ -290,7 +327,7 @@ export default function QcHistogram({
           transform={`rotate(-90) translate(${-(PAD_T + CHART_H / 2)},${PAD_L - 33})`}
           textAnchor="middle" fill="#6b7280" fontSize={8}
         >
-          {logScale ? 'log₁₀(n+1)' : 'cells'}
+          {logScale ? 'cells (log)' : 'cells'}
         </text>
       </svg>
 

@@ -1,5 +1,5 @@
 """
-VisiumHD Pipeline 2 — FastAPI 主應用程式
+VisiumHD Pipeline 3 — FastAPI 主應用程式
 
 啟動方式：
     uv run uvicorn backend.main:app --reload --port 8000
@@ -22,13 +22,11 @@ from backend.src.utils.logging import (
 )
 from backend.src.api import (
     analysis,
-    conditions,
+    cellpose_count,
     data,
     export,
-    proseg,
     roi,
     segmentation,
-    zarr_builder,
 )
 
 logger = logging.getLogger("pipeline.main")
@@ -39,15 +37,15 @@ async def lifespan(app: FastAPI):
     """啟動/關閉鉤子"""
     config = load_config()
     setup_logging(config.get("global", {}).get("log_level", "INFO"))
-    logger.info("VisiumHD Pipeline 2 started")
+    logger.info("VisiumHD Pipeline 3 started")
     yield
-    logger.info("VisiumHD Pipeline 2 shutting down")
+    logger.info("VisiumHD Pipeline 3 shutting down")
 
 
 app = FastAPI(
-    title="VisiumHD Pipeline 2",
-    version="2.0.0",
-    description="空間轉錄體分析流水線 API",
+    title="VisiumHD Pipeline 3",
+    version="3.0.0",
+    description="空間轉錄體分析流水線 API（直接 Cellpose 分析，無 Proseg）",
     lifespan=lifespan,
 )
 
@@ -61,19 +59,17 @@ app.add_middleware(
 )
 
 # ── REST API 路由 ────────────────────────────────────────────
-app.include_router(data.router,        prefix="/api/data",        tags=["Data Setup"])
-app.include_router(roi.router,         prefix="/api/roi",         tags=["Stage 0: ROI"])
-app.include_router(segmentation.router,prefix="/api/segmentation",tags=["Stage 1: Segmentation"])
-app.include_router(zarr_builder.router,prefix="/api/zarr",        tags=["Stage 2: Zarr"])
-app.include_router(conditions.router,  prefix="/api/conditions",  tags=["Stage 2.5: Conditions"])
-app.include_router(proseg.router,      prefix="/api/proseg",      tags=["Stage 3: Proseg"])
-app.include_router(analysis.router,    prefix="/api/analysis",    tags=["Stage 4: Analysis"])
-app.include_router(export.router,      prefix="/api/export",      tags=["Stage 5: Export"])
+app.include_router(data.router,          prefix="/api/data",        tags=["Data Setup"])
+app.include_router(roi.router,           prefix="/api/roi",         tags=["Stage 0: ROI"])
+app.include_router(segmentation.router,  prefix="/api/segmentation",tags=["Stage 1: Segmentation"])
+app.include_router(cellpose_count.router,prefix="/api/count",       tags=["Stage 2: Count"])
+app.include_router(analysis.router,      prefix="/api/analysis",    tags=["Stage 3: Analysis"])
+app.include_router(export.router,        prefix="/api/export",      tags=["Stage 4: Export"])
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "2.0.0"}
+    return {"status": "ok", "version": "3.0.0"}
 
 
 @app.get("/api/config")
@@ -89,7 +85,7 @@ async def get_config():
 async def websocket_log(websocket: WebSocket, stage: str):
     """
     前端連接此端點以接收指定 stage 的即時 log。
-    stage 可為：global | roi | segmentation | zarr | conditions | proseg | analysis | export
+    stage 可為：global | roi | segmentation | count | analysis | export
     """
     await websocket.accept()
     queue: asyncio.Queue = asyncio.Queue(maxsize=500)

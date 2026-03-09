@@ -81,39 +81,39 @@ async def get_disk_status():
     config = load_config()
     paths = config.get("paths", {})
     output_dir = resolve_path(paths.get("output_dir", "results/analysis"))
-    zarr_dir   = resolve_path(paths.get("zarr_dir",   "results/zarr"))
 
     roi_base = output_dir / "roi"
 
     # Stage 0: ROI — 有任何 he_crop.tif
-    roi_dirs = [d for d in roi_base.iterdir() if d.is_dir() and not d.name.startswith(".")] \
-               if roi_base.exists() else []
+    if roi_base.exists():
+        try:
+            roi_dirs = [d for d in roi_base.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        except PermissionError:
+            roi_dirs = []
+    else:
+        roi_dirs = []
     roi_done = any((d / "he_crop.tif").exists() for d in roi_dirs)
     roi_names = [d.name for d in roi_dirs if (d / "he_crop.tif").exists()]
 
     # Stage 1: Segmentation — 有任何 segmentation_masks.npy
     seg_done = any((d / "segmentation_masks.npy").exists() for d in roi_dirs)
 
-    # Stage 2: Zarr — zarr 目錄下有 *.zarr
-    zarr_files = list(zarr_dir.glob("*.zarr")) if zarr_dir.exists() else []
-    zarr_done = len(zarr_files) > 0
+    # Stage 2: RNA 計數 — 有任何 cellpose_cells.h5ad
+    count_done = any((d / "cellpose_cells.h5ad").exists() for d in roi_dirs)
 
-    # Stage 3: Proseg — 有任何 proseg_cells.h5ad 或 cells.geojson
-    proseg_done = any(
-        (d / "proseg_cells.h5ad").exists() or (d / "cells.geojson").exists()
-        for d in roi_dirs
+    # Stage 3: Analysis — 有任何 qc_preprocessed.h5ad 或 umap_computed.h5ad
+    analysis_done = (
+        (output_dir / "umap_computed.h5ad").exists() or
+        (output_dir / "qc_preprocessed.h5ad").exists() or
+        any((d / "clustering.h5ad").exists() for d in roi_dirs)
     )
-
-    # Stage 4: Analysis — 有任何 clustering.h5ad
-    analysis_done = any((d / "clustering.h5ad").exists() for d in roi_dirs)
 
     return {
         "status": "ok",
         "data": {
-            "roi":         {"done": roi_done,      "roi_names": roi_names},
+            "roi":         {"done": roi_done,  "roi_names": roi_names},
             "segmentation":{"done": seg_done},
-            "zarr":        {"done": zarr_done,     "files": [str(f) for f in zarr_files]},
-            "proseg":      {"done": proseg_done},
+            "count":       {"done": count_done},
             "analysis":    {"done": analysis_done},
         },
     }

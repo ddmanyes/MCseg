@@ -2,15 +2,12 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { usePipelineStore } from '../../stores/pipelineStore'
 
-// Stage 定義：path, label, stage key (對應 Zustand), 依賴的前置 stage key
 const STEPS = [
   { path: '/data',        label: 'Setup',   stage: 'data',         dep: null },
   { path: '/roi',         label: 'ROI',     stage: 'roi',          dep: null },
   { path: '/segmentation',label: 'Seg',     stage: 'segmentation', dep: 'roi' },
-  { path: '/zarr',        label: 'Zarr',    stage: 'zarr',         dep: 'segmentation' },
-  { path: '/conditions',  label: '2.5',     stage: 'conditions',   dep: 'zarr' },
-  { path: '/proseg',      label: 'Proseg',  stage: 'proseg',       dep: 'zarr' },
-  { path: '/analysis',    label: 'Analysis',stage: 'analysis',     dep: 'proseg' },
+  { path: '/count',       label: 'Count',   stage: 'count',        dep: 'segmentation' },
+  { path: '/analysis',    label: 'Analysis',stage: 'analysis',     dep: 'count' },
   { path: '/export',      label: 'Export',  stage: 'export',       dep: 'analysis' },
 ]
 

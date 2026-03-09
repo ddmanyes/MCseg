@@ -24,7 +24,6 @@ import torch
 from tqdm import tqdm
 from cellpose import models, core
 from pathlib import Path
-from skimage.segmentation import watershed
 from scipy.ndimage import binary_dilation
 
 from .macenko import MacenkoNormalizer, apply_clahe
@@ -78,34 +77,6 @@ def get_best_tissue_patch(page_obj, step=50, grid_n=8):
 
     return full_y, full_x, full_h, full_w
 
-
-def run_eosin_watershed(nuclei_masks: np.ndarray, eosin_img: np.ndarray, bg_threshold: int, brightness_mode: bool = False):
-    """Use tissue detection to expand cytoplasm via watershed.
-    brightness_mode=True: tissue mask = max(R,G,B) < (255 - bg_threshold)
-    brightness_mode=False (legacy): tissue mask = R-B > bg_threshold
-    """
-    markers = nuclei_masks.copy()
-    if brightness_mode:
-        if eosin_img.ndim == 3:
-            brightness = eosin_img[:, :, :3].astype(np.float32).max(axis=2)
-        else:
-            brightness = eosin_img.astype(np.float32)
-        fg = (brightness < (255 - bg_threshold)).astype(np.uint8)  # 亮度低 = 組織
-        fg_pct = fg.mean() * 100
-        if fg_pct < 1.0:
-            logger.warning(f"Tissue mask skipped: coverage {fg_pct:.1f}% < 1%")
-            return nuclei_masks
-        logger.info(f"Tissue coverage: {fg_pct:.1f}%")
-        # 使用亮度反轉之後做 watershed marker
-        return watershed(brightness, markers, mask=fg.astype(bool))
-    else:
-        fg = (eosin_img > bg_threshold).astype(np.uint8)
-        fg_pct = fg.mean() * 100
-        if fg_pct < 1.0:
-            logger.warning(f"Eosin watershed skipped: fg coverage {fg_pct:.1f}% < 1% (eosin max={eosin_img.max()}, threshold={bg_threshold})")
-            return nuclei_masks
-        logger.info(f"Eosin fg coverage: {fg_pct:.1f}%")
-        return watershed(-eosin_img, markers, mask=fg)
 
 
 def _merge_masks_logic_a(masks_small, masks_large, fragment_threshold=50):
@@ -382,8 +353,6 @@ def run_segmentation(config: dict):
         logger.info("Running merge_enclosed_cells...")
         final_masks = merge_enclosed_cells(final_masks)
 
-    # ⚠️ 注意：Eosin Watershed 不修改 final_masks（分割結果應保持純 LOGIC_A 輸出）
-    # cyto_mask.npy 另外在下方獨立計算，供 Proseg 使用
 
     # Save
     npy_path = os.path.join(output_dir, mask_filename)
@@ -411,7 +380,6 @@ _ROI_OVERRIDE_FIELD_MAP: dict[str, tuple[str, str]] = {
     "flow_threshold":     ("strategy",       "flow_threshold"),
     "cellprob_threshold": ("strategy",       "cellprob_threshold"),
     "fragment_threshold": ("strategy",       "fragment_threshold"),
-    "eosin_bg_threshold": ("postprocessing", "eosin_bg_threshold"),
 }
 
 
@@ -639,17 +607,6 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
         except Exception as e:
             logger.warning(f"Flow visualization failed: {e}")
 
-    if pp_config.get("enable_eosin_watershed", False) and not is_grayscale:
-        logger.info("Generating Eosin Cytoplasm Mask (Brightness Method)...")
-        bg_thresh = pp_config.get("eosin_bg_threshold", 40)
-        # 亮度法：白色空直背景被排除，組織區域保留
-        brightness = img_full[:, :, :3].astype(np.float32).max(axis=2)
-        is_background = (brightness > (255 - bg_thresh))
-        # 產生純細胞質遮罩 (Cyto Mask) 供 Proseg 約束使用 (0=背景, 1=組織)
-        cyto_mask = (~is_background).astype(np.int32)
-        cyto_npy_path = output_dir / "cyto_mask.npy"
-        np.save(str(cyto_npy_path), cyto_mask)
-        logger.info(f"Saved Cyto Mask: {cyto_npy_path}")
 
     npy_path = output_dir / mask_filename
     tif_path = output_dir / mask_tif_filename

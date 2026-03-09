@@ -13,7 +13,6 @@ interface RoiOverride {
   flow_threshold?: number | null
   cellprob_threshold?: number | null
   fragment_threshold?: number | null
-  eosin_bg_threshold?: number | null
 }
 
 interface SegParams {
@@ -28,8 +27,6 @@ interface SegParams {
   fragment_threshold: number
   normalize_stains: boolean
   clahe_clip_limit: number
-  enable_eosin_watershed: boolean
-  eosin_bg_threshold: number
   block_size: number
   overlap: number
 }
@@ -46,8 +43,6 @@ const DEFAULT_PARAMS: SegParams = {
   fragment_threshold: 150,
   normalize_stains: true,
   clahe_clip_limit: 1.0,
-  enable_eosin_watershed: true,
-  eosin_bg_threshold: 40,
   block_size: 2048,
   overlap: 256,
 }
@@ -206,9 +201,8 @@ export default function Stage1_Segmentation() {
   const [params, setParams] = useState<SegParams>(DEFAULT_PARAMS)
   const [showParams, setShowParams] = useState(false)
   const [previewSrc, setPreviewSrc] = useState<string | null>(null)
-  const [previewCyto, setPreviewCyto] = useState<string | null>(null)
   const [previewFlows, setPreviewFlows] = useState<string | null>(null)
-  const [previewTab, setPreviewTab] = useState<'overlay' | 'cyto' | 'flows'>('overlay')
+  const [previewTab, setPreviewTab] = useState<'overlay' | 'flows'>('overlay')
   const [previewRoi, setPreviewRoi] = useState('')
   const [previewAvail, setPreviewAvail] = useState<string[]>([])
   const [previewNCells, setPreviewNCells] = useState<number | null>(null)
@@ -228,8 +222,7 @@ export default function Stage1_Segmentation() {
   const [quickSrc, setQuickSrc] = useState<string | null>(null)
   const [quickMacenko, setQuickMacenko] = useState<string | null>(null)
   const [quickFlows, setQuickFlows] = useState<string | null>(null)
-  const [quickCyto, setQuickCyto] = useState<string | null>(null) // 新增 cyto state
-  const [quickTab, setQuickTab] = useState<'overlay' | 'macenko' | 'flows' | 'cyto'>('overlay') // 加入 cyto type
+  const [quickTab, setQuickTab] = useState<'overlay' | 'macenko' | 'flows'>('overlay')
   const [quickInfo, setQuickInfo] = useState<{ n_cells: number; roi_name: string; patch_info: string } | null>(null)
   const [quickError, setQuickError] = useState<string | null>(null)
   const [preprocSrc, setPreprocSrc] = useState<string | null>(null)
@@ -311,7 +304,6 @@ export default function Stage1_Segmentation() {
     const d = res.data?.data
     if (d?.image_b64) {
       setPreviewSrc(`data:image/jpeg;base64,${d.image_b64}`)
-      setPreviewCyto(d.cyto_b64 ? `data:image/jpeg;base64,${d.cyto_b64}` : null)
       setPreviewFlows(d.flows_b64 ? `data:image/jpeg;base64,${d.flows_b64}` : null)
       setPreviewTab('overlay')
       if (d.available_rois) setPreviewAvail(d.available_rois)
@@ -350,7 +342,6 @@ export default function Stage1_Segmentation() {
     setQuickSrc(null)
     setQuickMacenko(null)
     setQuickFlows(null)
-    setQuickCyto(null)
     setQuickInfo(null)
     setQuickError(null)
     setPreprocSrc(null)
@@ -363,7 +354,6 @@ export default function Stage1_Segmentation() {
     setPreprocSrc(null)
     setQuickMacenko(null)
     setQuickFlows(null)
-    setQuickCyto(null)
     setQuickInfo(null)
     try {
       const res = await runSegmentationPreview({
@@ -379,16 +369,13 @@ export default function Stage1_Segmentation() {
         cellprob_threshold: params.cellprob_threshold,
         fragment_threshold: params.fragment_threshold,
         normalize_stains: params.normalize_stains,
-        clahe_clip_limit: params.clahe_clip_limit,
-        enable_eosin_watershed: params.enable_eosin_watershed,
-        eosin_bg_threshold: params.eosin_bg_threshold
+        clahe_clip_limit: params.clahe_clip_limit
       })
       const d = res.data
       if (d?.status === 'ok' && d.data?.image_b64) {
         setQuickSrc(`data:image/jpeg;base64,${d.data.image_b64}`)
         if (d.data.macenko_b64) setQuickMacenko(`data:image/jpeg;base64,${d.data.macenko_b64}`)
         if (d.data.flows_b64) setQuickFlows(`data:image/jpeg;base64,${d.data.flows_b64}`)
-        if (d.data.cyto_b64) setQuickCyto(`data:image/jpeg;base64,${d.data.cyto_b64}`)
         setQuickTab('overlay')
         setQuickInfo({ n_cells: d.data.n_cells, roi_name: d.data.roi_name, patch_info: d.data.patch_info })
       } else {
@@ -407,7 +394,6 @@ export default function Stage1_Segmentation() {
     setQuickSrc(null)
     setQuickMacenko(null)
     setQuickFlows(null)
-    setQuickCyto(null)
     setPreprocSrc(null)
     setQuickInfo(null)
     try {
@@ -417,15 +403,12 @@ export default function Stage1_Segmentation() {
         y: prevY,
         patch_size: prevPatchSize,
         normalize_stains: params.normalize_stains,
-        clahe_clip_limit: params.clahe_clip_limit,
-        enable_eosin_watershed: params.enable_eosin_watershed,
-        eosin_bg_threshold: params.eosin_bg_threshold
+        clahe_clip_limit: params.clahe_clip_limit
       })
       const d = res.data
       if (d?.status === 'ok' && d.data?.image_b64) {
         setQuickSrc(`data:image/jpeg;base64,${d.data.image_b64}`)
         if (d.data.macenko_b64) setQuickMacenko(`data:image/jpeg;base64,${d.data.macenko_b64}`)
-        if (d.data.cyto_b64) setQuickCyto(`data:image/jpeg;base64,${d.data.cyto_b64}`)
         setQuickTab('macenko') // 前處理預設看 macenko 分頁
         setQuickInfo({
           n_cells: 0, // 前處理不會算細胞數
@@ -552,16 +535,6 @@ export default function Stage1_Segmentation() {
                 tooltip="CLAHE（對比度限幅直方圖均等化）的裁剪限制值。值越高 → 對比度增強越強烈（細胞邊界更清晰，但雜訊也放大）。細長或稀疏的細胞核建議 1.0；一般圓形細胞核建議 2.0。" />
             </Section>
 
-            <Section title="後處理">
-              <Toggle label="Eosin Watershed 擴張" value={params.enable_eosin_watershed}
-                onChange={v => set('enable_eosin_watershed', v)}
-                tooltip="Nuclear Shield 演算法：利用 Eosin/亮度遮罩將 Cellpose 偵測到的細胞核輪廓，透過分水嶺演算法往外擴張至細胞質邊界。可生成包含細胞質的完整細胞 mask，供 Proseg 空間轉錄體定位使用。" />
-              <NumberInput label="Eosin BG Threshold" value={params.eosin_bg_threshold}
-                onChange={v => set('eosin_bg_threshold', v)} min={0} max={255}
-                hint="灰階"
-                tooltip="判斷背景（空腔）的亮度閾值。影像中 max(R,G,B) > (255 - 此值) 的像素視為空腔背景，Proseg 擴張被禁止進入此區域。值越大 → 判定更嚴苛（只排除極白的空腔）；值越小 → 排除更多偏亮區域。建議從 20-40 開始調試，搭配 Eosin 遮罩預覽確認。" />
-            </Section>
-
             <Section title="分塊設定">
               <NumberInput label="Block Size" value={params.block_size}
                 onChange={v => set('block_size', v)} step={256} min={512} max={8192} hint="px"
@@ -575,25 +548,25 @@ export default function Stage1_Segmentation() {
             <Section title="快速預設">
               <div className="flex gap-2 flex-wrap">
                 <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 10, dia_large: 60, flow_threshold: 0.8, cellprob_threshold: -2.0, fragment_threshold: 150, clahe_clip_limit: 1.0, eosin_bg_threshold: 40 })}
+                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 10, dia_large: 60, flow_threshold: 0.8, cellprob_threshold: -2.0, fragment_threshold: 150, clahe_clip_limit: 1.0 })}
                   className="px-3 py-1 text-xs bg-blue-800 hover:bg-blue-700 rounded text-gray-200"
                 >
                   CRC 細胞核
                 </button>
                 <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'cyto2', dia_small: 10, dia_large: 60, flow_threshold: 0.8, cellprob_threshold: -2.0, fragment_threshold: 150, clahe_clip_limit: 2.0, eosin_bg_threshold: 40 })}
+                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'cyto2', dia_small: 10, dia_large: 60, flow_threshold: 0.8, cellprob_threshold: -2.0, fragment_threshold: 150, clahe_clip_limit: 2.0 })}
                   className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
                 >
                   CRC 上皮（cyto2）
                 </button>
                 <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 8, dia_large: 40, flow_threshold: 0.4, cellprob_threshold: -2.0, fragment_threshold: 100, clahe_clip_limit: 1.0, eosin_bg_threshold: 40 })}
+                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 8, dia_large: 40, flow_threshold: 0.4, cellprob_threshold: -2.0, fragment_threshold: 100, clahe_clip_limit: 1.0 })}
                   className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
                 >
                   LUAD 細胞核
                 </button>
                 <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 8, dia_large: 30, flow_threshold: 0.3, cellprob_threshold: -3.0, fragment_threshold: 80, clahe_clip_limit: 1.0, eosin_bg_threshold: 40 })}
+                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 8, dia_large: 30, flow_threshold: 0.3, cellprob_threshold: -3.0, fragment_threshold: 80, clahe_clip_limit: 1.0 })}
                   className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
                 >
                   LUAD 正常肺
@@ -644,7 +617,6 @@ export default function Stage1_Segmentation() {
                   <th className="text-center py-2 px-2 font-medium">Flow</th>
                   <th className="text-center py-2 px-2 font-medium">Cell Prob</th>
                   <th className="text-center py-2 px-2 font-medium">Fragment</th>
-                  <th className="text-center py-2 px-2 font-medium">Eosin BG</th>
                   <th className="text-center py-2 px-2 font-medium">重新分割</th>
                   <th className="py-2 px-2 w-8"></th>
                 </tr>
@@ -718,12 +690,6 @@ export default function Stage1_Segmentation() {
                           onUpdate={v => updateRoiField(roi.name, 'fragment_threshold', v)}
                           onClear={() => clearRoiField(roi.name, 'fragment_threshold')} />
                       </td>
-                      <td className="py-2 px-2">
-                        <RoiNumCell val={ov.eosin_bg_threshold ?? null} defaultVal={params.eosin_bg_threshold} step={5} min={0} max={200}
-                          onUpdate={v => updateRoiField(roi.name, 'eosin_bg_threshold', v)}
-                          onClear={() => clearRoiField(roi.name, 'eosin_bg_threshold')} />
-                      </td>
-
                       {/* 單 ROI 重新分割 */}
                       <td className="py-2 px-2 text-center">
                         <button
@@ -867,14 +833,13 @@ export default function Stage1_Segmentation() {
                 </div>
                 {/* 圖層切換 Tab */}
                 <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
-                  {(['overlay', 'macenko', 'flows', 'cyto'] as const).map(tab => {
+                  {(['overlay', 'macenko', 'flows'] as const).map(tab => {
                     const labels: Record<typeof tab, string> = {
                       overlay: 'H&E + 邊界',
                       macenko: 'Macenko 前處理',
-                      flows: 'Flow 方向圖',
-                      cyto: 'Eosin 細胞質遮罩'
+                      flows: 'Flow 方向圖'
                     }
-                    const available = tab === 'overlay' || (tab === 'macenko' && !!quickMacenko) || (tab === 'flows' && !!quickFlows) || (tab === 'cyto' && !!quickCyto)
+                    const available = tab === 'overlay' || (tab === 'macenko' && !!quickMacenko) || (tab === 'flows' && !!quickFlows)
                     return (
                       <button
                         key={tab}
@@ -897,7 +862,6 @@ export default function Stage1_Segmentation() {
               {quickTab === 'overlay' && 'H&E 原圖 + 綠色細胞邊界（LOGIC_A 合併）'}
               {quickTab === 'macenko' && 'Macenko Hematoxylin 萃取 → CLAHE 增強（Cellpose 實際輸入）'}
               {quickTab === 'flows' && 'Cellpose 小尺寸 dP 光流方向圖（色相 = 方向，飽和度 = 強度）；白線 = 細胞邊界'}
-              {quickTab === 'cyto' && 'Eosin 背景預先過濾遮罩 (紅底 = 細胞質)'}
             </p>
             <div className="rounded-lg overflow-hidden border border-surface-border"
               style={{ imageRendering: 'pixelated' }}>
@@ -905,8 +869,7 @@ export default function Stage1_Segmentation() {
                 src={
                   quickTab === 'macenko' ? (quickMacenko ?? quickSrc) :
                     quickTab === 'flows' ? (quickFlows ?? quickSrc) :
-                      quickTab === 'cyto' ? (quickCyto ?? quickSrc) :
-                        quickSrc
+                      quickSrc
                 }
                 alt={quickTab}
                 className="w-full"
@@ -960,17 +923,11 @@ export default function Stage1_Segmentation() {
                     onClick={() => setPreviewTab('flows')}
                     className={`px-3 py-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${previewTab === 'flows' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
                   >光流方向 (Flows)</button>
-                  <button
-                    disabled={!previewCyto}
-                    onClick={() => setPreviewTab('cyto')}
-                    className={`px-3 py-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${previewTab === 'cyto' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
-                  >Eosin 細胞質遮罩</button>
                 </div>
               </div>
               <p className="text-xs text-gray-500">
                 {previewTab === 'overlay' && 'H&E 原圖 + 綠色細胞邊界（來自已存遮罩）'}
                 {previewTab === 'flows' && 'Cellpose 小尺寸 dP 光流方向圖（色相 = 方向，飽和度 = 強度）'}
-                {previewTab === 'cyto' && 'Eosin 背景過濾遮罩（亮色 = 組織，暗色 = 空腔）'}
               </p>
               {/* 互動預覽圖：懸停顯示座標，點擊填入快速測試 */}
               <div
@@ -981,7 +938,7 @@ export default function Stage1_Segmentation() {
               >
                 <img
                   ref={previewImgRef}
-                  src={previewTab === 'cyto' ? (previewCyto ?? previewSrc!) : previewTab === 'flows' ? (previewFlows ?? previewSrc!) : previewSrc!}
+                  src={previewTab === 'flows' ? (previewFlows ?? previewSrc!) : previewSrc!}
                   alt="segmentation preview"
                   className="w-full block"
                 />

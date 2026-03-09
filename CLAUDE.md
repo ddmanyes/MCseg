@@ -1,13 +1,21 @@
-# visiumHD_pipeline_2 — 開發維護規範
+# visiumHD_pipeline_3 — 開發維護規範
 
 ## 1. 專案定位
 
-**VisiumHD Pipeline 2** 是 `visiumhd_pipeline` 的下一代版本，整合了四項重大升級：
+**VisiumHD Pipeline 3** 是 Pipeline 2 的精簡版本，**移除 Zarr 建構與 Proseg**，改用 Cellpose 分割遮罩直接分配 RNA bins，大幅縮短分析流程。
 
-1. **Stage 0：ROI 裁切前處理** — 在分析前裁切感興趣區域
-2. **Stage 2.5：Proseg 參數條件測試** — 自動評估最佳參數組合
-3. **Stage 5：Browser 格式匯出** — 輸出 Xenium Explorer / Loupe Browser 相容格式
-4. **React 前端** — 替換 PyQt6，使用現代 Web UI（FastAPI + React + Vite）
+**Pipeline 架構**：資料設定 → ROI 裁切 → Cellpose 分割 → RNA 計數 → Scanpy 分析 → Browser 匯出
+
+| Stage | 功能 | 關鍵點 |
+|-------|------|--------|
+| Setup | 資料自動掃描 | /api/data/scan |
+| 0 | ROI 裁切（BTF tile-by-tile）| extractor.py |
+| 1 | Cellpose 分割 | segmentation_masks.npy（H×W int） |
+| 2 | RNA 計數（新增）| cellpose_counter/counter.py，稀疏矩陣 |
+| 3 | Scanpy 分析 | QC + UMAP + Leiden → cellpose_cells.h5ad |
+| 4 | Browser 匯出 | skimage.find_contours → GeoJSON |
+
+**相較 Pipeline 2 移除**：Zarr 建構（Stage 2）、Proseg 條件測試（Stage 2.5）、Proseg 完整執行（Stage 3）
 
 ---
 
@@ -45,8 +53,8 @@ npm run build                     # 建構生產版本
 ### 一鍵啟動（開發模式）
 
 ```bash
-# Terminal 1: 後端
-uv run uvicorn backend.main:app --reload --port 8000
+# Terminal 1: 後端（使用 port 8001 避免與 pipeline_2 衝突）
+uv run uvicorn backend.main:app --reload --port 8001
 
 # Terminal 2: 前端
 cd frontend && npm run dev
@@ -57,29 +65,39 @@ cd frontend && npm run dev
 ## 3. 目錄結構規範
 
 ```
-visiumHD_pipeline_2/
+visiumHD_pipeline_3/
 ├── CLAUDE.md           # 本文件
-├── plan.md             # 實作計畫
 ├── config/
 │   ├── pipeline.yaml   # 所有參數來源（禁止硬編碼）
 │   └── roi_presets.yaml
 ├── backend/
-│   ├── main.py         # FastAPI 入口
+│   ├── main.py         # FastAPI 入口（port 8001）
 │   └── src/
-│       ├── api/        # 路由端點
-│       ├── roi/        # Stage 0: ROI 裁切
-│       ├── segmentation/   # Stage 1
-│       ├── zarr_builder/   # Stage 2
-│       ├── proseg/     # Stage 2.5 + Stage 3
-│       ├── analysis/   # Stage 4
-│       ├── export/     # Stage 5（Xenium / Loupe）
+│       ├── api/
+│       │   ├── data.py            # /api/data
+│       │   ├── roi.py             # /api/roi
+│       │   ├── segmentation.py    # /api/segmentation
+│       │   ├── cellpose_count.py  # /api/count（新增）
+│       │   ├── analysis.py        # /api/analysis
+│       │   └── export.py          # /api/export
+│       ├── cellpose_counter/      # RNA 計數模組（新增）
+│       │   └── counter.py
+│       ├── roi/                   # Stage 0: ROI 裁切
+│       ├── segmentation/          # Stage 1: Cellpose
+│       ├── analysis/              # Stage 3: Scanpy
+│       ├── export/                # Stage 4: Xenium/Loupe
 │       └── utils/
-│           └── constants.py  # 所有物理常數集中於此
-└── frontend/
-    └── src/
-        ├── api/        # API 呼叫層
-        ├── components/ # 可重用元件
-        └── pages/      # 各 Stage 頁面
+│           └── constants.py       # 物理常數集中於此
+└── frontend/src/
+    ├── api/client.ts              # API 客戶端（無 zarr/proseg）
+    ├── stores/pipelineStore.ts    # Zustand（含 count stage）
+    └── pages/
+        ├── DataSetup.tsx
+        ├── Stage0_ROI.tsx
+        ├── Stage1_Segmentation.tsx
+        ├── Stage2_Count.tsx       # 新增
+        ├── Stage3_Analysis.tsx
+        └── Stage4_Export.tsx
 ```
 
 ---
@@ -156,80 +174,87 @@ def read_btf_crop(btf_path, x0, y0, w, h):
 
 ---
 
-## 6. Proseg 相關規範
+## 6. Stage 2 RNA 計數核心演算法
 
-### 條件測試（Stage 2.5）
-
-- 測試用小型 ROI（建議 500µm × 500µm 或 1000µm × 1000µm）
-- 最多同時並行 4 個條件（避免 VRAM 耗盡）
-- 使用獨立臨時目錄（`results/02b_conditions/cond_{idx}/`）
-
-### macOS `._*` 污染防護（ExFAT 根本解法）
-
-**核心問題**：ExFAT 上每次寫入目錄都會產生 AppleDouble 附屬檔（`._*`）。
-`adata.write_zarr()` 完成後會呼叫 `zarr.consolidate_metadata`，其透過
-`DirectoryStore._keys_fast`（`os.walk`）遍歷所有檔案並嘗試 `json_loads`，
-遇到 `._*.zarray` 等 binary 檔時引發 `UnicodeDecodeError: 0xb0 at position 37`。
-
-**已套用解法**：`builder.py` 模組載入時即 monkey patch `DirectoryStore._keys_fast`，
-在 `os.walk` 層過濾 `._*` 和 `.DS_Store`——這是最根本的攔截點：
+Pipeline 3 直接用 Cellpose 遮罩分配 bins，**無需 Zarr 或 Proseg**。
 
 ```python
-# 見 builder.py: _patch_zarr_for_exfat()
-@staticmethod
-def _filtered_keys_fast(path, walker=os.walk):
-    for dirpath, _, filenames in walker(path):
-        clean = [f for f in filenames
-                 if not f.startswith('._') and f != '.DS_Store']
-        ...
-zarr.storage.DirectoryStore._keys_fast = _filtered_keys_fast
+# backend/src/cellpose_counter/counter.py 核心流程
+
+import numpy as np
+import scanpy as sc
+from scipy.sparse import csr_matrix
+from scipy.ndimage import center_of_mass
+
+# 1. 載入資料
+mask = np.load("segmentation_masks.npy")        # H×W, pixel value = cell ID (0=bg)
+adata = sc.read_h5ad("adata_002um.h5ad")
+
+# 2. bin 座標轉換（Visium fullres px → ROI local pixel）
+coords = adata.obsm['spatial']                   # (n_bins, 2) = [x_fullres, y_fullres]
+col = (coords[:, 0] - roi_x_px).astype(int)
+row = (coords[:, 1] - roi_y_px).astype(int)
+
+# 3. 邊界過濾
+valid_mask = (row >= 0) & (row < mask.shape[0]) & (col >= 0) & (col < mask.shape[1])
+
+# 4. 查詢 cell ID（0 = 背景，>0 = 細胞）
+cell_ids = mask[row[valid_mask], col[valid_mask]]
+valid_cell = cell_ids > 0
+
+# 5. 稀疏矩陣聚合（cell × bin），然後乘以計數矩陣
+n_cells = mask.max()
+A = csr_matrix((np.ones(valid_cell.sum()),
+                (cell_ids[valid_cell] - 1,
+                 np.where(valid_mask)[0][valid_cell])),
+               shape=(n_cells, len(adata)))
+count_matrix = A @ adata.X                       # (n_cells, n_genes)
+
+# 6. 計算細胞質心
+labels = np.unique(mask[mask > 0])
+centroids = center_of_mass(np.ones_like(mask), mask, labels)  # [(row, col), ...]
 ```
 
-清理函數作為第二道防線（寫入後立即清理）：
-
-```python
-from backend.src.zarr_builder.builder import _clean_mac_junk
-_clean_mac_junk(Path(zarr_path))
-```
-
-### Dask Monkey Patch
-
-在任何 spatialdata 操作前必須確保 query-planning 啟用：
-
-```python
-import dask
-dask.config.set({"dataframe.query-planning": True})
-```
+**輸出 `cellpose_cells.h5ad`**：
+- `obs` 欄位：`cell_id, n_bins, centroid_x_um, centroid_y_um, cell_area_um2`
+- `obsm['spatial']`：ROI local µm 座標 [x_um, y_um]（原點 = ROI 左上角）
 
 ---
 
-## 7. Browser 匯出規範（Stage 5）
+## 7. Browser 匯出規範（Stage 4）
 
 ### Xenium Explorer 匯出
 
-**必須修補 pixel_size Bug**（`spatialdata_xenium_explorer` 硬編碼 0.2125）：
+**Pipeline 3 使用 skimage 從遮罩生成 GeoJSON**（無需 Proseg GeoJSON）：
 
 ```python
-# 每次 write() 後都要執行
-import json
-exp_file = Path(out_dir) / "experiment.xenium"
-with open(exp_file, "r+") as f:
-    data = json.load(f)
-    data["pixel_size"] = PROSEG_UM_PX  # 0.2645833
-    f.seek(0)
-    json.dump(data, f, indent=2)
-    f.truncate()
+from skimage.measure import find_contours
+import numpy as np
+
+def _mask_to_geojson(mask_path, pixel_size_um, min_area_px=20):
+    mask = np.load(mask_path)
+    # 邊緣 padding 避免邊界細胞遺漏
+    padded = np.pad(mask, 1, mode='constant')
+    features = []
+    for cell_id in np.unique(padded)[1:]:           # 跳過 0（背景）
+        cell_mask = (padded == cell_id).astype(np.uint8)
+        contours = find_contours(cell_mask, 0.5)
+        if not contours:
+            continue
+        contour = max(contours, key=len) - 1        # 去除 padding 偏移
+        if len(contour) < 4:
+            continue
+        # (row, col) → (x_um, y_um)
+        coords = [(c[1] * pixel_size_um, c[0] * pixel_size_um) for c in contour]
+        if len(coords) > 200:                        # 縮減頂點避免渲染過慢
+            step = len(coords) // 200
+            coords = coords[::step]
+        coords.append(coords[0])                     # GeoJSON 閉合
+        features.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [coords]}, ...})
+    return {"type": "FeatureCollection", "features": features}
 ```
 
-**多邊形平滑化**（必須，否則 Xenium Explorer 渲染慢）：
-
-```python
-from shapely.affinity import scale
-
-poly_px = scale(poly_um, xfact=1/PROSEG_UM_PX, yfact=1/PROSEG_UM_PX, origin=(0,0))
-poly_smooth = poly_px.simplify(0.4, preserve_topology=True)
-poly_smooth = poly_smooth.buffer(1.0, join_style=1).buffer(-1.0, join_style=1)
-```
+**注意**：Cellpose 輪廓天然平滑（flow field），**無需額外 shapely 平滑處理**。
 
 ### Loupe Browser 匯出
 

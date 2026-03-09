@@ -34,45 +34,35 @@ export const getRoiSegOverrides = () => api.get('/segmentation/roi_overrides')
 export const saveRoiSegOverrides = (overrides: Record<string, Record<string, unknown>>) =>
   api.put('/segmentation/roi_overrides', overrides)
 
-// Stage 2: Zarr
-export const buildZarr = () => api.post('/zarr/build')
-export const getZarrStatus = () => api.get('/zarr/status')
+// Stage 2: Cellpose RNA 計數
+export const runCellposeCount = (roiName: string | null) =>
+  api.post('/count/run', roiName ? { roi_name: roiName } : {})
+export const getCellposeCountStatus = () => api.get('/count/status')
+export const listCountRois = () => api.get('/count/available_rois')
 
-// Stage 2.5: Conditions
-export const runConditions = (body: object) => api.post('/conditions/run', body)
-export const getConditionsStatus = () => api.get('/conditions/status')
-export const getConditionsResults = () => api.get('/conditions/results')
-export const getConditionsRecommend = () => api.get('/conditions/recommend')
-export const getConditionThumbnail = (idx: number) => api.get(`/conditions/thumbnail/${idx}`)
-export const getConditionThumbnailHd = (idx: number) => api.get(`/conditions/thumbnail_hd/${idx}`)
-
-// Stage 3: Proseg
-export const runProseg = (params?: { max_dist?: number; compactness?: number; dilation?: number }) =>
-  api.post('/proseg/run', params ?? {})
-export const getProsegStatus = () => api.get('/proseg/status')
-
-// Stage 4: Analysis (舊版整合執行)
+// Stage 3: Analysis (舊版整合執行)
 export const runAnalysis = (params?: object) => api.post('/analysis/run', params ?? {})
 export const getAnalysisStatus = () => api.get('/analysis/status')
 export const getUmap = () => api.get('/analysis/umap')
 
-// Stage 4: 原始分布直方圖
+// Stage 3: 原始分布直方圖
 export const getRawHistogram = (roiName?: string, mergeRois?: boolean) =>
   api.get('/analysis/raw_histogram', { params: { roi_name: roiName, merge_rois: mergeRois } })
 
-// Stage 4: Step 1 — QC 前處理
+// Stage 3: Step 1 — QC 前處理
 export const runQC = (params?: object) => api.post('/analysis/run_qc', params ?? {})
 export const getQCStatus = () => api.get('/analysis/qc_status')
 export const getQCImages = () => api.get('/analysis/qc_images')
 export const getOverlayHdUrl = (name: 'pre_qc' | 'post_qc') => `/api/analysis/overlay_hd/${name}`
 export const getAvailableRois = () => api.get('/analysis/available_rois')
+export const getRoiOverlays = () => api.get('/analysis/roi_overlays')
 
-// Stage 4: Step 2 — UMAP 多解析度
+// Stage 3: Step 2 — UMAP 多解析度
 export const runUMAPExplore = (params?: object) => api.post('/analysis/run_umap', params ?? {})
 export const getUMAPExploreStatus = () => api.get('/analysis/umap_status')
 export const getUMAPImages = () => api.get('/analysis/umap_images')
 
-// Stage 4: Step 3 — 細胞類型標註
+// Stage 3: Step 3 — 細胞類型標註
 export const getClusterInfo = (resolution: number) =>
   api.get('/analysis/cluster_info', { params: { resolution } })
 export const getCelltypistModels = () => api.get('/analysis/celltypist_models')
@@ -81,12 +71,12 @@ export const getAnnotateStatus = () => api.get('/analysis/annotate_status')
 export const getAnnotateSuggestions = () => api.get('/analysis/annotate_suggestions')
 export const applyLabels = (params: object) => api.post('/analysis/apply_labels', params)
 
-// Stage 4: Step 4 — Heatmap
+// Stage 3: Step 4 — Heatmap
 export const runHeatmap = (params: object) => api.post('/analysis/run_heatmap', params)
 export const getHeatmapStatus = () => api.get('/analysis/heatmap_status')
 export const getHeatmapImage = () => api.get('/analysis/heatmap')
 
-// Stage 5: Export
+// Stage 4: Export
 export const exportXenium = (body: object) => api.post('/export/xenium', body)
 export const exportLoupe = (body: object) => api.post('/export/loupe', body)
 export const getXeniumStatus = () => api.get('/export/status/xenium')

@@ -1,4 +1,4 @@
-# Visium HD Pipeline 2 — 開發進度總結（更新：2026-03-08 Session 4）
+# visiumHD Pipeline 3 — 開發進度總結（更新：2026-03-09 Session 6）
 
 ---
 
@@ -9,11 +9,44 @@
 | Setup | 資料自動掃描（discovery.py）| ✅ |
 | Stage 0 | ROI 裁切（BTF tile-by-tile）| ✅ |
 | Stage 1 | Cellpose + Logic A + 互動預覽 | ✅ |
-| Stage 2 | Zarr 建構（macOS `._*` 防護）| ✅ |
-| Stage 2.5 | Proseg 條件測試（Top 3 縮圖 + 排序表）| ✅ |
-| Stage 3 | Proseg 完整執行 | ✅ |
-| Stage 4 | Scanpy QC + UMAP + Leiden | ✅ |
-| Stage 5 | Xenium Explorer + Loupe Browser 匯出 | ✅ |
+| Stage 2 | RNA 計數（Cellpose 直接稀疏矩陣）| ✅ |
+| Stage 3 | Scanpy QC + UMAP + Leiden + CellTypist | ✅ |
+| Stage 4 | Xenium Explorer + Loupe Browser 匯出 | ✅ |
+
+---
+
+## 本 Session 完成（2026-03-09 Session 6）
+
+### Code Review 修正（全部 CRITICAL + HIGH + MEDIUM）
+
+| 嚴重度 | 問題 | 修正位置 |
+|--------|------|---------|
+| CRITICAL | `Header.tsx` 殘留 Pipeline 2 路由（/zarr /conditions /proseg）及 fallback "Pipeline 2" | `TopNav.tsx` 重建後消除 |
+| CRITICAL | `api/export.py` `combined_poly_path` UnboundLocalError | 函式頂部初始化為 `None` + None guard |
+| HIGH | `cell_area` vs `cell_area_um2` 欄位名稱不符 → 直方圖靜默失敗 | `api/analysis.py` 改讀 `cell_area_um2` |
+| HIGH | 全後端 8 處 `asyncio.get_event_loop()` → 已改 `get_running_loop()` | 3 個 API 文件 |
+| HIGH | `api/export.py` Xenium/Loupe 端點缺 `asyncio.Lock` | 新增 `_xenium_lock`/`_loupe_lock` |
+| HIGH | `counter.py` 重複定義 `VISIUM_UM_PX` | 改從 `utils/constants.py` import |
+| HIGH | `Stage2_Count.tsx` handler 缺 try/catch → API 失敗後按鈕永久鎖定 | 加入 try/catch |
+| MEDIUM | `data.py` `roi_dirs` 清單推導式直接 `.iterdir()`無保護 | 加 `try/except PermissionError` |
+| LOW | `pipelineStore.ts` 未使用 `ConditionResult` import | 移除 |
+| LOW | `api/export.py` 兩處 `zarr_path = None` 死碼 | 移除 |
+
+### 前端 UI 重設計（類 Xenium Explorer 頂置導覽）
+
+**架構變更**：
+- 移除 `Sidebar.tsx`（208px 側欄）、`Header.tsx`、`PipelineStepper.tsx`
+- 新建 `TopNav.tsx`（三合一頂置導覽列，高度 44px）
+- 整合：Logo（Microscope 圖示 + "VisiumHD v3"）+ Stage tabs + 全域執行狀態 + 設定圖示
+
+**視覺設計**：
+- 主背景 `#0f0f17`（較前 `#1e1e2e` 更深，接近 Xenium Explorer）
+- Stage tab 狀態色系：藍框 = active、綠圈✓ = done、橘圈轉 = running、紅 = error、灰虛 = locked
+- 右上角：執行中時顯示 `Loader2` + 訊息（amber 色系）
+
+**不需新套件**（使用已有 `lucide-react`、`clsx`、Tailwind）
+
+
 
 ## 本 Session 完成（2026-03-08 Session 1）
 
@@ -857,6 +890,38 @@ Z-score：藍 = 低於平均，白 = 平均，紅 = 高於平均；個別 outlie
 | 前端 UI | 新增「熱圖基因數 (n_heatmap_genes)」slider；原「n_top_genes」改名為「Dotplot 每群基因數」|
 
 **選基因邏輯**：計算 HVG 在全部細胞的方差（稀疏矩陣用 E[X²]-E[X]²），取 top N，確保最具鑑別力的基因優先顯示。
+
+---
+
+## 本 Session 完成（2026-03-09 Session 5）
+
+### Stage 1 參數預設值更新 + 折疊面板
+
+- **DEFAULT_PARAMS** 更新為 CRC 實際工作流程最佳值：
+  - `model_type: 'nuclei'`（改自 cyto2）
+  - `dia_small: 10, dia_large: 60`（改自 30/60）
+  - `flow_threshold: 0.8`（改自 0.4）
+  - `cellprob_threshold: -2.0`（改自 -1.0）
+  - `fragment_threshold: 150`（改自 200）
+  - `eosin_bg_threshold: 40`（改自 80）
+- 參數面板改為**折疊隱藏**（預設關閉），收起時顯示關鍵參數摘要列
+- 快速預設更新為 4 個（CRC 細胞核 / CRC 上皮 / LUAD 細胞核 / LUAD 正常肺）
+- Git commit: 2ccfd97
+
+### Proseg 遮罩視覺化
+
+- 生成 Proseg 細胞遮罩疊 H&E 圖（CRC_2 ROI）
+- 4 張輸出圖存於 `results/figures/proseg_overlay/`：
+
+| 檔案 | 說明 |
+|------|------|
+| `CRC_2_proseg_overlay_full.jpg` | 全 ROI 縮圖（綠 = Proseg，藍灰 = Cellpose only）|
+| `CRC_2_proseg_overlay_patch.jpg` | 中央 1024×1024px 放大圖 |
+| `CRC_2_cellpose_vs_proseg.jpg` | Cellpose vs Proseg 左右對比圖 |
+| `CRC_2_proseg_centroids.jpg` | Proseg 重心座標驗證圖 |
+
+- **結果**：Cellpose 2,641 個細胞 → Proseg 保留 2,591 個（**98.1% 捕獲率**）
+- 座標換算確認：proseg centroid (µm) ÷ 0.2737 = HE 像素，對齊完美
 
 ---
 

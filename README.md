@@ -1,8 +1,8 @@
-# VisiumHD Pipeline 2
+# VisiumHD Pipeline 3
 
-VisiumHD Pipeline 2 是一個為處理 10x Genomics **Visium HD** 與 **Xenium** 空間轉錄體學資料而設計的現代化全端應用程式。此專案整合了從原圖處理、細胞分割、H&E 光柵化、到 Proseg 分子分配及下游分析的一站式流程。
+VisiumHD Pipeline 3 是一個為處理 10x Genomics **Visium HD** 空間轉錄體學資料而設計的精簡全端應用程式。相較於 Pipeline 2，本版本**移除 Zarr 建構與 Proseg**，改用 Cellpose 分割遮罩直接將 2µm bins 分配至細胞，大幅縮短分析流程並降低運算資源需求。
 
-本專案將原本基於 PyQt6 桌面版的流程，升級為 **FastAPI 後端** 搭配 **React + Vite 前端**，不僅效能大增，更可在瀏覽器中輕鬆進行視覺化操作與即時日誌追蹤。
+架構同樣採用 **FastAPI 後端** 搭配 **React + Vite 前端**，支援瀏覽器中的視覺化操作與即時日誌追蹤。
 
 ---
 
@@ -15,23 +15,21 @@ VisiumHD Pipeline 2 是一個為處理 10x Genomics **Visium HD** 與 **Xenium**
 
 ### 一鍵執行
 
-您可以使用我們提供的啟動腳本，它會自動啟動後端伺服器 (port 8000) 並啟動前端開發伺服器 (port 3000)：
-
 ```bash
-cd visiumHD_pipeline_2
+cd visiumHD_pipeline_3
 bash start.sh
 ```
 
 啟動後，請開啟瀏覽器並前往：**<http://localhost:3000>**
 
-### 分開啟動 (開發模式)
+> **注意**：後端預設使用 **port 8001**（避免與 Pipeline 2 的 port 8000 衝突）。
 
-若你需要分別除錯，可以在兩個終端機中分開執行：
+### 分開啟動 (開發模式)
 
 **終端機 1 (後端)：**
 
 ```bash
-uv run uvicorn backend.main:app --reload --port 8000
+uv run uvicorn backend.main:app --reload --port 8001
 ```
 
 **終端機 2 (前端)：**
@@ -46,68 +44,86 @@ npm run dev
 
 ## 🖥 網頁介面與操作說明
 
-Pipeline 包含多個串聯的步驟，您可以透過左側選單在不同頁面間導航。
+Pipeline 3 共 6 個步驟，透過左側選單（或頂部進度條）在頁面間導航。前一步驟完成前，後續步驟會鎖定。
 
 ### 📂 資料設定 (Data Setup)
 
 - **用途**：自動掃描並載入所需的原始數據。
-- **操作說明**：點擊「掃描」按鈕並使用**本機資料夾瀏覽器** (Folder Browser) 選擇您的組織樣本根目錄 (例如 CRC 或 LUAD 資料夾)。後端會自動為您尋找 H&E BTF、`square_002um`、`square_008um` 以及 Xenium `outs` 資料夾，完全免去手動輸入路徑的麻煩。
+- **操作說明**：點擊「掃描」按鈕並選擇組織樣本根目錄，後端自動尋找 H&E BTF、`square_002um`、`square_008um` 資料夾，完全免去手動輸入路徑的麻煩。
 
 ### ✂️ Stage 0: ROI 裁切 (ROI Extract)
 
-- **用途**：大型組織影像 (達 10GB 以上) 全局處理太佔記憶體。此模組允許您僅載入特定的感興趣區域 (ROI - Region of Interest)。
-- **操作說明**：頁面內嵌 **OpenSeadragon** 多解析度瀏覽器，直接從原始 BTF 動態載入 DZI tile，支援 gigapixel 等級的即時縮放與平移。切換「畫 ROI 模式」後，拖曳框選即可自動填入 fullres pixel 座標。定義好 ROI 後，系統會精準裁切 H&E 影像、Visium HD `h5ad` 矩陣，並利用 PyArrow 從 Xenium `transcripts.parquet` 中快速切出所需基因座標。
+- **用途**：從 gigapixel 等級的大型組織影像中裁切感興趣區域（ROI），避免全圖載入耗盡記憶體。
+- **操作說明**：頁面內嵌 **OpenSeadragon** 多解析度瀏覽器，直接從原始 BTF 動態載入 DZI tile，支援即時縮放與平移。拖曳框選即可自動填入 fullres pixel 座標，系統精準裁切 H&E 影像與 Visium HD `h5ad` 矩陣。
+- **輸出**：`he_crop.tif`、`adata_002um.h5ad`（ROI 範圍內的 2µm bins）
 
 ### 🦠 Stage 1: 細胞分割 (Segmentation)
 
 - **用途**：利用高解析度 H&E 影像標定細胞核與細胞質範圍。
-- **操作說明**：點選執行後，後端會自動調用 **Cellpose** (可選 `nuclei` 或是針對大腸癌的 `cyto2` 模型) 對影像進行 tile-based 分割，並套用 Eosin 染色分析與分水嶺演算法 (Watershed) 優化細胞邊界。
+- **操作說明**：調用 **Cellpose**（可選 `nuclei` 或 `cyto2` 模型）對影像進行 tile-based 分割，並套用 Eosin 染色分析與分水嶺演算法優化邊界。
+- **輸出**：`segmentation_masks.npy`（H×W 整數陣列，像素值 = cell ID）
 
-### 🧱 Stage 2: Zarr 建構 (Zarr Builder)
+### 🧬 Stage 2: RNA 計數 (RNA Count)
 
-- **用途**：將零散的分析資料打包為具擴充性的高維空間資料格式 (Zarr)。
-- **操作說明**：系統會自動抓取 Visium HD `.h5` 矩陣與前一步驟產生的 `segmentation_masks.npy`，打包成適用於 SpatialData API 及 Dask 讀取的 `proseg_integrated.zarr`。
+- **用途**：將 Visium HD 2µm bins 的 RNA 計數依 Cellpose 分割遮罩分配至細胞層級。
+- **操作說明**：後端讀取 `adata_002um.h5ad` 的 bin 空間座標，對應至 `segmentation_masks.npy` 的像素位置，以稀疏矩陣乘法高效彙總每個細胞的基因計數。**不需要 Zarr 或 Proseg**。
+- **輸出**：`cellpose_cells.h5ad`（cells × genes 稀疏矩陣，含 ROI local µm 座標）
 
-### ⚙️ Stage 2.5: 條件測試 (Condition Test)
+### 📊 Stage 3: 下游分析 (Analysis)
 
-- **用途**：在執行完整 Proseg 之前，用小型 ROI 驗證哪些參數組合最適合您的組織種類。
-- **操作說明**：設定 Proseg 參數網格 (例如：`max_dist` 或 `dilation` 不同的值)，後端將會並行處理這些測試條件，幫助您省去瞎猜參數的時間浪費。
+- **用途**：執行單細胞層級的品質控制（QC）、降維與聚類（Clustering）。
+- **操作說明**：基於 Scanpy 引擎，濾除低基因表現細胞與高粒線體比例細胞，進行 Normalize → HVG → PCA → UMAP → Leiden 聚類，並繪製分析圖（存於 `figures/`）。
+- **輸入**：`cellpose_cells.h5ad`（Stage 2 輸出）
 
-### 🚀 Stage 3: Proseg 執行 (Run Proseg)
+### 📤 Stage 4: Browser 匯出 (Export)
 
-- **用途**：將轉錄本準確分配給分割出的單一細胞。
-- **操作說明**：決定好黃金參數 (Golden Params) 後啟動此階段。此步驟對計算資源要求最高，後端會使用 tile-based 分塊處理技術 (含 overlap padding) 以避免記憶體溢位，並在前端提供即時 Terminal 串流日誌。
-
-### 📊 Stage 4: 下游分析 (Analysis)
-
-- **用途**：執行單細胞層級的品質控制 (QC)、降維與聚類 (Clustering)。
-- **操作說明**：基於 Scanpy 引擎，自動濾除低基因表現細胞或高粒線體細胞。進行 Normalize、選取高變異基因 (HVG)、PCA 降維、UMAP 投影，最終使用 Leiden 演算法找出細胞聚類並繪製出分析圖 (存於 `figures/` 資料夾)。
-
-### 📤 Stage 5: Browser 匯出 (Export)
-
-- **用途**：將分析與聚類結果轉換為可視化軟體的相容格式，方便與醫學界分享。
-- **操作說明**：支援一鍵匯出至 **10x Genomics Xenium Explorer** 與 **Loupe Browser**，讓研究人員可以直接在互動軟體中探索發現的新細胞類型與基因分佈特徵。
+- **用途**：將分析與聚類結果轉換為可視化軟體相容格式。
+- **操作說明**：使用 `skimage.measure.find_contours` 從 Cellpose 遮罩提取細胞輪廓多邊形，轉換為 GeoJSON 格式。支援一鍵匯出至 **10x Genomics Xenium Explorer** 與 **Loupe Browser**。
 
 ---
 
 ## 🛠 技術亮點
 
-1. **完全非同步 (Fully Async)**：後端耗時任務採用 FastAPI `BackgroundTasks`，保證 UI 不卡頓，並透過 **WebSocket** 即時將命令列輸出串流推送到前端。
-2. **xterm.js Terminal**：前端 Terminal 元件使用 xterm.js canvas 渲染，支援 ANSI 顏色（ERROR 紅、WARNING 黃、DEBUG 灰、INFO 綠）與增量寫入，不因大量 log 重新渲染整個 DOM。
-3. **TanStack Query Polling**：所有 stage 狀態查詢改用 TanStack Query，`refetchInterval` 只在 `status === 'running'` 時啟動，unmount 自動清理，解決 setInterval 記憶體洩漏問題。
-4. **OpenSeadragon DZI Tile Server**：Stage 0 直接對 BTF 進行 tile-by-tile 讀取，透過 Deep Zoom Image 協定將 gigapixel 組織影像分層串流至前端，高縮放層使用 hires fallback 以避免讀取超大 fullres 區域。
-5. **PyArrow Predicate Pushdown**：在讀取 Xenium `transcripts.parquet` (通常 >10GB) 時，不讀入全表，而是將條件推演至底層只讀取被選取的 ROI，大幅減少 RAM 使用量。
-6. **極度節省 VRAM 的 GPU 分塊**：Cellpose 影像分割與 Proseg 均採用 tile/overlapping 技術，讓一般顯卡也能跑得動。
-7. **macOS 外接硬碟友好 (`._` 防護)**：遇到 ExFAT 產生的 `._` 資源分叉檔時，套件管理 (`uv` symlink) 以及 `discovery.py` 自動過濾，解決無法建置環境的痛點。
+1. **零 Zarr/Proseg 架構**：直接稀疏矩陣計數（`scipy.sparse.csr_matrix` + `A @ adata.X`），比 Pipeline 2 少兩個耗時 Stage，適合快速迭代分析。
+2. **完全非同步 (Fully Async)**：後端耗時任務採用 FastAPI `BackgroundTasks`，保證 UI 不卡頓，並透過 **WebSocket** 即時將命令列輸出串流推送到前端。
+3. **xterm.js Terminal**：前端 Terminal 元件使用 xterm.js canvas 渲染，支援 ANSI 顏色（ERROR 紅、WARNING 黃、DEBUG 灰、INFO 綠）與增量寫入，不因大量 log 重新渲染整個 DOM。
+4. **TanStack Query Polling**：所有 stage 狀態查詢改用 TanStack Query，`refetchInterval` 只在 `status === 'running'` 時啟動，unmount 自動清理，解決 setInterval 記憶體洩漏問題。
+5. **OpenSeadragon DZI Tile Server**：Stage 0 直接對 BTF 進行 tile-by-tile 讀取，透過 Deep Zoom Image 協定將 gigapixel 組織影像分層串流至前端。
+6. **Cellpose 原生平滑輪廓**：Cellpose 訓練於 flow field 梯度，輸出輪廓天然圓滑，使用 `skimage.measure.find_contours` 提取後無需額外多邊形平滑處理。
+7. **macOS 外接硬碟友好 (`._` 防護)**：`discovery.py` 自動過濾 `._*` 與 `.DS_Store`，uv 套件管理使用 symlink 指向 SSD，確保 ExFAT 環境下穩定運作。
 
 ---
 
-## 測試與除錯
+## 📁 輸出檔案結構
 
-本專案搭載了完整的 `pytest` 測試框架 (超過 50 項測試)：
+```
+results/
+  roi/{ROI_NAME}/
+    he_crop.tif                 # Stage 0：H&E 裁切圖
+    adata_002um.h5ad            # Stage 0：ROI 範圍內的 2µm bins
+    segmentation_masks.npy      # Stage 1：Cellpose 遮罩（H×W int，0=背景）
+    cellpose_cells.h5ad         # Stage 2：細胞級計數矩陣（cells × genes）
+  analysis/{ROI_NAME}/
+    adata_processed.h5ad        # Stage 3：Scanpy 分析結果
+    figures/                    # UMAP、Violin plot 等
+  export/{ROI_NAME}/
+    cellpose_polygons.json      # Stage 4：GeoJSON 細胞輪廓（Xenium Explorer）
+```
+
+## 🔬 與 Pipeline 2 的差異
+
+| 功能 | Pipeline 2 | Pipeline 3 |
+|------|-----------|-----------|
+| Zarr 建構 | ✅ Stage 2 | ❌ 移除 |
+| Proseg 條件測試 | ✅ Stage 2.5 | ❌ 移除 |
+| Proseg 分子分配 | ✅ Stage 3 | ❌ 移除 |
+| RNA 計數方式 | Proseg 機率分配 | **直接 mask 查詢 + 稀疏矩陣** |
+| 細胞輪廓來源 | Proseg GeoJSON | **skimage.find_contours** |
+| 後端 Port | 8000 | **8001** |
+| 分析輸入 | `proseg_cells.h5ad` | `cellpose_cells.h5ad` |
+
+## 🛠 測試與除錯
 
 ```bash
 uv run pytest backend/tests/ -v
 ```
-
-測試涵蓋資料結構掃描、API 回應狀態與 Async HTTP 客戶端，甚至包括 Xenium `parquet` 與 `BTF` 高階影像標籤的 metadata 驗證。

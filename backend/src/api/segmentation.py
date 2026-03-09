@@ -32,13 +32,11 @@ class SegmentationParams(BaseModel):
     fragment_threshold: Optional[int] = None
     normalize_stains: Optional[bool] = None
     clahe_clip_limit: Optional[float] = None
-    enable_eosin_watershed: Optional[bool] = None
-    eosin_bg_threshold: Optional[int] = None
     block_size: Optional[int] = None
     overlap: Optional[int] = None
     # ROI 個別參數覆寫：{roi_name: {field: value}}
     # 欄位可含 model_type / dia_small / dia_large / flow_threshold /
-    #          cellprob_threshold / fragment_threshold / eosin_bg_threshold
+    #          cellprob_threshold / fragment_threshold
     roi_overrides: Optional[dict] = None
     # 若指定，只重跑這一個 ROI（單 ROI 重做）
     target_roi: Optional[str] = None
@@ -60,8 +58,6 @@ class PreviewRequest(BaseModel):
     fragment_threshold: Optional[int] = None
     normalize_stains: Optional[bool] = None
     clahe_clip_limit: Optional[float] = None  # 即時 CLAHE 預覽
-    enable_eosin_watershed: Optional[bool] = None   # ← 新增
-    eosin_bg_threshold: Optional[int] = None        # ← 新增
 
 
 def _apply_overrides(config: dict, p: SegmentationParams) -> dict:
@@ -94,11 +90,6 @@ def _apply_overrides(config: dict, p: SegmentationParams) -> dict:
     if p.clahe_clip_limit is not None:
         preproc["clahe_clip_limit"] = p.clahe_clip_limit
 
-    postproc = seg.setdefault("postprocessing", {})
-    if p.enable_eosin_watershed is not None:
-        postproc["enable_eosin_watershed"] = p.enable_eosin_watershed
-    if p.eosin_bg_threshold is not None:
-        postproc["eosin_bg_threshold"] = p.eosin_bg_threshold
 
     tiling = seg.setdefault("tiling", {})
     if p.block_size is not None:
@@ -204,36 +195,12 @@ def _run_preview_sync(he_crop_path: Path, req: PreviewRequest, config: dict) -> 
     flow_buf = io.BytesIO()
     Image.fromarray(flow_rgb).save(flow_buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
 
-    # ── Cyto Mask (Eosin Watershed) ───────────────────────────────────────────
-    cyto_b64 = None
-    pp = seg_cfg.get("postprocessing", {})
-    enable_cyto = req.enable_eosin_watershed if req.enable_eosin_watershed is not None else pp.get("enable_eosin_watershed", False)
-    if enable_cyto and patch.ndim == 3 and patch.shape[-1] == 3:
-        bg_thresh = req.eosin_bg_threshold if req.eosin_bg_threshold is not None else pp.get("eosin_bg_threshold", 40)
-        # 兒素主要標記組織在：用最大通道亮度判斷被刑物（純白空直 = 所有通道都露忧）
-        # 背景（空直）：Brightness 高 → 廢止 Proseg 擴展
-        # 組織（細胞質+核）：Brightness 中/低 → 允許 Proseg 在此擴展
-        brightness = patch.astype(np.float32).max(axis=2)  # (H, W) max(R,G,B)
-        is_background = (brightness > (255 - bg_thresh))   # 白色區域
-        cyto_mask = ~is_background                          # 組織區域
-        # 視覺化：背景變暗，組織保留
-        cyto_overlay = patch.astype(np.float32).copy()
-        cyto_overlay[is_background] = cyto_overlay[is_background] * 0.2 + np.array([20, 20, 20]) * 0.8
-        from skimage.segmentation import find_boundaries
-        border = find_boundaries(cyto_mask.astype(np.uint8), mode='outer')
-        cyto_overlay[border] = [0, 255, 200]
-        cyto_overlay = np.clip(cyto_overlay, 0, 255).astype(np.uint8)
-        cyto_buf = io.BytesIO()
-        Image.fromarray(cyto_overlay).save(cyto_buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
-        cyto_b64 = base64.b64encode(cyto_buf.getvalue()).decode()
-
     return {
         "status": "ok",
         "data": {
             "image_b64":   base64.b64encode(buf.getvalue()).decode(),
             "macenko_b64": base64.b64encode(mac_buf.getvalue()).decode(),
             "flows_b64":   base64.b64encode(flow_buf.getvalue()).decode(),
-            "cyto_b64":    cyto_b64,
             "n_cells":     n_cells,
             "roi_name":    he_crop_path.parent.name,
             "patch_info":  f"x={x0},y={y0} size={x1-x0}×{y1-y0}",
@@ -391,25 +358,6 @@ async def preview_preproc(req: PreviewRequest):
         # 建立並排比較圖（原始 H&E | 前處理灰階）
         ph, pw = patch.shape[:2]
         
-        # ── 計算 Cyto Mask (如果開啟 Eosin Watershed) ─────────────────────────────────
-        cyto_b64 = None
-        _pp = seg_cfg.get("postprocessing", {})
-        enable_cyto = req.enable_eosin_watershed if req.enable_eosin_watershed is not None else _pp.get("enable_eosin_watershed", False)
-        if enable_cyto and patch.ndim == 3 and patch.shape[-1] == 3:
-            bg_thresh = req.eosin_bg_threshold if req.eosin_bg_threshold is not None else _pp.get("eosin_bg_threshold", 40)
-            brightness = patch.astype(np.float32).max(axis=2)
-            is_background = (brightness > (255 - bg_thresh))
-            cyto_mask = ~is_background
-            cyto_overlay = patch.astype(np.float32).copy()
-            cyto_overlay[is_background] = cyto_overlay[is_background] * 0.2 + np.array([20, 20, 20]) * 0.8
-            from skimage.segmentation import find_boundaries
-            border = find_boundaries(cyto_mask.astype(np.uint8), mode='outer')
-            cyto_overlay[border] = [0, 255, 200]
-            cyto_overlay = np.clip(cyto_overlay, 0, 255).astype(np.uint8)
-            cyto_buf = io.BytesIO()
-            Image.fromarray(cyto_overlay).save(cyto_buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
-            cyto_b64 = base64.b64encode(cyto_buf.getvalue()).decode()
-
         # 原圖 (Patch) 為對照
         raw_buf = io.BytesIO()
         Image.fromarray(patch.astype(np.uint8)).save(raw_buf, "JPEG", quality=_PREVIEW_JPEG_QUALITY)
@@ -443,7 +391,6 @@ async def preview_preproc(req: PreviewRequest):
             "data": {
                 "image_b64": base64.b64encode(raw_buf.getvalue()).decode(),  # 原圖
                 "macenko_b64": base64.b64encode(mac_buf.getvalue()).decode(), # 灰階圖
-                "cyto_b64": cyto_b64, # 新增 Cyto Mask
                 "method": method_return_dict,
                 "patch_info": f"x={x0},y={y0} size={x1-x0}×{y1-y0}",
                 "clip_limit": clip_limit,
@@ -571,37 +518,6 @@ async def get_preview(roi_name: Optional[str] = None):
                               [cv2.IMWRITE_JPEG_QUALITY, 82])
         img_b64 = base64.b64encode(buf.tobytes()).decode()
 
-        # ── Cyto Mask（如果存在 cyto_mask.npy）────────────────────────────────
-        cyto_b64 = None
-        cyto_npy_path = roi_dir / "cyto_mask.npy"
-        if cyto_npy_path.exists() and he_path.exists():
-            try:
-                import io as _io
-                from PIL import Image as _Image
-                cyto_mask_arr = np.load(str(cyto_npy_path))  # 0=背景, 1=組織
-                he_cyto = tifffile.imread(str(he_path))
-                if he_cyto.ndim == 2:
-                    he_cyto = np.stack([he_cyto]*3, axis=-1)
-                elif he_cyto.shape[-1] == 4:
-                    he_cyto = he_cyto[..., :3]
-                # 確保 cyto_mask 與 he_cyto 尺寸一致
-                if he_cyto.shape[:2] == cyto_mask_arr.shape[:2]:
-                    is_bg = cyto_mask_arr == 0
-                    cyto_vis = he_cyto.astype(np.float32)
-                    cyto_vis[is_bg] = cyto_vis[is_bg] * 0.2 + np.array([20, 20, 20]) * 0.8
-                    from skimage.segmentation import find_boundaries as _fb
-                    border = _fb((~is_bg).astype(np.uint8), mode='outer')
-                    cyto_vis[border] = [0, 255, 200]
-                    cyto_vis = np.clip(cyto_vis, 0, 255).astype(np.uint8)
-                    # 縮放
-                    if scale < 1.0:
-                        cyto_vis = cv2.resize(cyto_vis, (int(he_cyto.shape[1]*scale), int(he_cyto.shape[0]*scale)))
-                    cb = _io.BytesIO()
-                    _Image.fromarray(cyto_vis).save(cb, "JPEG", quality=82)
-                    cyto_b64 = base64.b64encode(cb.getvalue()).decode()
-            except Exception:
-                pass
-
         # ── Flows Preview（如果存在 flows_preview.jpg）────────────────────────────────
         flows_b64 = None
         flows_jpg_path = roi_dir / "flows_preview.jpg"
@@ -616,7 +532,6 @@ async def get_preview(roi_name: Optional[str] = None):
             "status": "ok",
             "data": {
                 "image_b64":      img_b64,
-                "cyto_b64":       cyto_b64,
                 "flows_b64":      flows_b64,
                 "roi":            target,
                 "n_cells":        n_cells,

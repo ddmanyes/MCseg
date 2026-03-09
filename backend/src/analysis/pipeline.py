@@ -340,6 +340,75 @@ def _generate_overlay_images(
     return figures
 
 
+def _save_roi_overlay_images(
+    pre_spatial: "np.ndarray",
+    pre_obs_names: list,
+    post_obs_names_set: set,
+    he_path: Path,
+    fig_dir: Path,
+    pixel_size_um: float,
+    roi_name: str,
+) -> None:
+    """為單一 ROI 生成 QC 前後細胞重心疊圖（供多 ROI 比較視圖），150 DPI。
+
+    儲存至 fig_dir/overlay_{roi_name}_pre_qc.png 及 overlay_{roi_name}_post_qc.png。
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import tifffile
+    import numpy as np
+
+    if not he_path.exists():
+        logger.warning(f"找不到 H&E：{he_path}，跳過 {roi_name} per-ROI 疊圖")
+        return
+
+    he = tifffile.imread(str(he_path))
+    H, W = he.shape[:2]
+
+    x_px = pre_spatial[:, 0] / pixel_size_um
+    y_px = pre_spatial[:, 1] / pixel_size_um
+
+    kept_mask    = np.array([n in post_obs_names_set for n in pre_obs_names])
+    removed_mask = ~kept_mask
+    n_total   = len(pre_obs_names)
+    n_kept    = int(kept_mask.sum())
+    n_removed = int(removed_mask.sum())
+
+    dpi = 150
+    figsize = (W / dpi, H / dpi)
+    s = 12
+
+    # Pre-QC
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.imshow(he)
+    ax.scatter(x_px, y_px, s=s, c="cyan", alpha=0.6, linewidths=0,
+               label=f"All cells ({n_total:,})")
+    ax.set_title(f"Pre-QC  ·  {n_total:,} cells", fontsize=9)
+    ax.axis("off")
+    ax.legend(loc="upper right", fontsize=7, markerscale=2, framealpha=0.5)
+    pre_path = fig_dir / f"overlay_{roi_name}_pre_qc.png"
+    fig.savefig(str(pre_path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
+    plt.close(fig)
+    logger.info(f"已儲存 {pre_path.name}")
+
+    # Post-QC
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.imshow(he)
+    if removed_mask.any():
+        ax.scatter(x_px[removed_mask], y_px[removed_mask], s=s, c="red",
+                   alpha=0.5, linewidths=0, label=f"Removed ({n_removed:,})")
+    ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="lime",
+               alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
+    ax.set_title(f"Post-QC  ·  kept {n_kept:,} / removed {n_removed:,}", fontsize=9)
+    ax.axis("off")
+    ax.legend(loc="upper right", fontsize=7, markerscale=2, framealpha=0.5)
+    post_path = fig_dir / f"overlay_{roi_name}_post_qc.png"
+    fig.savefig(str(post_path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
+    plt.close(fig)
+    logger.info(f"已儲存 {post_path.name}")
+
+
 # ─────────────────────── Step 1: QC + PCA ─────────────────────────
 
 def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
@@ -371,9 +440,9 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
     merge_mode = analysis_cfg.get("merge_rois", False) and len(rois) > 1
     if merge_mode:
         merged_path = output_dir / "merged_all_rois.h5ad"
-        if not merged_path.exists():
-            logger.info("merged_all_rois.h5ad 不存在，自動執行合併...")
-            merge_all_rois(config)
+        # 永遠重新合併，確保 obs_names 採用最新的 {roi_name}__ 前綴格式
+        logger.info("合併模式：重新執行 merge_all_rois() 以確保 obs_names 格式正確...")
+        merge_all_rois(config)
         input_h5ad = merged_path
         roi_name = None   # 合併模式不使用單一 ROI H&E 疊圖
         logger.info(f"QC Step（合併模式）：載入 {input_h5ad}")
@@ -492,8 +561,8 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
         logger.info("已儲存 pca_elbow.png")
 
     # ── 6. 疊圖（H&E + 細胞重心，QC 前後比較）──
-    # 合併模式（roi_name=None）跳過疊圖，因各 ROI H&E 座標系不同
     if _pre_spatial is not None and roi_name is not None:
+        # 單一 ROI 模式：生成標準疊圖（回傳給前端）
         he_path = out_base / roi_name / "he_crop.tif"
         pixel_size_um = rois[0].get("pixel_size_um", 0.2737)
         overlay_figs = _generate_overlay_images(
@@ -501,6 +570,60 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
             he_path, fig_dir, pixel_size_um,
         )
         figures.update(overlay_figs)
+        # 同時儲存為 per-ROI 命名（供 /roi_overlays 比較視圖）
+        _save_roi_overlay_images(
+            _pre_spatial, _pre_obs_names, set(adata.obs_names),
+            he_path, fig_dir, pixel_size_um, roi_name,
+        )
+    elif _pre_spatial is not None and merge_mode:
+        # 合併模式：各 ROI 有獨立 H&E 座標系，逐一生成 per-ROI 疊圖
+        import numpy as np
+        post_set_full = set(adata.obs_names)
+        first_roi_done = False
+        for roi_cfg in rois:
+            rn = roi_cfg.get("name", "")
+            prefix = f"{rn}__"
+            roi_indices = [i for i, n in enumerate(_pre_obs_names) if n.startswith(prefix)]
+            if not roi_indices:
+                logger.warning(f"合併模式疊圖：找不到 '{prefix}' 前綴的細胞，跳過 {rn}")
+                continue
+            idx_arr = np.array(roi_indices)
+            # merge_all_rois() 在合併時已加入全域座標偏移（µm），
+            # 需減去各 ROI 的全域偏移，還原為 he_crop.tif 的本地座標（µm）
+            roi_spatial_global = _pre_spatial[idx_arr]
+            px_um = roi_cfg.get("pixel_size_um", 0.2737)
+            if roi_cfg.get("x") is not None:
+                x_offset_um = float(roi_cfg["x"]) * px_um
+                y_offset_um = float(roi_cfg["y"]) * px_um
+                roi_spatial_local = roi_spatial_global.copy()
+                roi_spatial_local[:, 0] -= x_offset_um
+                roi_spatial_local[:, 1] -= y_offset_um
+                neg_x = (roi_spatial_local[:, 0] < 0).sum()
+                neg_y = (roi_spatial_local[:, 1] < 0).sum()
+                if neg_x > 0 or neg_y > 0:
+                    logger.warning(f"⚠️ {rn} 座標偏移後出現負值：x={neg_x}, y={neg_y}")
+            else:
+                roi_spatial_local = roi_spatial_global
+            roi_pre_names = [_pre_obs_names[i] for i in roi_indices]
+            roi_post_set  = {n for n in post_set_full if n.startswith(prefix)}
+            roi_he  = out_base / rn / "he_crop.tif"
+            try:
+                # 第一個成功的 ROI：同時加入 figures（供 ChartView 顯示）
+                if not first_roi_done and roi_he.exists():
+                    overlay_figs = _generate_overlay_images(
+                        roi_spatial_local, roi_pre_names, roi_post_set,
+                        roi_he, fig_dir, px_um,
+                    )
+                    figures.update(overlay_figs)
+                    first_roi_done = True
+                    logger.info(f"合併模式：已使用 {rn} 生成主疊圖（pre_qc / post_qc）")
+                # 每個 ROI 都儲存獨立命名的疊圖（供 /roi_overlays 比較視圖）
+                _save_roi_overlay_images(
+                    roi_spatial_local, roi_pre_names, roi_post_set,
+                    roi_he, fig_dir, px_um, rn,
+                )
+            except Exception as e:
+                logger.warning(f"合併模式疊圖生成失敗（{rn}）：{e}")
 
     # ── 7. 儲存前處理結果 ──
     _fix_log1p(adata)
