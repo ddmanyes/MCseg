@@ -36,18 +36,18 @@ interface SegParams {
 
 const DEFAULT_PARAMS: SegParams = {
   mode: 'roi',
-  model_type: 'cyto2',
+  model_type: 'nuclei',
   use_gpu: true,
   batch_size: 4,
-  dia_small: 30.0,
-  dia_large: 60.0,
-  flow_threshold: 0.4,
-  cellprob_threshold: -1.0,
-  fragment_threshold: 200,
+  dia_small: 10,
+  dia_large: 60,
+  flow_threshold: 0.8,
+  cellprob_threshold: -2.0,
+  fragment_threshold: 150,
   normalize_stains: true,
   clahe_clip_limit: 1.0,
   enable_eosin_watershed: true,
-  eosin_bg_threshold: 80,
+  eosin_bg_threshold: 40,
   block_size: 2048,
   overlap: 256,
 }
@@ -204,6 +204,7 @@ export default function Stage1_Segmentation() {
   const stage = stages['segmentation']
   const { refetch: refetchStatus } = useStageStatus('segmentation', getSegmentationStatus, 3000)
   const [params, setParams] = useState<SegParams>(DEFAULT_PARAMS)
+  const [showParams, setShowParams] = useState(false)
   const [previewSrc, setPreviewSrc] = useState<string | null>(null)
   const [previewCyto, setPreviewCyto] = useState<string | null>(null)
   const [previewFlows, setPreviewFlows] = useState<string | null>(null)
@@ -449,8 +450,29 @@ export default function Stage1_Segmentation() {
         progress={stage.progress}
         message={stage.message}
       >
-        {/* 參數面板 */}
-        <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* 參數面板標題列 */}
+        <div className="mt-3 flex items-center justify-between">
+          <button
+            onClick={() => setShowParams(v => !v)}
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors select-none"
+          >
+            <span className={`transition-transform duration-200 ${showParams ? 'rotate-90' : ''}`}>▶</span>
+            <span>{showParams ? '收起參數' : '展開參數設定'}</span>
+          </button>
+          {/* 折疊時顯示當前關鍵參數摘要 */}
+          {!showParams && (
+            <div className="flex gap-3 text-xs text-gray-500">
+              <span className="text-gray-400">{params.model_type}</span>
+              <span>小徑 {params.dia_small}px</span>
+              <span>大徑 {params.dia_large}px</span>
+              <span>Flow {params.flow_threshold}</span>
+              <span>CellProb {params.cellprob_threshold}</span>
+            </div>
+          )}
+        </div>
+
+        {/* 參數面板（可折疊）*/}
+        {showParams && <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-6">
 
           {/* 左欄 */}
           <div className="space-y-5">
@@ -553,19 +575,25 @@ export default function Stage1_Segmentation() {
             <Section title="快速預設">
               <div className="flex gap-2 flex-wrap">
                 <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'cyto2', dia_small: 30, dia_large: 60, flow_threshold: 0.4, fragment_threshold: 200 })}
-                  className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
+                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 10, dia_large: 60, flow_threshold: 0.8, cellprob_threshold: -2.0, fragment_threshold: 150, clahe_clip_limit: 1.0, eosin_bg_threshold: 40 })}
+                  className="px-3 py-1 text-xs bg-blue-800 hover:bg-blue-700 rounded text-gray-200"
                 >
-                  CRC 上皮
+                  CRC 細胞核
                 </button>
                 <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 25, dia_large: 50, flow_threshold: 0.4, fragment_threshold: 200 })}
+                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'cyto2', dia_small: 10, dia_large: 60, flow_threshold: 0.8, cellprob_threshold: -2.0, fragment_threshold: 150, clahe_clip_limit: 2.0, eosin_bg_threshold: 40 })}
+                  className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
+                >
+                  CRC 上皮（cyto2）
+                </button>
+                <button
+                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 8, dia_large: 40, flow_threshold: 0.4, cellprob_threshold: -2.0, fragment_threshold: 100, clahe_clip_limit: 1.0, eosin_bg_threshold: 40 })}
                   className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
                 >
                   LUAD 細胞核
                 </button>
                 <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 15, dia_large: 40, flow_threshold: 0.3, cellprob_threshold: -3, fragment_threshold: 100 })}
+                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 8, dia_large: 30, flow_threshold: 0.3, cellprob_threshold: -3.0, fragment_threshold: 80, clahe_clip_limit: 1.0, eosin_bg_threshold: 40 })}
                   className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
                 >
                   LUAD 正常肺
@@ -573,7 +601,7 @@ export default function Stage1_Segmentation() {
               </div>
             </Section>
           </div>
-        </div>
+        </div>}
       </StageCard>
 
       {/* ── ROI 個別參數覆寫 ──────────────────────────────────────────────── */}

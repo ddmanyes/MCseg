@@ -87,6 +87,11 @@ class XeniumExporter:
         combined_transcripts.csv 路徑（x/y 欄位為 µm）。
     ram_threshold_gb:
         spatialdata_xenium_explorer.write() 的 RAM 閾值。
+    he_image_path:
+        H&E 影像路徑（BTF/TIFF，可選）。合併模式下無 zarr 時使用。
+    he_crop_bounds:
+        (x0, y0, x1, y1) 影像 pixel 座標，指定從 BTF 裁切的區域。
+        None = 讀取整張（小圖使用）。
     """
 
     def __init__(
@@ -96,6 +101,8 @@ class XeniumExporter:
         transcripts_csv_path: Optional[str | Path] = None,
         ram_threshold_gb: float = 4.0,
         pixel_size_um: float = VISIUM_UM_PX,
+        he_image_path: Optional[str | Path] = None,
+        he_crop_bounds: Optional[tuple] = None,
     ) -> None:
         self.zarr_path = Path(zarr_path) if zarr_path else None
         self.poly_json_path = Path(poly_json_path) if poly_json_path else None
@@ -104,6 +111,8 @@ class XeniumExporter:
         )
         self.ram_threshold_gb = ram_threshold_gb
         self.pixel_size_um = pixel_size_um  # µm/px of the morphology image
+        self.he_image_path = Path(he_image_path) if he_image_path else None
+        self.he_crop_bounds = he_crop_bounds  # (x0, y0, x1, y1) in image pixels
 
     # ------------------------------------------------------------------
     # Public API
@@ -179,6 +188,9 @@ class XeniumExporter:
         """
         if self.zarr_path is None or not self.zarr_path.exists():
             logger.info("未提供 zarr_path，跳過影像層。")
+            # 嘗試供給 he_image_path（BTF/TIFF）
+            if self.he_image_path and self.he_image_path.exists():
+                return self._load_he_image()
             return None
 
         try:
@@ -211,6 +223,142 @@ class XeniumExporter:
 
         except Exception as exc:
             logger.warning(f"Zarr 影像載入失敗（繼續執行）：{exc}")
+            return None
+
+    def _load_he_image(self) -> Optional["sd.models.Image2DModel"]:
+        """
+        從 BTF/TIFF 以 tiled 讀取方式惰性載入 H&E 影像。
+
+        避開 zarr v2/v3 相容性問題：對無壓縮 tiled TIFF，直接以 file seek +
+        dask.delayed 讀取 crop 區域的各 tile，不依賴 zarr store。
+
+        Transform：Sequence([Scale, Translation])
+        - Scale:       image pixel → µm
+        - Translation: crop 左上角偏移（全域 µm）
+        """
+        try:
+            import tifffile
+            import dask
+            import dask.array as da
+            from spatialdata.transformations import Scale, Translation, Sequence as TransformSequence
+
+            if self.he_image_path is None or not self.he_image_path.exists():
+                return None
+
+            logger.info(f"載入 H&E 影像（BTF）：{self.he_image_path}")
+
+            with tifffile.TiffFile(str(self.he_image_path)) as tif:
+                page = tif.series[0].pages[0]
+                img_h = page.imagelength
+                img_w = page.imagewidth
+                tile_h = int(page.tilelength) if page.is_tiled else img_h
+                tile_w = int(page.tilewidth)  if page.is_tiled else img_w
+                n_channels = page.shape[2] if len(page.shape) > 2 else 1
+                dtype = page.dtype
+                offsets = list(page.dataoffsets)
+                bytecounts = list(page.databytecounts)
+
+            # 裁切範圍（image pixels）
+            if self.he_crop_bounds is not None:
+                x0, y0, x1, y1 = (int(v) for v in self.he_crop_bounds)
+            else:
+                x0, y0, x1, y1 = 0, 0, img_w, img_h
+
+            x0 = max(0, x0);  y0 = max(0, y0)
+            x1 = min(img_w, x1);  y1 = min(img_h, y1)
+            crop_w = x1 - x0;  crop_h = y1 - y0
+
+            logger.info(f"  擷取區域：x=[{x0},{x1}], y=[{y0},{y1}]，大小 {crop_w}×{crop_h} px")
+
+            path_str = str(self.he_image_path)
+
+            @dask.delayed
+            def _read_tiled_crop(
+                path, y0_, y1_, x0_, x1_,
+                img_w_, img_h_, tile_h_, tile_w_, nc_, offsets_, bytecounts_
+            ):
+                """
+                讀取 uncompressed tiled TIFF 的 crop 區域，只讀必要 tiles。
+                對壓縮 tile 自動降回 tifffile.imread 整張讀取後裁切。
+                """
+                import numpy as np
+                import tifffile as _tf
+
+                crop_h_ = y1_ - y0_
+                crop_w_ = x1_ - x0_
+                result = np.zeros((crop_h_, crop_w_, nc_), dtype=np.uint8)
+
+                ntiles_x_ = (img_w_ + tile_w_ - 1) // tile_w_
+                ntiles_y_ = (img_h_ + tile_h_ - 1) // tile_h_
+
+                ty0_ = y0_ // tile_h_
+                ty1_ = min((y1_ - 1) // tile_h_ + 1, ntiles_y_)
+                tx0_ = x0_ // tile_w_
+                tx1_ = min((x1_ - 1) // tile_w_ + 1, ntiles_x_)
+
+                try:
+                    with open(path, "rb") as fh:
+                        for ty in range(ty0_, ty1_):
+                            for tx in range(tx0_, tx1_):
+                                tidx = ty * ntiles_x_ + tx
+                                if tidx >= len(offsets_) or offsets_[tidx] == 0:
+                                    continue
+                                fh.seek(offsets_[tidx])
+                                raw_bytes = fh.read(bytecounts_[tidx])
+                                tile = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(
+                                    tile_h_, tile_w_, nc_
+                                )
+                                gy0 = ty * tile_h_;  gy1 = min(gy0 + tile_h_, img_h_)
+                                gx0 = tx * tile_w_;  gx1 = min(gx0 + tile_w_, img_w_)
+                                oy0 = max(y0_, gy0);  oy1 = min(y1_, gy1)
+                                ox0 = max(x0_, gx0);  ox1 = min(x1_, gx1)
+                                if oy1 <= oy0 or ox1 <= ox0:
+                                    continue
+                                result[oy0-y0_:oy1-y0_, ox0-x0_:ox1-x0_] = \
+                                    tile[oy0-gy0:oy1-gy0, ox0-gx0:ox1-gx0]
+                except Exception:
+                    # 壓縮 tile 無法直接讀取 raw bytes，退回 tifffile.imread 整張裁切
+                    full = _tf.imread(path, series=0, level=0)
+                    result = full[y0_:y1_, x0_:x1_]
+
+                return result
+
+            raw = da.from_delayed(
+                _read_tiled_crop(
+                    path_str, y0, y1, x0, x1,
+                    img_w, img_h, tile_h, tile_w, n_channels,
+                    offsets, bytecounts,
+                ),
+                shape=(crop_h, crop_w, n_channels),
+                dtype=dtype,
+            )
+
+            # (y, x, c) → (c, y, x)，只取 RGB
+            raw = da.transpose(raw, (2, 0, 1))[:3]
+
+            # Transform：scale pixel→µm，再平移到全域原點
+            transform = TransformSequence([
+                Scale([self.pixel_size_um, self.pixel_size_um], axes=("y", "x")),
+                Translation(
+                    [y0 * self.pixel_size_um, x0 * self.pixel_size_um],
+                    axes=("y", "x"),
+                ),
+            ])
+
+            sd_image = Image2DModel.parse(
+                raw,
+                dims=("c", "y", "x"),
+                transformations={"global": transform},
+            )
+            logger.info(
+                f"  H&E 影像載入完成，crop={crop_w}×{crop_h} px，"
+                f"pixel_size={self.pixel_size_um:.4f} µm/px，"
+                f"offset=({x0 * self.pixel_size_um:.1f}, {y0 * self.pixel_size_um:.1f}) µm"
+            )
+            return sd_image
+
+        except Exception as exc:
+            logger.warning(f"H&E 影像載入失敗（繼續執行）：{exc}")
             return None
 
     def _load_adata(self, h5ad_path: Path) -> Optional[anndata.AnnData]:
@@ -435,6 +583,46 @@ class XeniumExporter:
             logger.warning(f"zarr 轉錄點載入失敗（繼續執行）：{exc}")
             return None
 
+    def _create_dummy_image(
+        self, sd_shapes: Optional[gpd.GeoDataFrame]
+    ) -> "sd.models.Image2DModel":
+        """
+        當無 zarr_path 時，依多邊形邊界框建立最小灰階佔位影像。
+
+        spatialdata_xenium_explorer.write() 硬性要求 sdata.images 中至少有一張影像，
+        此方法用空白 numpy array 滿足該需求，不影響下游分析。
+
+        影像以 pixel 座標傳入，並附加 Scale 轉換標記物理解析度（self.pixel_size_um µm/px）。
+        """
+        import dask.array as da
+        from spatialdata.transformations import Scale
+
+        # 從多邊形邊界框推算影像範圍（µm → pixel）
+        if sd_shapes is not None and len(sd_shapes) > 0:
+            bounds = sd_shapes.total_bounds  # (minx, miny, maxx, maxy) in µm
+            margin_um = 50.0
+            width_px = max(1, int((bounds[2] - bounds[0] + 2 * margin_um) / self.pixel_size_um))
+            height_px = max(1, int((bounds[3] - bounds[1] + 2 * margin_um) / self.pixel_size_um))
+        else:
+            width_px, height_px = 512, 512
+
+        # 限制最大大小避免 OOM（超大影像區域用稀疏表示即可）
+        MAX_PX = 32768
+        width_px = min(width_px, MAX_PX)
+        height_px = min(height_px, MAX_PX)
+
+        logger.info(
+            f"建立佔位影像（{height_px}×{width_px} px，pixel_size={self.pixel_size_um} µm/px）"
+        )
+        dummy = da.zeros((1, height_px, width_px), dtype=np.uint8, chunks=(1, 2048, 2048))
+        return Image2DModel.parse(
+            dummy,
+            dims=("c", "y", "x"),
+            transformations={
+                "global": Scale([self.pixel_size_um, self.pixel_size_um], axes=("y", "x"))
+            },
+        )
+
     def _write_xenium_bundle(
         self,
         out_xenium_dir: Path,
@@ -449,6 +637,12 @@ class XeniumExporter:
         # 修補 to_intrinsic：讓 element=None 時直接回傳 None，
         # 避免無轉錄點時觸發 AssertionError（library bug）。
         _apply_xenium_explorer_patches()
+
+        # spatialdata_xenium_explorer.write() 硬性要求至少一張影像；
+        # 未提供 zarr_path 時以佔位空白影像滿足需求。
+        if sd_image is None:
+            logger.info("未偵測到影像層，自動建立佔位影像以滿足 Xenium Explorer 需求。")
+            sd_image = self._create_dummy_image(sd_shapes)
 
         # 相容 spatialdata 新舊 API（tables vs table 參數）
         sdata_kwargs: dict = {}

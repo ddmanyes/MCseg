@@ -1,4 +1,4 @@
-# Visium HD Pipeline 2 — 開發進度總結（更新：2026-03-08 Session 2）
+# Visium HD Pipeline 2 — 開發進度總結（更新：2026-03-08 Session 4）
 
 ---
 
@@ -25,6 +25,29 @@
 - eosin_bg_threshold fallback 改從 postprocessing 讀取（之前誤讀 preprocessing）
 - 統一 JPEG 品質常數 _PREVIEW_JPEG_QUALITY = 85
 - Git commit: 2bc2052
+
+## 本 Session 完成（2026-03-08 Session 3）
+
+### Stage 4 QC 多 ROI 合併模式 — 三個 Bug 修復
+
+**問題**：合併模式下執行「執行前處理」後，PCA Elbow 圖、H&E 細胞遮罩前後比較圖均未出現。
+
+**根本原因鏈**：
+
+1. **Bug 1（`pipeline.py`，`run_qc_step`）**：`if not merged_path.exists()` 防護導致舊版 `merged_all_rois.h5ad`（obs_names 為 `tile_y0_x0_*` 舊格式）被直接使用，跳過重新合併。
+   - **修復**：移除條件判斷，永遠呼叫 `merge_all_rois(config)`
+
+2. **Bug 2（`pipeline.py`，merge 模式疊圖迴圈）**：`merge_all_rois()` 合併時加入全域座標偏移（`roi["x"] * pixel_size_um`），疊圖需要 `he_crop.tif` 本地座標，未減去偏移導致座標錯位（可能出現負值）。
+   - **修復**：`roi_spatial_local = roi_spatial_global - (roi["x"] * px_um, roi["y"] * px_um)`；加入負值 warning log
+
+3. **Bug 3（`pipeline.py`，merge 模式疊圖迴圈）**：`_save_roi_overlay_images()` 只存磁碟不回傳，`figures` dict 永遠沒有 `pre_qc`/`post_qc` key，ChartView 無對應 tab。
+   - **修復**：對第一個成功 ROI 改呼叫 `_generate_overlay_images()` 並 `figures.update(overlay_figs)`
+
+**多 ROI 顯示架構確認**（現況正確，無需修改）：
+- **ChartView** `pre_qc`/`post_qc` tab = 第一個 ROI 的代表疊圖（摘要）
+- **RoiContourPanel** = 每個 ROI 獨立切 tab，由 `/roi_overlays` API 從磁碟讀取 `overlay_{roi_name}_{pre|post}_qc.png`
+
+---
 
 ## 本 Session 完成（2026-03-08 Session 2）
 
@@ -834,3 +857,54 @@ Z-score：藍 = 低於平均，白 = 平均，紅 = 高於平均；個別 outlie
 | 前端 UI | 新增「熱圖基因數 (n_heatmap_genes)」slider；原「n_top_genes」改名為「Dotplot 每群基因數」|
 
 **選基因邏輯**：計算 HVG 在全部細胞的方差（稀疏矩陣用 E[X²]-E[X]²），取 top N，確保最具鑑別力的基因優先顯示。
+
+---
+
+## 本 Session 完成（2026-03-08 Session 4）
+
+### Stage 5 Xenium 匯出三連 Bug 修復
+
+#### Bug 1：`At least one image in sdata.images is required`
+
+**根本原因**：合併模式下 `zarr_path=None`，`_load_image()` 直接回傳 `None`，導致
+`sdata.images` 為空而 `spatialdata_xenium_explorer.write()` 拋錯。
+
+**修復**（`xenium_exporter.py`）：新增 `_create_dummy_image()` 方法。
+- 根據多邊形 `total_bounds` 推算影像尺寸（µm ÷ pixel_size）
+- 建立全零 uint8 dask array + Scale 轉換
+- 確保 `sdata.images` 非空，不影響下游細胞資料
+
+#### Bug 2：細胞全部疊在原點（4 個 ROI 的多邊形重疊）
+
+**根本原因**：每個 ROI 的 `combined_proseg_results_qc.json` 使用局部座標（從 0 開始），
+合併時未套用全域偏移，4 個 ROI 的細胞全部堆疊在座標 (0,0) 附近。
+
+**修復**（`api/export.py`）：
+- 新增 `_translate_coords()` / `_translate_geojson_feature()` 遞迴座標平移函式
+- 合併迴圈中對每個 ROI 計算 `roi.x * pixel_size_um`、`roi.y * pixel_size_um` 全域偏移並套用
+
+#### Bug 3：H&E 影像載入失敗（`zarr 2.18.7 < 3 is not supported`）
+
+**根本原因**：舊版 `_load_he_image()` 使用 `tifffile.imread(..., aszarr=True)` 需
+zarr ≥ 3，但環境為 zarr 2.18.7。
+
+**修復**（`xenium_exporter.py`）：重寫 `_load_he_image()`，改用 **tiled file-seek 讀取**：
+- 解析 BTF tile offsets + bytecounts（不依賴 zarr）
+- 只讀覆蓋 4 ROI 聯合邊界框的必要 tiles（約 880 tiles，大幅節省記憶體）
+- `he_crop_bounds = (x0, y0, x1, y1)` 由 `api/export.py` 計算並傳入
+- Transform：`Sequence([Scale([px, px]), Translation([y0*px, x0*px])])` 確保影像
+  在 Xenium Explorer 中與細胞多邊形正確對齊
+
+### 產出檔案
+
+| 路徑 | 說明 |
+|------|------|
+| `results/export/xenium/` | Xenium Explorer bundle（10592 個多邊形，4621 個細胞，H&E 影像） |
+| `results/analysis/combined_all_rois.json` | 含全域座標偏移的合併 GeoJSON |
+
+### 修改檔案
+
+| 檔案 | 變更 |
+|------|------|
+| `backend/src/export/xenium_exporter.py` | 新增 `_create_dummy_image()`、`_load_he_image()` tiled 讀取、`he_image_path`/`he_crop_bounds` 參數 |
+| `backend/src/api/export.py` | 新增 `_translate_coords()`/`_translate_geojson_feature()`；合併模式計算 ROI 全域偏移與 BTF 裁切範圍 |
