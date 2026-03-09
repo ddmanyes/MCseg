@@ -1,4 +1,4 @@
-# visiumHD Pipeline 3 — 開發進度總結（更新：2026-03-09 Session 6）
+# visiumHD Pipeline 3 — 開發進度總結（更新：2026-03-09 Session 7）
 
 ---
 
@@ -15,7 +15,53 @@
 
 ---
 
+## 本 Session 完成（2026-03-09 Session 7）
+
+### 清理：移除 Eosin Watershed / Cyto Mask 功能
+
+Pipeline 3 不使用 Proseg，`cyto_mask.npy` 無任何下游消費者，相關程式碼確認為死碼。
+Git commit: `03c8b32`
+
+**移除清單（4 檔案）：**
+- `Stage1_Segmentation.tsx`：「後處理」Section（Toggle + NumberInput）、`previewCyto`/`quickCyto` state、preview tab 的 cyto 分頁、`RoiOverride.eosin_bg_threshold` 欄位
+- `backend/src/api/segmentation.py`：`PreviewRequest` eosin 欄位、`_apply_overrides` postproc 區塊、三處端點的 cyto 計算與回傳
+- `backend/src/segmentation/cellpose_runner.py`：`run_eosin_watershed()` 整個函式、`cyto_mask.npy` 儲存邏輯、`_ROI_OVERRIDE_FIELD_MAP` eosin 欄位、`watershed` import
+- `config/pipeline.yaml`：`enable_eosin_watershed`、`eosin_bg_threshold`
+
+### 修正：文件 / start.sh / main.py Pipeline 2 殘留
+
+Git commit: `19d6e8b`
+
+| 檔案 | 問題 | 修正 |
+|------|------|------|
+| `start.sh` | 標題、venv 路徑、port 全指向 Pipeline 2/8000 | 統一改為 Pipeline 3/8001（8 處） |
+| `README.md` | Stage 1 描述含「Eosin 染色分析與分水嶺演算法」 | 刪除 |
+| `backend/main.py` | docstring `--port 8000` | 改為 `--port 8001` |
+
+### Code Review：消除 `0.2737` 硬編碼
+
+Git commit: `d42de67`
+
+4 個檔案（`api/roi.py`、`api/export.py`、`analysis/pipeline.py`、`roi/extractor.py`）共 11 處硬編碼 `0.2737` 改為 `VISIUM_UM_PX`（來自 `utils/constants.py`）。`roi.py`、`export.py`、`pipeline.py` 補上缺少的 import。
+
+### 確認：先前 Code Review 14 個 Bug 全部已修
+
+| 嚴重度 | Bug | 狀態 |
+|--------|-----|------|
+| CRITICAL | `Header.tsx` stale routes | ✅ 已修（TopNav.tsx 重建） |
+| CRITICAL | `export.py` UnboundLocalError | ✅ 已修（None 初始化） |
+| HIGH | `cell_area` vs `cell_area_um2` | ✅ 設計如此，無需修改 |
+| HIGH | `asyncio.get_event_loop()` 8 處 | ✅ 全改 `get_running_loop()` |
+| HIGH | Export 缺 asyncio.Lock | ✅ `_xenium_lock`/`_loupe_lock` 已加 |
+| HIGH | `counter.py` VISIUM_UM_PX 硬編碼 | ✅ 從 constants import |
+| HIGH | `Stage2_Count.tsx` 缺 try/catch | ✅ 已加 |
+| MEDIUM | `0.2737` 硬編碼（4 檔, 11 處） | ✅ 本 Session 修復 |
+
+---
+
 ## 本 Session 完成（2026-03-09 Session 6）
+
+
 
 ### Code Review 修正（全部 CRITICAL + HIGH + MEDIUM）
 
