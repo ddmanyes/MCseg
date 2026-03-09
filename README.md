@@ -60,7 +60,7 @@ Pipeline 3 共 6 個步驟，透過左側選單（或頂部進度條）在頁面
 ### 🦠 Stage 1: 細胞分割 (Segmentation)
 
 - **用途**：利用高解析度 H&E 影像標定細胞核與細胞質範圍。
-- **操作說明**：調用 **Cellpose**（可選 `nuclei` 或 `cyto2` 模型）對影像進行 tile-based 分割，並套用 Eosin 染色分析與分水嶺演算法優化邊界。
+- **操作說明**：調用 **Cellpose**（可選 `nuclei` 或 `cyto2` 模型）對影像進行 tile-based 分割，支援多 ROI 平行執行。
 - **輸出**：`segmentation_masks.npy`（H×W 整數陣列，像素值 = cell ID）
 
 ### 🧬 Stage 2: RNA 計數 (RNA Count)

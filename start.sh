@@ -1,5 +1,5 @@
 #!/bin/bash
-# VisiumHD Pipeline 2 — 一鍵啟動（開發模式）
+# VisiumHD Pipeline 3 — 一鍵啟動（開發模式）
 # 使用方式：bash start.sh
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 # 顏色
 RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
-echo -e "${BLUE}VisiumHD Pipeline 2${NC}"
+echo -e "${BLUE}VisiumHD Pipeline 3${NC}"
 echo "Root: $ROOT"
 
 # 檢查 uv
@@ -17,7 +17,7 @@ if ! command -v uv &>/dev/null; then
 fi
 
 # ExFAT 防護：把 .venv 實體放在本機 APFS（避免 ._* resource fork 破壞安裝）
-LOCAL_VENV="$HOME/.venvs/visiumHD_pipeline_2"
+LOCAL_VENV="$HOME/.venvs/visiumHD_pipeline_3"
 VENV_DIR="$ROOT/.venv"
 export UV_CACHE_DIR="$HOME/.cache/uv"
 
@@ -36,14 +36,14 @@ else
 fi
 
 # 清除舊行程（避免 Address already in use）
-echo -e "${YELLOW}清除舊行程（port 8000/3000）...${NC}"
-lsof -ti:8000,3000 | xargs kill -9 2>/dev/null || true
+echo -e "${YELLOW}清除舊行程（port 8001/3000）...${NC}"
+lsof -ti:8001,3000 | xargs kill -9 2>/dev/null || true
 sleep 1
 
 # 啟動後端（背景）
-echo -e "${GREEN}[1/2] 啟動後端（port 8000）...${NC}"
+echo -e "${GREEN}[1/2] 啟動後端（port 8001）...${NC}"
 cd "$ROOT"
-uv run uvicorn backend.main:app --reload --port 8000 &
+uv run uvicorn backend.main:app --reload --port 8001 &
 BACKEND_PID=$!
 
 # 等待後端健康確認（最多 10 秒）
@@ -52,7 +52,7 @@ BACKEND_OK=false
 for i in $(seq 1 10); do
     sleep 1
     echo -n "."
-    if curl -sf http://localhost:8000/api/health &>/dev/null; then
+    if curl -sf http://localhost:8001/api/health &>/dev/null; then
         BACKEND_OK=true
         break
     fi
@@ -66,7 +66,7 @@ echo ""
 if [ "$BACKEND_OK" = false ]; then
     echo -e "${RED}❌ 後端啟動失敗！請嘗試手動修復：${NC}"
     echo -e "${YELLOW}  rm -rf .venv${NC}"
-    echo -e "${YELLOW}  mkdir -p ~/.venvs/visiumHD_pipeline_2 && ln -s ~/.venvs/visiumHD_pipeline_2 .venv${NC}"
+    echo -e "${YELLOW}  mkdir -p ~/.venvs/visiumHD_pipeline_3 && ln -s ~/.venvs/visiumHD_pipeline_3 .venv${NC}"
     echo -e "${YELLOW}  UV_CACHE_DIR=~/.cache/uv uv sync${NC}"
     kill "$BACKEND_PID" 2>/dev/null || true
     exit 1
@@ -104,9 +104,9 @@ done
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  後端 API:  http://localhost:8000${NC}"
-echo -e "${GREEN}  前端 UI:   http://localhost:3000${NC}"
-echo -e "${GREEN}  API Docs:  http://localhost:8000/docs${NC}"
+echo -e "${GREEN}  後端 API:  http://localhost:8001${NC}"
+  echo -e "${GREEN}  前端 UI:   http://localhost:3000${NC}"
+  echo -e "${GREEN}  API Docs:  http://localhost:8001/docs${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "按 Ctrl+C 停止所有服務"

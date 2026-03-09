@@ -2,7 +2,7 @@
 VisiumHD Pipeline 3 — FastAPI 主應用程式
 
 啟動方式：
-    uv run uvicorn backend.main:app --reload --port 8000
+    uv run uvicorn backend.main:app --reload --port 8001
 """
 import asyncio
 import json
