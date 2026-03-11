@@ -13,6 +13,7 @@ export const getConfig = () => api.get('/config')
 export const scanData = (body: { data_root: string }) => api.post('/data/scan', body)
 export const applyData = (paths: object) => api.post('/data/apply', paths)
 export const getDataStatus = () => api.get('/data/status')
+export const getOutputDir = () => api.get('/data/output-dir')
 export const browseDir = (path: string) => api.get('/data/browse', { params: { path } })
 export const getDiskStatus = () => api.get('/data/disk-status')
 
@@ -40,14 +41,20 @@ export const runCellposeCount = (roiName: string | null) =>
 export const getCellposeCountStatus = () => api.get('/count/status')
 export const listCountRois = () => api.get('/count/available_rois')
 
+// Stage 2.5: Proseg RNA 重分配
+export const runProsegRNA = (roiName: string | null) =>
+  api.post('/proseg_rna/run', roiName ? { roi_name: roiName } : {})
+export const getProsegRNAStatus = () => api.get('/proseg_rna/status')
+export const listProsegRNARois = () => api.get('/proseg_rna/available_rois')
+
 // Stage 3: Analysis (舊版整合執行)
 export const runAnalysis = (params?: object) => api.post('/analysis/run', params ?? {})
 export const getAnalysisStatus = () => api.get('/analysis/status')
 export const getUmap = () => api.get('/analysis/umap')
 
 // Stage 3: 原始分布直方圖
-export const getRawHistogram = (roiName?: string, mergeRois?: boolean) =>
-  api.get('/analysis/raw_histogram', { params: { roi_name: roiName, merge_rois: mergeRois } })
+export const getRawHistogram = (roiName?: string, mergeRois?: boolean, source?: string) =>
+  api.get('/analysis/raw_histogram', { params: { roi_name: roiName, merge_rois: mergeRois, source } })
 
 // Stage 3: Step 1 — QC 前處理
 export const runQC = (params?: object) => api.post('/analysis/run_qc', params ?? {})

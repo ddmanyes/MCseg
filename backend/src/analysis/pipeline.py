@@ -178,7 +178,7 @@ def refine_immune_labels(
 
 def merge_all_rois(config: dict[str, Any]) -> Path:
     """
-    合併所有 ROI 的 proseg_cells.h5ad，並將 local µm 座標加回全局偏移。
+    合併所有 ROI 的 cellpose_cells.h5ad，並將 local µm 座標加回全局偏移。
 
     同一 H&E + Visium 來源不需要 batch correction。
     輸出：{output_dir}/merged_all_rois.h5ad
@@ -196,9 +196,9 @@ def merge_all_rois(config: dict[str, Any]) -> Path:
     adatas = []
     for roi in rois:
         roi_name = roi.get("name", "")
-        h5ad = out_base / roi_name / "proseg_cells.h5ad"
+        h5ad = out_base / roi_name / "cellpose_cells.h5ad"
         if not h5ad.exists():
-            logger.warning(f"找不到 {roi_name}/proseg_cells.h5ad，跳過")
+            logger.warning(f"找不到 {roi_name}/cellpose_cells.h5ad，跳過")
             continue
 
         adata = sc.read_h5ad(str(h5ad))
@@ -226,7 +226,7 @@ def merge_all_rois(config: dict[str, Any]) -> Path:
         adatas.append(adata)
 
     if not adatas:
-        raise ValueError("未找到任何 ROI 的 proseg_cells.h5ad，請先完成 Stage 3")
+        raise ValueError("未找到任何 ROI 的 cellpose_cells.h5ad，請先完成 Stage 2 RNA 計數")
 
     if len(adatas) == 1:
         merged = adatas[0]
@@ -410,13 +410,76 @@ def _save_roi_overlay_images(
     logger.info(f"已儲存 {post_path.name}")
 
 
+def _generate_roi_comparison_grid(
+    roi_names: list[str],
+    fig_dir: Path,
+) -> str | None:
+    """將所有 ROI 的 pre/post QC 疊圖並排成一張比較圖。
+
+    讀取已存在的 overlay_{roi_name}_pre_qc.png 及 overlay_{roi_name}_post_qc.png，
+    排列為 (N_rois × 2) grid：左欄=Pre-QC，右欄=Post-QC。
+
+    Returns
+    -------
+    str | None  base64 PNG 字串；若無任何圖片可讀取則回傳 None。
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.image as mpimg
+
+    valid_roi_names = []
+    for rn in roi_names:
+        pre  = fig_dir / f"overlay_{rn}_pre_qc.png"
+        post = fig_dir / f"overlay_{rn}_post_qc.png"
+        if pre.exists() and post.exists():
+            valid_roi_names.append(rn)
+        else:
+            logger.warning(f"_generate_roi_comparison_grid：找不到 {rn} 的疊圖，跳過")
+
+    if not valid_roi_names:
+        logger.warning("_generate_roi_comparison_grid：無任何 ROI 疊圖可合成比較圖")
+        return None
+
+    n_rows = len(valid_roi_names)
+    fig, axes = plt.subplots(
+        n_rows, 2,
+        figsize=(14, 6 * n_rows),
+        squeeze=False,
+    )
+
+    for row, rn in enumerate(valid_roi_names):
+        pre_img  = mpimg.imread(str(fig_dir / f"overlay_{rn}_pre_qc.png"))
+        post_img = mpimg.imread(str(fig_dir / f"overlay_{rn}_post_qc.png"))
+
+        ax_pre  = axes[row][0]
+        ax_post = axes[row][1]
+
+        ax_pre.imshow(pre_img)
+        ax_pre.set_title(f"{rn}  ·  Pre-QC", fontsize=10, fontweight="bold")
+        ax_pre.axis("off")
+
+        ax_post.imshow(post_img)
+        ax_post.set_title(f"{rn}  ·  Post-QC", fontsize=10, fontweight="bold")
+        ax_post.axis("off")
+
+    plt.suptitle("QC 前後細胞輪廓比較（所有 ROI）", fontsize=13, fontweight="bold", y=1.01)
+    plt.tight_layout()
+
+    out_path = fig_dir / "roi_comparison_grid.png"
+    fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"已儲存多 ROI 輪廓比較圖：{out_path.name}")
+    return _encode_image(out_path)
+
+
 # ─────────────────────── Step 1: QC + PCA ─────────────────────────
 
 def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
     """
     Step 1：QC 前處理 + PCA。
 
-    流程：載入 proseg_cells.h5ad → 計算 QC 指標 → 繪 violin / scatter →
+    流程：載入 cellpose_cells.h5ad → 計算 QC 指標 → 繪 violin / scatter →
     過濾細胞基因 → normalize → HVG → PCA → 繪 elbow → 儲存 qc_preprocessed.h5ad
 
     Returns
@@ -437,6 +500,10 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
     fig_dir = resolve_path(paths["figure_dir"])
     fig_dir.mkdir(parents=True, exist_ok=True)
 
+    # 決定輸入 h5ad 來源（cellpose / proseg）
+    input_source = analysis_cfg.get("input_source", "cellpose")
+    input_h5ad_name = f"{input_source}_cells.h5ad"
+
     # 多 ROI 合併模式
     merge_mode = analysis_cfg.get("merge_rois", False) and len(rois) > 1
     if merge_mode:
@@ -449,13 +516,28 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
         logger.info(f"QC Step（合併模式）：載入 {input_h5ad}")
     else:
         roi_name = rois[0].get("name", "test")
-        input_h5ad = out_base / roi_name / "proseg_cells.h5ad"
+        input_h5ad = out_base / roi_name / input_h5ad_name
         if not input_h5ad.exists():
-            raise FileNotFoundError(f"找不到 Proseg 輸出：{input_h5ad}")
-        logger.info(f"QC Step：載入 {input_h5ad}")
+            if input_source == "proseg":
+                fallback = out_base / roi_name / "cellpose_cells.h5ad"
+                if fallback.exists():
+                    logger.warning(
+                        f"找不到 {input_h5ad_name}，自動 fallback 至 cellpose_cells.h5ad"
+                    )
+                    input_h5ad = fallback
+                    input_h5ad_name = "cellpose_cells.h5ad"
+                else:
+                    raise FileNotFoundError(
+                        f"找不到 {input_h5ad_name} 也無 cellpose_cells.h5ad：{input_h5ad}"
+                    )
+            else:
+                raise FileNotFoundError(f"找不到 Cellpose 計數輸出：{input_h5ad}")
+        logger.info(f"QC Step：載入 {input_h5ad}（input_source={input_source}）")
 
     adata = sc.read_h5ad(str(input_h5ad))
-    adata.uns["dataset_name"] = "proseg_cells"
+    adata.uns["dataset_name"] = input_h5ad_name.replace(".h5ad", "")
+    if roi_name is not None:
+        adata.uns["active_roi"] = roi_name
     logger.info(f"  {adata.n_obs:,} 細胞, {adata.n_vars:,} 基因")
 
     preprocessor = Preprocessor(analysis_cfg)
@@ -535,7 +617,7 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
     if adata.n_obs < 3:
         raise ValueError(
             f"QC 過濾後僅剩 {adata.n_obs} 顆細胞，無法繼續分析。\n"
-            "建議降低 min_counts / min_genes 門檻，或檢查 Proseg 分析結果品質。\n"
+            "建議降低 min_counts / min_genes 門檻，或檢查 Cellpose 計數結果品質。\n"
             f"目前參數：min_genes={qc_params.get('min_genes')}, "
             f"min_counts={qc_params.get('min_counts')}, "
             f"max_pct_mito={qc_params.get('max_pct_mito')}"
@@ -626,6 +708,13 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
             except Exception as e:
                 logger.warning(f"合併模式疊圖生成失敗（{rn}）：{e}")
 
+        # 所有 ROI 疊圖完成後，生成並排輪廓比較圖
+        roi_names_list = [r.get("name", "") for r in rois if r.get("name")]
+        comparison_b64 = _generate_roi_comparison_grid(roi_names_list, fig_dir)
+        if comparison_b64 is not None:
+            figures["roi_comparison"] = comparison_b64
+            logger.info("合併模式：已生成多 ROI 輪廓比較圖（roi_comparison）")
+
     # ── 7. 儲存前處理結果 ──
     _fix_log1p(adata)
     qc_h5ad = output_dir / "qc_preprocessed.h5ad"
@@ -687,8 +776,12 @@ def run_umap_step(
         n_clusters = adata.obs[key].nunique()
 
         fig_single, ax_single = plt.subplots(figsize=(7, 6))
-        sc.pl.umap(adata, color=key, ax=ax_single, show=False,
-                   title=f"Resolution = {res}  ({n_clusters} clusters)")
+        sc.pl.umap(
+            adata, color=key, ax=ax_single, show=False,
+            title=f"Resolution = {res}  ({n_clusters} clusters)",
+            frameon=False, legend_loc="on data",
+            legend_fontsize=10, legend_fontoutline=2, size=15, alpha=0.8
+        )
         plt.tight_layout()
         single_path = fig_dir / f"umap_res{res}.png"
         fig_single.savefig(str(single_path), dpi=150, bbox_inches="tight")
@@ -705,8 +798,12 @@ def run_umap_step(
         row, col = divmod(i, ncols)
         ax = axes[row][col]
         n_clusters = adata.obs[key].nunique()
-        sc.pl.umap(adata, color=key, ax=ax, show=False,
-                   title=f"Res={res} ({n_clusters} clusters)")
+        sc.pl.umap(
+            adata, color=key, ax=ax, show=False,
+            title=f"Res={res} ({n_clusters} clusters)",
+            frameon=False, legend_loc="on data",
+            legend_fontsize=8, legend_fontoutline=1.5, size=10, alpha=0.8
+        )
     for i in range(n, nrows * ncols):
         row, col = divmod(i, ncols)
         axes[row][col].set_visible(False)
@@ -1287,17 +1384,17 @@ def run_analysis_pipeline(config: dict[str, Any]) -> ad.AnnData:
     paths = config["paths"]
     analysis_cfg = config.get("analysis", {})
 
-    # 確定輸入 h5ad（Proseg 輸出）
+    # 確定輸入 h5ad（Cellpose 計數輸出）
     out_base = resolve_path(paths["output_dir"]) / "roi"
     roi_name = config.get("rois", [{"name": "text"}])[0].get("name", "text")
-    input_h5ad = out_base / roi_name / "proseg_cells.h5ad"
+    input_h5ad = out_base / roi_name / "cellpose_cells.h5ad"
 
     if not input_h5ad.exists():
-        raise FileNotFoundError(f"找不到 Proseg 輸出：{input_h5ad}")
+        raise FileNotFoundError(f"找不到 Cellpose 計數輸出：{input_h5ad}")
 
     logger.info(f"載入資料：{input_h5ad}")
     adata = sc.read_h5ad(str(input_h5ad))
-    adata.uns["dataset_name"] = "proseg_cells"
+    adata.uns["dataset_name"] = "cellpose_cells"
     logger.info(f"  {adata.n_obs:,} 細胞, {adata.n_vars:,} 基因")
 
     # 預處理
@@ -1334,9 +1431,15 @@ def _save_figures(adata: ad.AnnData, fig_dir: Path, analysis_cfg: dict) -> None:
     # UMAP
     if "X_umap" in adata.obsm:
         fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-        sc.pl.umap(adata, color="cluster", ax=axes[0], show=False, title="Leiden Clusters")
+        sc.pl.umap(
+            adata, color="cluster", ax=axes[0], show=False, title="Leiden Clusters",
+            frameon=False, legend_loc="on data", legend_fontsize=10, legend_fontoutline=2, size=15, alpha=0.8
+        )
         if "total_counts" in adata.obs:
-            sc.pl.umap(adata, color="total_counts", ax=axes[1], show=False, title="Total Counts")
+            sc.pl.umap(
+                adata, color="total_counts", ax=axes[1], show=False, title="Total Counts",
+                frameon=False, cmap="magma", size=15, alpha=0.8
+            )
         plt.tight_layout()
         fig.savefig(str(fig_dir / "umap.png"), dpi=dpi, bbox_inches="tight")
         plt.close(fig)

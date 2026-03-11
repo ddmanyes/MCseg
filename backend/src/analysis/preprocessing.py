@@ -13,6 +13,33 @@ import scanpy as sc
 logger = logging.getLogger("pipeline.preprocessing")
 
 
+def _remove_zero_var_hvg(adata: ad.AnnData) -> None:
+    """scale 後將 HVG 中方差為零的基因標記為非 HVG，避免 ARPACK near-singularity 錯誤。
+    僅計算 HVG 子集的方差，不對全矩陣密集化，避免 OOM。
+    """
+    if "highly_variable" not in adata.var:
+        return
+    import scipy.sparse as sp
+    hvg_idx = np.where(adata.var["highly_variable"].values)[0]
+    if len(hvg_idx) == 0:
+        return
+    X_hvg = adata.X[:, hvg_idx]
+    # 分批計算每欄方差，避免一次密集化整個 HVG 矩陣造成 OOM
+    if sp.issparse(X_hvg):
+        # 稀疏矩陣：E[X^2] - E[X]^2，逐欄計算
+        mean_sq = np.asarray(X_hvg.power(2).mean(axis=0)).ravel()
+        mean_   = np.asarray(X_hvg.mean(axis=0)).ravel()
+        var_vals = mean_sq - mean_ ** 2
+    else:
+        var_vals = X_hvg.var(axis=0)
+    zero_var_mask = var_vals == 0
+    n_zero = int(zero_var_mask.sum())
+    if n_zero:
+        col_loc = adata.var.columns.get_loc("highly_variable")
+        adata.var.iloc[hvg_idx[zero_var_mask], col_loc] = False
+        logger.warning(f"移除 {n_zero} 個零方差 HVG（scale 後方差為 0），避免 PCA 奇異矩陣")
+
+
 class Preprocessor:
     """
     預處理器，統一處理所有資料集的 QC 與正規化
@@ -150,16 +177,29 @@ class Preprocessor:
                 adata.var["highly_variable"] = True
                 return adata
 
-            sc.pp.highly_variable_genes(
-                adata,
-                n_top_genes=n_top_genes,
-                flavor=flavor,
-                layer="counts"
-            )
+            try:
+                sc.pp.highly_variable_genes(
+                    adata,
+                    n_top_genes=n_top_genes,
+                    flavor=flavor,
+                    layer="counts"
+                )
+            except (ValueError, BaseException) as e:
+                # seurat_v3 內部使用 LOESS 迴歸，當資料稀疏或平均 UMI 極低時會產生
+                # 「near singularities」錯誤（bytes 格式）。Fallback 至 seurat flavor
+                logger.warning(
+                    f"seurat_v3 HVG 失敗（{e!r}），"
+                    "資料可能過於稀疏（平均 UMI 低），改用 seurat flavor"
+                )
+                sc.pp.highly_variable_genes(
+                    adata,
+                    n_top_genes=min(n_top_genes, adata.n_vars),
+                    flavor="seurat"
+                )
         else:
             sc.pp.highly_variable_genes(
                 adata,
-                n_top_genes=n_top_genes,
+                n_top_genes=min(n_top_genes, adata.n_vars),
                 flavor="seurat"
             )
 
@@ -198,10 +238,45 @@ class Preprocessor:
         # OOM 防護: 針對大型資料集跳過密集化縮放 (Dense Scaling)
         if adata.n_obs > 100000:
             logger.warning(f"資料集過大 ({adata.n_obs:,} > 100k)，跳過 sc.pp.scale 以避免記憶體不足")
-            sc.tl.pca(adata, n_comps=n_pcs, svd_solver='arpack')
         else:
             sc.pp.scale(adata, max_value=10)
-            sc.tl.pca(adata, n_comps=n_pcs)
+
+        # scale（或跳過 scale）後：清除殘餘 NaN/Inf（避免奇異矩陣）
+        if hasattr(adata.X, "toarray"):
+            pass  # sparse 理論上不含 NaN
+        else:
+            import numpy as _np
+            if _np.isnan(adata.X).any() or _np.isinf(adata.X).any():
+                adata.X = _np.nan_to_num(adata.X, nan=0.0, posinf=10.0, neginf=-10.0)
+                logger.warning("scale 後偵測到 NaN/Inf，已替換為 0/±10")
+
+        # scale（或跳過 scale）後移除零方差 HVG，避免 ARPACK near-singularity 錯誤
+        _remove_zero_var_hvg(adata)
+
+        # 重新計算 n_pcs 上限（HVG 數量可能因零方差過濾而減少）
+        n_hvg = int(adata.var["highly_variable"].sum()) if "highly_variable" in adata.var else adata.n_vars
+        n_pcs = min(n_pcs, min(adata.n_obs, n_hvg) - 1)
+        n_pcs = max(1, n_pcs)
+
+        try:
+            sc.tl.pca(adata, n_comps=n_pcs, svd_solver='arpack')
+        except BaseException as arpack_err:
+            # ARPACK 對近奇異矩陣可能失敗。
+            # 注意：對稀疏資料 svd_solver='randomized' 會被 scanpy 忽略並再次使用 ARPACK，
+            # 因此改用 zero_center=False 強制走 sklearn TruncatedSVD（隨機化算法，絕不使用 ARPACK）
+            logger.warning(
+                f"ARPACK PCA 失敗（{arpack_err!r}），改用 TruncatedSVD (zero_center=False)"
+            )
+            try:
+                sc.tl.pca(adata, n_comps=n_pcs, zero_center=False)
+            except BaseException as fallback_err:
+                # 最後防線：進一步減少 n_pcs 再試
+                safe_pcs = max(1, n_pcs // 2)
+                logger.warning(
+                    f"TruncatedSVD (n_pcs={n_pcs}) 失敗（{fallback_err!r}），"
+                    f"縮減至 n_pcs={safe_pcs} 再試"
+                )
+                sc.tl.pca(adata, n_comps=safe_pcs, zero_center=False)
 
         logger.info(f"  - 主成分數: {n_pcs}")
 

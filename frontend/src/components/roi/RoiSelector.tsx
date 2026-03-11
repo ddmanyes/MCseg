@@ -27,26 +27,87 @@ export default function RoiSelector({ onSelect, existingRois = [] }: Props) {
   // ── 初始化 OSD（mount 一次）────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return
+    let active = true
 
-    const viewer = new OpenSeadragon.Viewer({
-      element: containerRef.current,
-      tileSources: '/api/roi/dzi',
-      showNavigationControl: false,
-      showNavigator: true,
-      navigatorPosition: 'BOTTOM_RIGHT',
-      gestureSettingsMouse: {
-        clickToZoom:    false,
-        dblClickToZoom: true,
-        scrollToZoom:   true,
-      },
-    })
+    const t = Date.now();
+    fetch(`/api/roi/dzi?t=${t}`)
+      .then(res => res.text())
+      .then(xmlStr => {
+        if (!active || !containerRef.current) return;
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(xmlStr, "application/xml");
+        const image = doc.getElementsByTagName("Image")[0];
+        const size = doc.getElementsByTagName("Size")[0];
 
-    viewer.addHandler('open', () => setReady(true))
-    viewerRef.current = viewer
+        if (!image || !size) {
+            console.error("Failed to parse DZI XML", xmlStr);
+            return;
+        }
+
+        const width = Number(size.getAttribute("Width"));
+        const height = Number(size.getAttribute("Height"));
+        const tileSize = Number(image.getAttribute("TileSize")) || 256;
+        const overlap = Number(image.getAttribute("Overlap")) || 1;
+        const format = image.getAttribute("Format") || "jpeg";
+
+        const viewer = new OpenSeadragon.Viewer({
+          element: containerRef.current,
+          showNavigationControl: false,
+          showNavigator: true,
+          navigatorPosition: 'BOTTOM_RIGHT',
+          gestureSettingsMouse: {
+            clickToZoom:    false,
+            dblClickToZoom: true,
+            scrollToZoom:   true,
+          },
+          tileSources: {
+            Image: {
+              xmlns: "http://schemas.microsoft.com/deepzoom/2008",
+              Url: `/api/roi/dzi_files/`,
+              Format: format,
+              Overlap: overlap.toString(),
+              TileSize: tileSize.toString(),
+              Size: {
+                Width: width.toString(),
+                Height: height.toString()
+              }
+            }
+          }
+        })
+
+        // Monkey-patch getTileUrl to inject the cache-buster query parameter
+        const patchTiledImage = () => {
+          const tiledImage = viewer.world.getItemAt(0);
+          if (tiledImage && tiledImage.source && !(tiledImage.source as any)._patched) {
+            const originalGetTileUrl = tiledImage.source.getTileUrl.bind(tiledImage.source);
+            tiledImage.source.getTileUrl = function(level: number, x: number, y: number) {
+              const url = originalGetTileUrl(level, x, y);
+              return `${url}?t=${t}`;
+            };
+            (tiledImage.source as any)._patched = true;
+          }
+        };
+
+        if (viewer.world.getItemCount() > 0) {
+          patchTiledImage();
+        } else {
+          viewer.world.addHandler('add-item', patchTiledImage);
+        }
+
+        viewer.addHandler('open', () => {
+           if (active) setReady(true);
+        });
+
+        viewerRef.current = viewer;
+      })
+      .catch(e => console.error("Failed to fetch DZI:", e));
 
     return () => {
-      viewer.destroy()
-      viewerRef.current = null
+      active = false;
+      if (viewerRef.current) {
+        viewerRef.current.destroy()
+        viewerRef.current = null
+      }
       setReady(false)
     }
   }, [])

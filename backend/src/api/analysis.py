@@ -38,8 +38,9 @@ class QCParams(BaseModel):
     max_pct_mito: Optional[float] = None
     n_top_genes: Optional[int] = None
     n_pcs: Optional[int] = None
-    merge_rois: Optional[bool] = None   # None = 使用 config 預設
+    merge_rois: Optional[bool] = None    # None = 使用 config 預設
     roi_name: Optional[str] = None       # 單一 ROI 模式時指定（None = 取第一個）
+    input_source: Optional[str] = None   # "cellpose"（預設）或 "proseg"
 
 
 class UMAPExploreParams(BaseModel):
@@ -168,8 +169,12 @@ def _load_disk_images(keys_paths: list[tuple[str, Path]]) -> dict[str, str]:
 
 # ─────────────────────── raw_histogram ────────────────────────────
 
-def _find_raw_h5ad(roi_dir: Path) -> "Path | None":
-    """尋找 ROI 目錄內的原始 h5ad（優先 cellpose_cells，次選 adata_002um/008um）。"""
+def _find_raw_h5ad(roi_dir: Path, source: str = "cellpose") -> "Path | None":
+    """尋找 ROI 目錄內的原始 h5ad，依 source 選擇對應檔案。"""
+    if source == "proseg":
+        p = roi_dir / "proseg_cells.h5ad"
+        return p if p.exists() else None
+    # cellpose（預設）
     for name in ("cellpose_cells.h5ad", "adata_002um.h5ad", "adata_008um.h5ad"):
         p = roi_dir / name
         if p.exists():
@@ -207,8 +212,10 @@ def _hist_metric(arr: "np.ndarray", label: str, unit: str = "", n_bins: int = 60
 
 
 @router.get("/raw_histogram")
-async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = False):
-    """讀取原始 h5ad，on-the-fly 計算 QC metrics，回傳直方圖 JSON 供前端 SVG 渲染。"""
+async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = False, source: str = "cellpose"):
+    """讀取原始 h5ad，on-the-fly 計算 QC metrics，回傳直方圖 JSON 供前端 SVG 渲染。
+    source: 'cellpose'（cellpose_cells.h5ad）或 'proseg'（proseg_cells.h5ad）
+    """
     import numpy as np
     import anndata as ad
     import scanpy as sc
@@ -219,22 +226,25 @@ async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = F
     rois = config.get("rois", [])
 
     try:
+        src = source if source in ("cellpose", "proseg") else "cellpose"
         if merge_rois and len(rois) > 1:
             adatas = []
             for roi in rois:
-                h5ad = _find_raw_h5ad(out_base / roi.get("name", ""))
+                h5ad = _find_raw_h5ad(out_base / roi.get("name", ""), src)
                 if h5ad:
                     adatas.append(sc.read_h5ad(str(h5ad)))
             if not adatas:
-                return {"status": "error", "message": "找不到任何 ROI 的 h5ad 檔"}
+                src_label = "proseg_cells.h5ad" if src == "proseg" else "cellpose_cells.h5ad"
+                return {"status": "error", "message": f"找不到任何 ROI 的 {src_label}（請先完成對應 Stage）"}
             adata = ad.concat(adatas, join="outer", fill_value=0) if len(adatas) > 1 else adatas[0]
         else:
             target = roi_name or (rois[0].get("name") if rois else None)
             if not target:
                 return {"status": "error", "message": "未指定 ROI"}
-            h5ad = _find_raw_h5ad(out_base / target)
+            h5ad = _find_raw_h5ad(out_base / target, src)
+            src_label = "proseg_cells.h5ad" if src == "proseg" else "cellpose_cells.h5ad"
             if not h5ad:
-                return {"status": "error", "message": f"找不到 {target} 的 h5ad 檔（請先完成 Stage 1-2）"}
+                return {"status": "error", "message": f"找不到 {target} 的 {src_label}（請先完成對應 Stage）"}
             adata = sc.read_h5ad(str(h5ad))
 
         # 計算 QC metrics（不過濾，只計算分布）
@@ -281,11 +291,12 @@ async def get_qc_images():
         try:
             fig_dir = _get_fig_dir()
             _qc_images = _load_disk_images([
-                ("violin",   fig_dir / "qc_violin.png"),
-                ("scatter",  fig_dir / "qc_scatter.png"),
-                ("elbow",    fig_dir / "pca_elbow.png"),
-                ("pre_qc",   fig_dir / "overlay_pre_qc.png"),
-                ("post_qc",  fig_dir / "overlay_post_qc.png"),
+                ("violin",          fig_dir / "qc_violin.png"),
+                ("scatter",         fig_dir / "qc_scatter.png"),
+                ("elbow",           fig_dir / "pca_elbow.png"),
+                ("pre_qc",          fig_dir / "overlay_pre_qc.png"),
+                ("post_qc",         fig_dir / "overlay_post_qc.png"),
+                ("roi_comparison",  fig_dir / "roi_comparison_grid.png"),
             ])
         except Exception:
             pass
@@ -318,8 +329,9 @@ async def _run_qc(config: dict):
         result = await asyncio.get_running_loop().run_in_executor(None, run_qc_step, config)
         _qc_images = result
         _qc_status = {"status": "done", "progress": 1.0, "message": f"QC 完成，已產生 {len(result)} 張圖表"}
-    except Exception as e:
-        logger.error(f"QC Step 失敗：{e}")
+    except BaseException as e:
+        import traceback
+        logger.error(f"QC Step 失敗：{e!r}\n{traceback.format_exc()}")
         _qc_status = {"status": "error", "progress": 0.0, "message": str(e)}
 
 
@@ -336,6 +348,8 @@ async def run_qc(background_tasks: BackgroundTasks, params: Optional[QCParams] =
         # 分析來源選擇（in-memory 覆寫，不寫回 state）
         if params.merge_rois is not None:
             config.setdefault("analysis", {})["merge_rois"] = params.merge_rois
+        if params.input_source is not None:
+            config.setdefault("analysis", {})["input_source"] = params.input_source
         if params.roi_name is not None and not params.merge_rois:
             # 將指定 ROI 移至列表第一位，供 run_qc_step 的 rois[0] 讀取
             rois = config.get("rois", [])
@@ -349,7 +363,7 @@ async def run_qc(background_tasks: BackgroundTasks, params: Optional[QCParams] =
 
 @router.get("/available_rois")
 async def get_available_rois():
-    """列出所有已有 cellpose_cells.h5ad 的 ROI（供 Stage 3 來源選擇）"""
+    """列出所有 ROI 的 cellpose / proseg 輸入來源可用狀態（供 Stage 3 來源選擇）"""
     try:
         config = load_config()
         from backend.src.utils.config import resolve_path
@@ -358,9 +372,19 @@ async def get_available_rois():
         result = []
         for roi in rois:
             name = roi.get("name", "")
-            h5ad = out_base / name / "cellpose_cells.h5ad"
-            result.append({"name": name, "available": h5ad.exists()})
-        return {"status": "ok", "data": result}  # noqa: E501
+            try:
+                has_cellpose = (out_base / name / "cellpose_cells.h5ad").exists()
+                has_proseg   = (out_base / name / "proseg_cells.h5ad").exists()
+                result.append({
+                    "name":         name,
+                    "available":    has_cellpose,
+                    "has_cellpose": has_cellpose,
+                    "has_proseg":   has_proseg,
+                })
+            except (PermissionError, OSError) as e:
+                logger.warning(f"跳過 {name}：{e}")
+                continue
+        return {"status": "ok", "data": result}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

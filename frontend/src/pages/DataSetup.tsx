@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { scanData, applyData, getDataStatus, browseDir } from '../api/client'
+import { scanData, applyData, getDataStatus, browseDir, getOutputDir } from '../api/client'
 import { FolderSearch, Check, AlertTriangle, HardDrive, FileSearch, FolderOpen, ChevronRight, ArrowUp, File, X } from 'lucide-react'
 
 // ── Types ──────────────────────────────────────────────────
@@ -16,7 +16,6 @@ interface ScanResult {
     he_image: DiscoveredFile | null
     binned_002: DiscoveredFile | null
     binned_008: DiscoveredFile | null
-    xenium_outs: DiscoveredFile | null
     extra_files: { path: string; label: string; size_human: string }[]
     warnings: string[]
 }
@@ -45,7 +44,6 @@ const FILE_LABELS: Record<string, string> = {
     he_image: 'H&E 影像（BTF/TIFF）',
     binned_002: 'Visium HD 2µm（square_002um）',
     binned_008: 'Visium HD 8µm（square_008um）',
-    xenium_outs: 'Xenium Outs（可選）',
 }
 
 // ── Folder Browser Modal ───────────────────────────────────
@@ -60,7 +58,6 @@ function FolderBrowser({
     const [browseData, setBrowseData] = useState<BrowseData | null>(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
-    const [editingPath, setEditingPath] = useState(false)
     const [pathInput, setPathInput] = useState('')
 
     const navigate = useCallback(async (path: string) => {
@@ -70,7 +67,7 @@ function FolderBrowser({
             const r = await browseDir(path)
             if (r.data.status === 'ok') {
                 setBrowseData(r.data.data)
-                setEditingPath(false)
+                setPathInput(r.data.data.current)
             } else {
                 setError(r.data.message)
             }
@@ -89,6 +86,11 @@ function FolderBrowser({
         if (pathInput.trim()) navigate(pathInput.trim())
     }
 
+    const QUICK_LOCATIONS = [
+        { label: '🏠 Home', path: '~' },
+        { label: '💾 /Volumes', path: '/Volumes' },
+        { label: '/', path: '/' },
+    ]
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-6">
@@ -104,42 +106,36 @@ function FolderBrowser({
                     </button>
                 </div>
 
-                {/* Current path bar — 點擊可直接輸入路徑 */}
-                <div className="px-5 py-2 border-b border-surface-border bg-surface/50">
-                    {editingPath ? (
-                        <div className="flex items-center gap-2">
-                            <input
-                                autoFocus
-                                value={pathInput}
-                                onChange={e => setPathInput(e.target.value)}
-                                onKeyDown={e => {
-                                    if (e.key === 'Enter') handlePathSubmit()
-                                    if (e.key === 'Escape') setEditingPath(false)
-                                }}
-                                placeholder="/Volumes/SSD/plan_a/tissue sample/CRC"
-                                className="flex-1 px-2 py-0.5 bg-surface border border-primary/50 rounded text-xs text-gray-200 font-mono focus:outline-none focus:border-primary"
-                            />
+                {/* 快捷位置 + 路徑輸入 */}
+                <div className="px-5 py-2.5 border-b border-surface-border bg-surface/50 space-y-2">
+                    {/* 快捷按鈕 */}
+                    <div className="flex items-center gap-1.5">
+                        {QUICK_LOCATIONS.map(loc => (
                             <button
-                                onClick={handlePathSubmit}
-                                className="px-2 py-0.5 bg-primary text-white rounded text-xs hover:bg-primary-dark transition-colors"
-                            >跳轉</button>
-                            <button
-                                onClick={() => setEditingPath(false)}
-                                className="text-gray-500 hover:text-gray-300 text-xs"
-                            >✕</button>
-                        </div>
-                    ) : (
+                                key={loc.path}
+                                onClick={() => navigate(loc.path)}
+                                className="px-2.5 py-0.5 bg-surface border border-surface-border rounded text-xs text-gray-300 hover:border-primary/60 hover:text-primary transition-colors"
+                            >
+                                {loc.label}
+                            </button>
+                        ))}
+                    </div>
+                    {/* 路徑輸入（始終顯示） */}
+                    <div className="flex items-center gap-2">
+                        <input
+                            value={pathInput}
+                            onChange={e => setPathInput(e.target.value)}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter') handlePathSubmit()
+                            }}
+                            placeholder="/Volumes/SSD/plan_a/tissue sample/CRC"
+                            className="flex-1 px-2 py-1 bg-surface border border-surface-border rounded text-xs text-gray-200 font-mono focus:outline-none focus:border-primary"
+                        />
                         <button
-                            onClick={() => { setPathInput(browseData?.current ?? ''); setEditingPath(true) }}
-                            className="w-full text-left group flex items-center gap-1"
-                            title="點擊直接輸入路徑"
-                        >
-                            <p className="text-xs text-gray-400 font-mono truncate group-hover:text-gray-200 transition-colors">
-                                {browseData?.current ?? '載入中...'}
-                            </p>
-                            <span className="text-xs text-gray-600 group-hover:text-primary transition-colors ml-1 flex-shrink-0">✎</span>
-                        </button>
-                    )}
+                            onClick={handlePathSubmit}
+                            className="px-3 py-1 bg-primary text-white rounded text-xs hover:bg-primary-dark transition-colors flex-shrink-0"
+                        >跳轉</button>
+                    </div>
                 </div>
 
                 {/* Content */}
@@ -222,15 +218,26 @@ export default function DataSetup() {
     const [dataRoot, setDataRoot] = useState('')
     const [scanning, setScanning] = useState(false)
     const [scanResult, setScanResult] = useState<ScanResult | null>(null)
+    const [scanError, setScanError] = useState('')
     const [applying, setApplying] = useState(false)
     const [applied, setApplied] = useState(false)
     const [pathStatus, setPathStatus] = useState<Record<string, PathStatus>>({})
     const [showBrowser, setShowBrowser] = useState(false)
 
+    // output dir state
+    const [outputDir, setOutputDir] = useState('')
+    const [showOutputBrowser, setShowOutputBrowser] = useState(false)
+    const [savingOutput, setSavingOutput] = useState(false)
+    const [savedOutput, setSavedOutput] = useState(false)
+    const [outputError, setOutputError] = useState('')
+
     // 載入目前配置狀態
     useEffect(() => {
         getDataStatus().then((r: { data: { status: string; data: Record<string, PathStatus> } }) => {
             if (r.data.status === 'ok') setPathStatus(r.data.data)
+        }).catch(() => { })
+        getOutputDir().then((r: { data: { status: string; data: { output_dir: string; resolved: string } } }) => {
+            if (r.data.status === 'ok') setOutputDir(r.data.data.resolved)
         }).catch(() => { })
     }, [applied])
 
@@ -238,12 +245,19 @@ export default function DataSetup() {
         if (!dataRoot.trim()) return
         setScanning(true)
         setScanResult(null)
+        setScanError('')
         setApplied(false)
         try {
             const r = await scanData({ data_root: dataRoot })
-            if (r.data.status === 'ok') setScanResult(r.data.data)
-        } catch {
-            // noop
+            if (r.data.status === 'ok') {
+                setScanResult(r.data.data)
+            } else {
+                setScanError(r.data.message ?? '掃描失敗')
+            }
+        } catch (e: unknown) {
+            setScanError(
+                e instanceof Error ? e.message : '無法連線至後端（port 8001），請確認後端已啟動'
+            )
         } finally {
             setScanning(false)
         }
@@ -257,7 +271,6 @@ export default function DataSetup() {
             if (scanResult.he_image) paths.he_image = scanResult.he_image.path
             if (scanResult.binned_002) paths.binned_002 = scanResult.binned_002.path
             if (scanResult.binned_008) paths.binned_008 = scanResult.binned_008.path
-            if (scanResult.xenium_outs) paths.xenium_outs = scanResult.xenium_outs.path
             await applyData(paths)
             setApplied(true)
         } catch {
@@ -272,8 +285,33 @@ export default function DataSetup() {
         setShowBrowser(false)
     }
 
+    const handleOutputBrowseSelect = (path: string) => {
+        setOutputDir(path)
+        setShowOutputBrowser(false)
+    }
+
+    const handleSaveOutput = async () => {
+        if (!outputDir.trim()) return
+        setSavingOutput(true)
+        setSavedOutput(false)
+        setOutputError('')
+        try {
+            const r = await applyData({ output_dir: outputDir.trim() })
+            if (r.data.status === 'ok') {
+                setSavedOutput(true)
+                setTimeout(() => setSavedOutput(false), 3000)
+            } else {
+                setOutputError(r.data.message ?? '儲存失敗')
+            }
+        } catch (e: unknown) {
+            setOutputError(e instanceof Error ? e.message : '無法連線至後端')
+        } finally {
+            setSavingOutput(false)
+        }
+    }
+
     const foundCount = scanResult
-        ? [scanResult.he_image, scanResult.binned_002, scanResult.binned_008, scanResult.xenium_outs].filter(Boolean).length
+        ? [scanResult.he_image, scanResult.binned_002, scanResult.binned_008].filter(Boolean).length
         : 0
 
     const configuredCount = Object.values(pathStatus).filter(s => s.configured).length
@@ -285,6 +323,13 @@ export default function DataSetup() {
                 <FolderBrowser
                     onSelect={handleBrowseSelect}
                     onClose={() => setShowBrowser(false)}
+                />
+            )}
+            {/* Folder Browser Modal - output dir */}
+            {showOutputBrowser && (
+                <FolderBrowser
+                    onSelect={handleOutputBrowseSelect}
+                    onClose={() => setShowOutputBrowser(false)}
                 />
             )}
 
@@ -324,6 +369,12 @@ export default function DataSetup() {
                 <p className="text-xs text-gray-400">
                     選擇或輸入資料根目錄路徑，系統將自動尋找 SpaceRanger 和 Xenium 輸出檔案。
                 </p>
+                {scanError && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-red-900/20 border border-red-700/40 rounded-lg">
+                        <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                        <p className="text-xs text-red-400">{scanError}</p>
+                    </div>
+                )}
                 <div className="flex gap-2">
                     <button
                         onClick={() => setShowBrowser(true)}
@@ -354,6 +405,53 @@ export default function DataSetup() {
                 </div>
             </div>
 
+            {/* 輸出目錄設定 */}
+            <div className="bg-surface-card rounded-xl border border-surface-border p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                    <HardDrive className="w-4 h-4 text-primary" />
+                    <h3 className="font-semibold text-gray-200">輸出目錄設定</h3>
+                </div>
+                <p className="text-xs text-gray-400">
+                    所有分析結果（ROI 裁切、分割遮罩、計數矩陣、圖表）將存放於此目錄下的 <span className="font-mono text-gray-300">roi/</span>、<span className="font-mono text-gray-300">analysis/</span> 子目錄。
+                </p>
+                {outputError && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-red-900/20 border border-red-700/40 rounded-lg">
+                        <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                        <p className="text-xs text-red-400">{outputError}</p>
+                    </div>
+                )}
+                <div className="flex gap-2">
+                    <button
+                        onClick={() => setShowOutputBrowser(true)}
+                        className="px-3 py-2 bg-surface border border-surface-border rounded-lg text-sm text-gray-300 hover:bg-surface-border hover:text-gray-100 transition-colors flex items-center gap-1.5 flex-shrink-0"
+                    >
+                        <FolderOpen className="w-4 h-4" />
+                        瀏覽
+                    </button>
+                    <input
+                        value={outputDir}
+                        onChange={e => { setOutputDir(e.target.value); setSavedOutput(false) }}
+                        placeholder="/Volumes/SSD/plan_a/visiumHD_pipeline_3/results/analysis"
+                        onKeyDown={e => e.key === 'Enter' && handleSaveOutput()}
+                        className="flex-1 px-3 py-2 bg-surface border border-surface-border rounded-lg text-sm text-gray-200 placeholder-gray-600 focus:border-primary focus:outline-none font-mono"
+                    />
+                    <button
+                        onClick={handleSaveOutput}
+                        disabled={savingOutput || !outputDir.trim()}
+                        className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 flex-shrink-0 ${
+                            savedOutput
+                                ? 'bg-green-900/40 text-green-400'
+                                : savingOutput || !outputDir.trim()
+                                    ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                                    : 'bg-primary text-white hover:bg-primary-dark'
+                        }`}
+                    >
+                        <Check className="w-4 h-4" />
+                        {savedOutput ? '已儲存' : savingOutput ? '儲存中...' : '儲存'}
+                    </button>
+                </div>
+            </div>
+
             {/* 掃描結果 */}
             {scanResult && (
                 <div className="bg-surface-card rounded-xl border border-surface-border p-5 space-y-4">
@@ -378,7 +476,7 @@ export default function DataSetup() {
                     </div>
 
                     <div className="space-y-2">
-                        {(['he_image', 'binned_002', 'binned_008', 'xenium_outs'] as const).map(key => {
+                        {(['he_image', 'binned_002', 'binned_008'] as const).map(key => {
                             const item = scanResult[key]
                             return (
                                 <div key={key} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg ${item ? 'bg-green-900/10 border border-green-700/30' : 'bg-surface/50'

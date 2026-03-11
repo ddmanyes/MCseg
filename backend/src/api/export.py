@@ -118,15 +118,31 @@ async def _run_xenium(config: dict, req: ExportRequest):
         output_dir_base = resolve_path(paths.get("output_dir", "results/analysis"))
         export_dir      = resolve_path(paths.get("export_dir", "results/export"))
 
-        # 初始化，避免 UnboundLocalError
+        # Find h5ad_path first
+        h5ad_path = None
+        if req.input_h5ad:
+            h5ad_path = Path(req.input_h5ad)
+        else:
+            for candidate in ["umap_computed.h5ad", "qc_preprocessed.h5ad", "cellpose_cells.h5ad"]:
+                p = output_dir_base / candidate
+                if p.exists():
+                    h5ad_path = p
+                    break
+        if h5ad_path is None:
+            raise FileNotFoundError(f"找不到分析結果 h5ad，請先執行 Stage 3 分析。\n搜尋位置：{output_dir_base}")
+
+        # Check if the h5ad is merged mode by inspecting obs_names
+        import scanpy as sc
+        adata_head = sc.read_h5ad(str(h5ad_path), backed="r")
+        first_obs = adata_head.obs_names[0] if len(adata_head) > 0 else ""
+        is_merged_mode = "__" in first_obs
+        active_roi = adata_head.uns.get("active_roi", None) if "active_roi" in adata_head.uns else None
+        del adata_head # Release backed file handle
+
         combined_poly_path: "Path | None" = None
 
-        # 單 ROI vs 合併模式
-        merged_h5ad = output_dir_base / "umap_computed.h5ad"
-        is_merged_mode = merged_h5ad.exists() and len(rois) > 1
-
         if is_merged_mode:
-            logger.info(f"合併模式（{len(rois)} 個 ROI）")
+            logger.info(f"合併模式（{len(rois)} 個 ROI），根據 h5ad 的 obs_names 判定")
             all_features: list = []
             for roi in rois:
                 rn = roi.get("name", "")
@@ -156,7 +172,6 @@ async def _run_xenium(config: dict, req: ExportRequest):
             with open(combined_poly_path, "w", encoding="utf-8") as f:
                 json.dump({"type": "FeatureCollection", "features": all_features}, f)
 
-            h5ad_path = merged_h5ad if not req.input_h5ad else Path(req.input_h5ad)
             roi_pixel_size_um = rois[0].get("pixel_size_um", VISIUM_UM_PX) if rois else VISIUM_UM_PX
 
             he_image_path = resolve_path(paths.get("he_image", "")) if paths.get("he_image") else None
@@ -169,10 +184,13 @@ async def _run_xenium(config: dict, req: ExportRequest):
                 he_crop_bounds = (_x0, _y0, _x1, _y1)
 
         else:
-            roi_name    = rois[0].get("name", "") if rois else ""
+            roi_name    = active_roi or (rois[-1].get("name", "") if rois else "")
             roi_out_dir = output_dir_base / "roi" / roi_name if roi_name else output_dir_base
             mask_path   = roi_out_dir / "segmentation_masks.npy"
-            pixel_size_um = float(rois[0].get("pixel_size_um", VISIUM_UM_PX)) if rois else VISIUM_UM_PX
+            
+            # Find the correct pixel_size_um for this ROI
+            roi_cfg = next((r for r in rois if r.get("name") == roi_name), {})
+            pixel_size_um = float(roi_cfg.get("pixel_size_um", VISIUM_UM_PX))
 
             if not mask_path.exists():
                 raise FileNotFoundError(f"找不到 {roi_name} 的 segmentation_masks.npy，請先完成 Stage 1")
@@ -183,26 +201,11 @@ async def _run_xenium(config: dict, req: ExportRequest):
             with open(combined_poly_path, "w", encoding="utf-8") as f:
                 json.dump(roi_geo, f)
 
-            h5ad_path = None
-            if req.input_h5ad:
-                h5ad_path = Path(req.input_h5ad)
-            else:
-                for candidate in ["umap_computed.h5ad", "qc_preprocessed.h5ad", "cellpose_cells.h5ad"]:
-                    for search_dir in [roi_out_dir, output_dir_base]:
-                        p = search_dir / candidate
-                        if p.exists():
-                            h5ad_path = p
-                            break
-                    if h5ad_path:
-                        break
-            if h5ad_path is None:
-                raise FileNotFoundError(
-                    f"找不到分析結果 h5ad，請先執行 Stage 3 分析或指定路徑。"
-                    f"搜尋位置：{output_dir_base}、{roi_out_dir}"
-                )
-
             roi_pixel_size_um = pixel_size_um
-            he_image_path     = None
+            he_image_path     = roi_out_dir / "he_crop.tif"
+            if not he_image_path.exists():
+                logger.warning(f"單 ROI 模式找不到 he_crop.tif，將不用底圖匯出")
+                he_image_path = None
             he_crop_bounds    = None
 
         out_dir = Path(req.output_dir) if req.output_dir else export_dir / "xenium"
@@ -243,15 +246,8 @@ async def _run_loupe(config: dict, req: ExportRequest):
         export_dir      = resolve_path(paths.get("export_dir", "results/export"))
         whitelist       = config.get("export", {}).get("loupe", {}).get("whitelist_path", "")
 
-        # 多邊形 JSON（Cellpose mask 轉出）
-        roi_out_dir    = output_dir_base / "roi" / roi_name if roi_name else output_dir_base
-        poly_json_path = roi_out_dir / "cellpose_polygons.json"
-        if not poly_json_path.exists():
-            # 嘗試合併版路徑
-            alt = output_dir_base / "combined_cellpose_polygons.json"
-            poly_json_path = alt if alt.exists() else None
-
-        # h5ad
+        # Find h5ad_path first
+        h5ad_path = None
         if req.input_h5ad:
             h5ad_path = Path(req.input_h5ad)
         else:
@@ -260,8 +256,62 @@ async def _run_loupe(config: dict, req: ExportRequest):
                 if p.exists():
                     h5ad_path = p
                     break
-            else:
+            if h5ad_path is None:
                 raise FileNotFoundError(f"找不到分析結果 h5ad，請先執行 Stage 3 分析。搜尋位置：{output_dir_base}")
+
+        # Check if the h5ad is merged mode by inspecting obs_names
+        import scanpy as sc
+        adata_head = sc.read_h5ad(str(h5ad_path), backed="r")
+        first_obs = adata_head.obs_names[0] if len(adata_head) > 0 else ""
+        is_merged_mode = "__" in first_obs
+        active_roi = adata_head.uns.get("active_roi", None) if "active_roi" in adata_head.uns else None
+        del adata_head
+
+        poly_json_path: "Path | None" = None
+        import json
+
+        if is_merged_mode:
+            logger.info("Loupe 匯出：合併模式，產生 combined_cellpose_polygons.json")
+            all_features: list = []
+            for roi in rois:
+                rn = roi.get("name", "")
+                if not rn:
+                    continue
+                roi_out_dir   = output_dir_base / "roi" / rn
+                mask_path     = roi_out_dir / "segmentation_masks.npy"
+                pixel_size_um = float(roi.get("pixel_size_um", VISIUM_UM_PX))
+
+                if not mask_path.exists():
+                    continue
+
+                roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
+                roi_x_um = roi.get("x", 0) * roi.get("pixel_size_um", VISIUM_UM_PX)
+                roi_y_um = roi.get("y", 0) * roi.get("pixel_size_um", VISIUM_UM_PX)
+                for feat in roi_geo.get("features", []):
+                    orig_id = feat["properties"].get("full_id", "")
+                    feat["properties"]["full_id"] = f"{rn}__{orig_id}"
+                    _shift_geojson_coords(feat, roi_x_um, roi_y_um)
+                    all_features.append(feat)
+
+            poly_json_path = output_dir_base / "combined_cellpose_polygons.json"
+            with open(poly_json_path, "w", encoding="utf-8") as f:
+                json.dump({"type": "FeatureCollection", "features": all_features}, f)
+        else:
+            roi_name    = active_roi or (rois[-1].get("name", "") if rois else "")
+            roi_out_dir = output_dir_base / "roi" / roi_name if roi_name else output_dir_base
+            mask_path   = roi_out_dir / "segmentation_masks.npy"
+            
+            roi_cfg = next((r for r in rois if r.get("name") == roi_name), {})
+            pixel_size_um = float(roi_cfg.get("pixel_size_um", VISIUM_UM_PX))
+
+            if mask_path.exists():
+                logger.info(f"Loupe 匯出：單 ROI 模式（{roi_name}），產生 cellpose_polygons.json")
+                roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
+                poly_json_path = roi_out_dir / "cellpose_polygons.json"
+                with open(poly_json_path, "w", encoding="utf-8") as f:
+                    json.dump(roi_geo, f)
+            else:
+                logger.warning(f"找不到 {roi_name} 的 segmentation_masks.npy，將不匯出多邊形層")
 
         out_dir = Path(req.output_dir) if req.output_dir else export_dir / "loupe"
 

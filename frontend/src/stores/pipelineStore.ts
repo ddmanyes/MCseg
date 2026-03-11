@@ -20,6 +20,7 @@ interface PipelineStore {
 export const usePipelineStore = create<PipelineStore>((set) => ({
   stages: {
     roi: defaultStage(), segmentation: defaultStage(), count: defaultStage(),
+    proseg_rna: defaultStage(),
     analysis: defaultStage(), xenium: defaultStage(), loupe: defaultStage(),
   },
   rois: [],

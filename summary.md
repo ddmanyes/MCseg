@@ -1,4 +1,4 @@
-# visiumHD Pipeline 3 — 開發進度總結（更新：2026-03-09 Session 7）
+# visiumHD Pipeline 3 — 開發進度總結（更新：2026-03-10 Session 12）
 
 ---
 
@@ -10,8 +10,121 @@
 | Stage 0 | ROI 裁切（BTF tile-by-tile）| ✅ |
 | Stage 1 | Cellpose + Logic A + 互動預覽 | ✅ |
 | Stage 2 | RNA 計數（Cellpose 直接稀疏矩陣）| ✅ |
+| **Stage 2.5** | **Proseg RNA 重分配（可選）** | ✅ **新增** |
 | Stage 3 | Scanpy QC + UMAP + Leiden + CellTypist | ✅ |
 | Stage 4 | Xenium Explorer + Loupe Browser 匯出 | ✅ |
+
+---
+
+## 本 Session 完成（2026-03-10 Session 12）
+
+### 新功能：多 ROI 並排輪廓比較圖
+
+**需求**：當合併多張 ROI 執行 QC 前處理時，應產生一張涵蓋所有 ROI 的輪廓比較圖。
+
+**修改三處**：
+
+| 檔案 | 修改 |
+|------|------|
+| `backend/src/analysis/pipeline.py` | 新增 `_generate_roi_comparison_grid()`：讀取各 ROI 的 `overlay_{roi_name}_pre_qc.png` / `_post_qc.png`，排成 N×2 grid 圖，回傳 base64；merge_mode 疊圖迴圈結束後自動呼叫，寫入 `figures["roi_comparison"]` |
+| `backend/src/api/analysis.py` | `get_qc_images()` 磁碟載入列表加入 `("roi_comparison", fig_dir / "roi_comparison_grid.png")`，確保後端重啟後也能恢復 |
+| `frontend/src/pages/Stage3_Analysis.tsx` | `ChartView` tabs 加入 `{ key: 'roi_comparison', label: 'ROI 輪廓比較（全部）' }`；若圖不存在（單 ROI 模式）則 tab 不顯示，無副作用 |
+
+**圖表格式**：N（ROI 數）列 × 2 欄（左=Pre-QC、右=Post-QC），150 DPI，儲存為 `figures/roi_comparison_grid.png`。
+
+---
+
+## 本 Session 完成（2026-03-10 Session 11）
+
+### Bug 修復：`select_hvg()` seurat_v3 LOESS near-singularity 錯誤
+
+**錯誤訊息**：`QC Step 失敗：b'There are other near singularities as well. 0.0062697\n'`（同 Session 10，但根本原因不同）
+
+**Root Cause**：ARPACK/PCA Fix 已套用後，錯誤仍出現，完整 traceback 顯示問題在另一處：
+
+```
+File ".../preprocessing.py", line 180, in select_hvg
+    sc.pp.highly_variable_genes(adata, flavor='seurat_v3', layer='counts')
+File ".../_highly_variable_genes.py", line 192, in _highly_variable_genes_seurat_v3
+    model.fit()
+  File "_loess.pyx", line 922, in _loess.loess.fit
+ValueError: b'There are other near singularities as well. 0.0062697\n'
+```
+
+`seurat_v3` flavor 會呼叫 LOESS 迴歸（C 擴展程式庫），LUAD 資料 mean UMI 僅 26.2（資料極度稀疏），LOESS 遇到近奇異矩陣而崩潰。
+
+**修復（`backend/src/analysis/preprocessing.py`，`select_hvg()`）**：
+
+```python
+try:
+    sc.pp.highly_variable_genes(adata, n_top_genes=n_top_genes, flavor='seurat_v3', layer='counts')
+except (ValueError, BaseException) as e:
+    logger.warning(f"seurat_v3 HVG 失敗（{e!r}），改用 seurat flavor")
+    sc.pp.highly_variable_genes(adata, n_top_genes=min(n_top_genes, adata.n_vars), flavor='seurat')
+```
+
+- fallback 用 `min(n_top_genes, adata.n_vars)` 防止基因數不足時出現 out-of-bounds
+
+### 診斷：LUAD 低 UMI 根本原因調查
+
+**用戶疑問**：「為什麼 UMI 這麼低？確認轉換是否正確」
+
+**診斷腳本** `/tmp/deep_check_luad.py` 執行結果：
+
+| ROI | Bins | counts/bin (median) | 非零 bins | Bins→cells | Mask 覆蓋率 |
+|-----|------|---------------------|-----------|------------|------------|
+| 1   | 24,876 | **0.0**           | 33.0%     | 13.2%      | 13.9%      |
+| 2   | 71,953 | 1.0               | 58.6%     | 24.3%      | 23.8%      |
+| 3   | 49,991 | **5.0**           | 92.2%     | 26.8%      | 27.0%      |
+
+**結論**：
+- **座標轉換完全正確**：三個 ROI 的 100% 2µm bin 均在 mask 邊界內
+- **低 UMI 是真實的生物學現象**，非程式 Bug：ROI 1 是低 RNA 組織區域（67% bin 計數 = 0），可能是壞死、纖維化或切片邊緣
+- ROI 3 品質良好（median = 5, 92% 非零），ROI 1 拉低了整體平均
+
+**建議**：重新選取 ROI 1 至組織更緻密的區域
+
+---
+
+## 本 Session 完成（2026-03-10 Session 10）
+
+### Bug 修復：QC Step ARPACK near-singularity 錯誤
+
+**錯誤訊息**：`QC Step 失敗：b'There are other near singularities as well. 0.0062697\n'`
+
+**根本原因**：
+- 錯誤來自 ARPACK Fortran C 擴展（`_arpack.error`），以 bytes 格式傳遞訊息
+- `Exception` 無法捕捉部分 `BaseException` 子類別導致錯誤向上拋出顯示為 bytes
+- 原 fallback `svd_solver='randomized'` 在 scanpy 1.11.5 中：**稀疏矩陣（proseg 資料稀疏度 ~98%）會被忽略，強制使用 ARPACK**（稀疏 PCA 只支援 `arpack` 與 `covariance_eigh`），導致第二次呼叫**再度觸發相同錯誤**
+
+**修復（`backend/src/analysis/preprocessing.py`，`run_pca()`）**：
+
+| 修改 | 說明 |
+|------|------|
+| `except Exception` → `except BaseException` | 確保捕捉 ARPACK Fortran 擴展錯誤 |
+| Fallback 改為 `zero_center=False` | 強制走 sklearn `TruncatedSVD`（隨機化），**完全不依賴 ARPACK** |
+| 三層防線 | 1) ARPACK → 2) TruncatedSVD → 3) n_pcs 減半再試 |
+| NaN/Inf 清理 | `sc.pp.scale` 後若殘留 NaN/Inf 替換為 0/±10 |
+
+**修復（`backend/src/api/analysis.py`，`_run_qc()`）**：
+- 加入 `traceback.format_exc()` 記錄完整堆疊，方便後續偵錯
+
+---
+
+## 本 Session 完成（2026-03-10 Session 8）
+
+### Bug 修復：Stage 2 Count `adata_002um.h5ad 缺少 obsm['spatial']`
+
+**問題**：Stage 2 RNA 計數執行時報錯，無法對任何 ROI 進行計數。
+
+**根本原因**：Stage 0 (`extractor.py`) 的 `load_visium_adata()` 讀取 Visium HD 空間座標後，只存入 `obs["pxl_col_in_fullres"]` / `obs["pxl_row_in_fullres"]`，**未設定** `obsm['spatial']`。而 `counter.py` 只讀 `obsm['spatial']`，造成對不上。
+
+**修復兩處**：
+
+| 檔案 | 修改 |
+|------|------|
+| `backend/src/cellpose_counter/counter.py` | 加 fallback：`obsm['spatial']` 不存在時，自動從 `obs` 欄位建立座標；相容已儲存的舊 h5ad 檔（**不需重跑 Stage 0**） |
+| `backend/src/roi/extractor.py` | `load_visium_adata()` 設完 obs 座標後同步設定 `obsm['spatial']`；未來 Stage 0 輸出的檔案自動帶有此欄位 |
 
 ---
 

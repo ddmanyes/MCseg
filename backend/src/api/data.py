@@ -22,7 +22,7 @@ class ApplyRequest(BaseModel):
     he_image: Optional[str] = None
     binned_002: Optional[str] = None
     binned_008: Optional[str] = None
-    xenium_outs: Optional[str] = None
+    output_dir: Optional[str] = None
 
 
 @router.post("/scan")
@@ -48,7 +48,12 @@ async def apply_paths(req: ApplyRequest):
             if value:  # 只更新非空值
                 paths[key] = value
 
-        # 同時保存 data_root（方便下次掃描）
+        # 若有設定 output_dir，立即建立目錄
+        if "output_dir" in updates and updates["output_dir"]:
+            output_path = resolve_path(updates["output_dir"])
+            output_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"已建立輸出目錄：{output_path}")
+
         save_state({"paths": config["paths"]})
         logger.info(f"已套用 {len(updates)} 項路徑設定")
         return {"status": "ok", "message": f"已更新 {len(updates)} 項路徑", "data": paths}
@@ -57,12 +62,22 @@ async def apply_paths(req: ApplyRequest):
         return {"status": "error", "message": str(e)}
 
 
+@router.get("/output-dir")
+async def get_output_dir():
+    """取得目前輸出目錄設定"""
+    config = load_config()
+    paths = config.get("paths", {})
+    output_dir = paths.get("output_dir", "results/analysis")
+    resolved = str(resolve_path(output_dir))
+    return {"status": "ok", "data": {"output_dir": output_dir, "resolved": resolved}}
+
+
 @router.get("/status")
 async def get_data_status():
     """取得目前 paths 配置狀態（哪些已填、哪些為空）"""
     config = load_config()
     paths = config.get("paths", {})
-    required_keys = ["he_image", "binned_002", "binned_008", "xenium_outs"]
+    required_keys = ["he_image", "binned_002", "binned_008"]
     status = {}
     for key in required_keys:
         val = paths.get(key, "")
@@ -101,6 +116,9 @@ async def get_disk_status():
     # Stage 2: RNA 計數 — 有任何 cellpose_cells.h5ad
     count_done = any((d / "cellpose_cells.h5ad").exists() for d in roi_dirs)
 
+    # Stage 2.5: Proseg RNA 重分配 — 有任何 proseg_cells.h5ad
+    proseg_rna_done = any((d / "proseg_cells.h5ad").exists() for d in roi_dirs)
+
     # Stage 3: Analysis — 有任何 qc_preprocessed.h5ad 或 umap_computed.h5ad
     analysis_done = (
         (output_dir / "umap_computed.h5ad").exists() or
@@ -114,6 +132,7 @@ async def get_disk_status():
             "roi":         {"done": roi_done,  "roi_names": roi_names},
             "segmentation":{"done": seg_done},
             "count":       {"done": count_done},
+            "proseg_rna":  {"done": proseg_rna_done},
             "analysis":    {"done": analysis_done},
         },
     }

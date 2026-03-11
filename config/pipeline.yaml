@@ -89,6 +89,14 @@ condition_test:
   samples: 200
   recorded_samples: 50
 proseg:
+  # Stage 2.5：Proseg RNA 重分配（固定參數，不做條件測試）
+  stage25:
+    max_dist: 20.0          # µm，轉錄本至細胞核最大距離
+    compactness: 0.06       # 細胞緊密度懲罰
+    dilation: 5             # px，Cellpose 遮罩膨脹半徑（初始 cell_id 分配）
+    samples: 500            # MCMC 採樣數
+    burnin_samples: 150     # burnin 採樣數
+    recorded_samples: 150   # 記錄採樣數
   golden_params:
     dilation: 0
     max_dist: 20.0

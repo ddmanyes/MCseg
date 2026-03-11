@@ -24,10 +24,12 @@ _tile_server = None
 
 def _get_tile_server():
     global _tile_server
-    if _tile_server is None:
+    config   = load_config()
+    he_path  = config.get('paths', {}).get('he_image', '')
+    
+    # Check if we need to initialize or re-initialize the tile server
+    if _tile_server is None or str(_tile_server.btf_path) != he_path:
         from backend.src.roi.tile_server import DZITileServer
-        config   = load_config()
-        he_path  = config.get('paths', {}).get('he_image', '')
         b002     = config.get('paths', {}).get('binned_002', '')
         hires    = str(Path(b002) / 'spatial' / 'tissue_hires_image.png') if b002 else None
         scalef   = 0.1

@@ -189,6 +189,11 @@ def load_visium_adata(binned_dir: str | Path, bin_size: str = "002"):
         adata = adata[common].copy()
         adata.obs["pxl_col_in_fullres"] = pos_df.loc[common, "pxl_col_in_fullres"].values
         adata.obs["pxl_row_in_fullres"] = pos_df.loc[common, "pxl_row_in_fullres"].values
+        # 同步設定 obsm['spatial']：[x=col, y=row]（fullres px）
+        adata.obsm["spatial"] = np.stack([
+            adata.obs["pxl_col_in_fullres"].values.astype(float),
+            adata.obs["pxl_row_in_fullres"].values.astype(float),
+        ], axis=1)
 
     logger.info(f"載入 Visium {bin_size}µm: {adata.n_obs:,} bins")
     return adata

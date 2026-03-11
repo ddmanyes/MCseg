@@ -5,6 +5,7 @@ import DataSetup from './pages/DataSetup'
 import Stage0_ROI from './pages/Stage0_ROI'
 import Stage1_Segmentation from './pages/Stage1_Segmentation'
 import Stage2_Count from './pages/Stage2_Count'
+import Stage25_ProsegRNA from './pages/Stage25_ProsegRNA'
 import Stage3_Analysis from './pages/Stage3_Analysis'
 import Stage4_Export from './pages/Stage4_Export'
 import { getDiskStatus } from './api/client'
@@ -21,6 +22,7 @@ export default function App() {
       if (d.roi?.done)          updateStage('roi',          { status: 'done', message: `已完成（${d.roi.roi_names?.length ?? 0} 個 ROI）` })
       if (d.segmentation?.done) updateStage('segmentation', { status: 'done', message: '分割遮罩已存在' })
       if (d.count?.done)        updateStage('count',        { status: 'done', message: 'RNA 計數已完成' })
+      if (d.proseg_rna?.done)   updateStage('proseg_rna',   { status: 'done', message: 'Proseg RNA 重分配已完成' })
       if (d.analysis?.done)     updateStage('analysis',     { status: 'done', message: '分析已完成' })
     }).catch(() => {/* 靜默失敗 */})
   }, [])
@@ -35,6 +37,7 @@ export default function App() {
           <Route path="/roi" element={<Stage0_ROI />} />
           <Route path="/segmentation" element={<Stage1_Segmentation />} />
           <Route path="/count" element={<Stage2_Count />} />
+          <Route path="/proseg-rna" element={<Stage25_ProsegRNA />} />
           <Route path="/analysis" element={<Stage3_Analysis />} />
           <Route path="/export" element={<Stage4_Export />} />
         </Routes>

@@ -5,12 +5,13 @@ import type { StageStatus } from '../../types/pipeline'
 import { Microscope, Settings, Loader2 } from 'lucide-react'
 
 const STAGES = [
-  { path: '/data',         idx: '⬡', title: 'Setup',    stage: 'data',         dep: null },
-  { path: '/roi',          idx: '0',  title: 'ROI',      stage: 'roi',          dep: null },
-  { path: '/segmentation', idx: '1',  title: 'Seg',      stage: 'segmentation', dep: 'roi' },
-  { path: '/count',        idx: '2',  title: 'Count',    stage: 'count',        dep: 'segmentation' },
-  { path: '/analysis',     idx: '3',  title: 'Analysis', stage: 'analysis',     dep: 'count' },
-  { path: '/export',       idx: '4',  title: 'Export',   stage: 'export',       dep: 'analysis' },
+  { path: '/data',         idx: '⬡',  title: 'Setup',      stage: 'data',         dep: null },
+  { path: '/roi',          idx: '0',   title: 'ROI',        stage: 'roi',          dep: null },
+  { path: '/segmentation', idx: '1',   title: 'Seg',        stage: 'segmentation', dep: 'roi' },
+  { path: '/count',        idx: '2',   title: 'Count',      stage: 'count',        dep: 'segmentation' },
+  { path: '/proseg-rna',   idx: '2½',  title: 'Proseg RNA', stage: 'proseg_rna',   dep: 'count' },
+  { path: '/analysis',     idx: '3',   title: 'Analysis',   stage: 'analysis',     dep: 'count' },
+  { path: '/export',       idx: '4',   title: 'Export',     stage: 'export',       dep: 'analysis' },
 ] as const
 
 function StageCircle({ status, isActive, idx }: { status: StageStatus; isActive: boolean; idx: string }) {

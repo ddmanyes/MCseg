@@ -67,9 +67,16 @@ def count_rna_per_cell(
     logger.info(f"  遮罩大小：{W}×{H}，最大 cell ID：{seg_mask.max()}")
 
     # ── 1. 取得 bin 中心座標（全域 fullres px）─────────────────────────────
-    if "spatial" not in adata.obsm:
-        raise ValueError("adata_002um.h5ad 缺少 obsm['spatial']")
-    coords = adata.obsm["spatial"]  # shape (N, 2)：[col/x, row/y]
+    if "spatial" in adata.obsm:
+        coords = adata.obsm["spatial"]  # shape (N, 2)：[col/x, row/y]
+    elif "pxl_col_in_fullres" in adata.obs.columns and "pxl_row_in_fullres" in adata.obs.columns:
+        logger.info("  obsm['spatial'] 不存在，從 obs 欄位建立座標")
+        coords = np.stack([
+            adata.obs["pxl_col_in_fullres"].values.astype(float),
+            adata.obs["pxl_row_in_fullres"].values.astype(float),
+        ], axis=1)
+    else:
+        raise ValueError("adata_002um.h5ad 缺少 obsm['spatial'] 與 obs 空間座標欄位")
 
     # ── 2. 換算至 ROI 局部像素座標 ───────────────────────────────────────
     roi_col = (coords[:, 0] - roi_x_px).round().astype(int)   # x → col

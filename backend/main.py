@@ -25,6 +25,7 @@ from backend.src.api import (
     cellpose_count,
     data,
     export,
+    proseg_rna,
     roi,
     segmentation,
 )
@@ -45,7 +46,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="VisiumHD Pipeline 3",
     version="3.0.0",
-    description="空間轉錄體分析流水線 API（直接 Cellpose 分析，無 Proseg）",
+    description="空間轉錄體分析流水線 API（Cellpose + 選用 Proseg RNA 重分配）",
     lifespan=lifespan,
 )
 
@@ -63,6 +64,7 @@ app.include_router(data.router,          prefix="/api/data",        tags=["Data 
 app.include_router(roi.router,           prefix="/api/roi",         tags=["Stage 0: ROI"])
 app.include_router(segmentation.router,  prefix="/api/segmentation",tags=["Stage 1: Segmentation"])
 app.include_router(cellpose_count.router,prefix="/api/count",       tags=["Stage 2: Count"])
+app.include_router(proseg_rna.router,    prefix="/api/proseg_rna",  tags=["Stage 2.5: Proseg RNA"])
 app.include_router(analysis.router,      prefix="/api/analysis",    tags=["Stage 3: Analysis"])
 app.include_router(export.router,        prefix="/api/export",      tags=["Stage 4: Export"])
 
