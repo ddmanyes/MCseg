@@ -12,28 +12,39 @@ export default function Stage5_Export() {
   const xenium = stages['xenium']
   const loupe  = stages['loupe']
   const [outDir, setOutDir] = useState('')
+  const [inputH5ad, setInputH5ad] = useState('')
   const { refetch: refetchXenium } = useStageStatus('xenium', getXeniumStatus, 3000)
   const { refetch: refetchLoupe }  = useStageStatus('loupe',  getLoupeStatus,  3000)
 
   const handleXenium = async () => {
     updateStage('xenium', { status: 'running', progress: 0, message: '匯出至 Xenium Explorer...' })
-    await exportXenium({ output_dir: outDir })
+    await exportXenium({ output_dir: outDir || undefined, input_h5ad: inputH5ad || undefined })
     refetchXenium()
   }
 
   const handleLoupe = async () => {
     updateStage('loupe', { status: 'running', progress: 0, message: '匯出至 Loupe Browser...' })
-    await exportLoupe({ output_dir: outDir })
+    await exportLoupe({ output_dir: outDir || undefined, input_h5ad: inputH5ad || undefined })
     refetchLoupe()
   }
 
   return (
     <div className="space-y-4">
       <div className="bg-surface-card rounded-xl border border-surface-border p-4">
-        <label className="text-xs text-gray-400">輸出目錄（空白 = config 預設）</label>
-        <input value={outDir} onChange={e => setOutDir(e.target.value)}
-               placeholder="results/export/..."
-               className="w-full mt-1 px-3 py-1.5 bg-surface border border-surface-border rounded text-sm text-gray-200 focus:border-primary focus:outline-none" />
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="text-xs text-gray-400">來源 h5ad 檔案名稱（選填，留白則自動尋找最新分析結果）</label>
+            <input value={inputH5ad} onChange={e => setInputH5ad(e.target.value)}
+                   placeholder="例如：roi/2/proseg_cells.h5ad 或 umap_computed.h5ad"
+                   className="w-full mt-1 px-3 py-1.5 bg-surface border border-surface-border rounded text-sm text-gray-200 focus:border-primary focus:outline-none" />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400">輸出目錄（空白 = config 預設）</label>
+            <input value={outDir} onChange={e => setOutDir(e.target.value)}
+                   placeholder="預設：ROI 資料夾內的 export_xenium 或 export_loupe"
+                   className="w-full mt-1 px-3 py-1.5 bg-surface border border-surface-border rounded text-sm text-gray-200 focus:border-primary focus:outline-none" />
+          </div>
+        </div>
       </div>
 
       <StageCard title="Xenium Explorer 格式匯出" status={xenium.status}
