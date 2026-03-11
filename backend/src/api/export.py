@@ -91,7 +91,7 @@ def _mask_to_geojson(
                 "coordinates": [xy_um.tolist()],
             },
             "properties": {
-                "full_id":   f"cell_{int(cid)}",
+                "full_id":   str(int(cid) - 1),   # Cellpose cid 從 1 起，h5ad obs_names 從 '0' 起
                 "cell_id":   int(cid),
             },
         })
