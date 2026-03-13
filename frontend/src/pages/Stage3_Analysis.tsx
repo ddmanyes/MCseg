@@ -404,11 +404,6 @@ export default function Stage4_Analysis() {
           meta[cluster] = {
             confidence: info.confidence,
             source: info.source,
-            uncertain: info.uncertain,
-            state: info.state,
-            state_score: info.state_score,
-            tier3_label: info.tier3_label,
-            tier3_conf: info.tier3_conf,
             immune_label: info.immune_label,
             immune_conf: info.immune_conf,
             crc_label: info.crc_label,
@@ -716,7 +711,7 @@ export default function Stage4_Analysis() {
                 </button>
               )}
               <button
-                onClick={handleLoadHist}
+                onClick={() => handleLoadHist()}
                 disabled={histLoading}
                 className="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-card border border-gray-600 text-gray-300 hover:border-brand-primary hover:text-brand-primary disabled:opacity-50 transition-colors"
               >

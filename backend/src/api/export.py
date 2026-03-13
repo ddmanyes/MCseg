@@ -21,6 +21,7 @@ _loupe_lock    = asyncio.Lock()
 class ExportRequest(BaseModel):
     input_h5ad: str = ""   # 空字串 = 使用 config 預設輸出路徑
     output_dir: str = ""
+    mask_source: str = "auto"  # "auto", "cellpose", "proseg"
 
 
 @router.get("/status/xenium")
@@ -181,7 +182,7 @@ async def _run_xenium(config: dict, req: ExportRequest):
                 mask_path   = roi_out_dir / "segmentation_masks.npy"
                 pixel_size_um = float(roi.get("pixel_size_um", VISIUM_UM_PX))
 
-                if proseg_json.exists():
+                if req.mask_source in ["auto", "proseg"] and proseg_json.exists():
                     logger.info(f"  [{rn}] 發現 Proseg 結果，使用 Proseg 擴展邊界")
                     roi_geo = _read_proseg_geojson(proseg_json)
                     for feat in roi_geo.get("features", []):
@@ -190,10 +191,11 @@ async def _run_xenium(config: dict, req: ExportRequest):
                             if cid is not None:
                                 # proseg_cells.h5ad 的 obs_names 是純數字字串 '0','1','2'...
                                 feat["properties"]["full_id"] = str(int(cid))
-                elif mask_path.exists():
+                elif req.mask_source in ["auto", "cellpose"] and mask_path.exists():
+                    logger.info(f"  [{rn}] 使用 Cellpose 遮罩生成多邊形")
                     roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
                 else:
-                    logger.warning(f"  [{rn}] 找不到 Proseg 或 Cellpose 遮罩，跳過")
+                    logger.warning(f"  [{rn}] 找不到選擇的 {req.mask_source} 遮罩來源，跳過")
                     continue
 
                 # 加入全域座標偏移
@@ -234,7 +236,7 @@ async def _run_xenium(config: dict, req: ExportRequest):
             roi_cfg = next((r for r in rois if r.get("name") == roi_name), {})
             pixel_size_um = float(roi_cfg.get("pixel_size_um", VISIUM_UM_PX))
 
-            if proseg_json.exists():
+            if req.mask_source in ["auto", "proseg"] and proseg_json.exists():
                 logger.info(f"單 ROI 模式（{roi_name}），從 Proseg 結果生成多邊形...")
                 roi_geo = _read_proseg_geojson(proseg_json)
                 for feat in roi_geo.get("features", []):
@@ -242,11 +244,11 @@ async def _run_xenium(config: dict, req: ExportRequest):
                         cid = feat["properties"].get("cell") or feat["properties"].get("cell_id")
                         if cid is not None:
                             feat["properties"]["full_id"] = str(int(cid))
-            elif mask_path.exists():
+            elif req.mask_source in ["auto", "cellpose"] and mask_path.exists():
                 logger.info(f"單 ROI 模式（{roi_name}），從 Cellpose 遮罩生成多邊形...")
                 roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
             else:
-                raise FileNotFoundError(f"找不到 {roi_name} 的 segmentation_masks.npy，請先完成 Stage 1")
+                raise FileNotFoundError(f"找不到 {roi_name} 的 {req.mask_source} 遮罩來源或檔案不存在")
             combined_poly_path = roi_out_dir / "cellpose_polygons.json"
             with open(combined_poly_path, "w", encoding="utf-8") as f:
                 json.dump(roi_geo, f)
@@ -350,14 +352,14 @@ async def _run_loupe(config: dict, req: ExportRequest):
                 mask_path     = roi_out_dir / "segmentation_masks.npy"
                 pixel_size_um = float(roi.get("pixel_size_um", VISIUM_UM_PX))
 
-                if proseg_json.exists():
+                if req.mask_source in ["auto", "proseg"] and proseg_json.exists():
                     roi_geo = _read_proseg_geojson(proseg_json)
                     for feat in roi_geo.get("features", []):
                         if "full_id" not in feat["properties"]:
                             cid = feat["properties"].get("cell") or feat["properties"].get("cell_id")
                             if cid is not None:
                                 feat["properties"]["full_id"] = str(int(cid))
-                elif mask_path.exists():
+                elif req.mask_source in ["auto", "cellpose"] and mask_path.exists():
                     roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
                 else:
                     continue
@@ -385,7 +387,7 @@ async def _run_loupe(config: dict, req: ExportRequest):
             roi_cfg = next((r for r in rois if r.get("name") == roi_name), {})
             pixel_size_um = float(roi_cfg.get("pixel_size_um", VISIUM_UM_PX))
 
-            if proseg_json.exists():
+            if req.mask_source in ["auto", "proseg"] and proseg_json.exists():
                 logger.info(f"Loupe 匯出：單 ROI 模式（{roi_name}），發現 Proseg 結果")
                 roi_geo = _read_proseg_geojson(proseg_json)
                 for feat in roi_geo.get("features", []):
@@ -396,14 +398,14 @@ async def _run_loupe(config: dict, req: ExportRequest):
                 poly_json_path = roi_out_dir / "cellpose_polygons.json"
                 with open(poly_json_path, "w", encoding="utf-8") as f:
                     json.dump(roi_geo, f)
-            elif mask_path.exists():
+            elif req.mask_source in ["auto", "cellpose"] and mask_path.exists():
                 logger.info(f"Loupe 匯出：單 ROI 模式（{roi_name}），從 Cellpose 遮罩生成")
                 roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
                 poly_json_path = roi_out_dir / "cellpose_polygons.json"
                 with open(poly_json_path, "w", encoding="utf-8") as f:
                     json.dump(roi_geo, f)
             else:
-                logger.warning(f"找不到 {roi_name} 的 segmentation_masks.npy 或 proseg，將不匯出多邊形層")
+                logger.warning(f"找不到 {roi_name} 的 {req.mask_source} 遮罩來源或 proseg，將不匯出多邊形層")
 
         if req.output_dir:
             out_dir = Path(req.output_dir)

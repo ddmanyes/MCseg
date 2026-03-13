@@ -13,36 +13,51 @@ export default function Stage5_Export() {
   const loupe  = stages['loupe']
   const [outDir, setOutDir] = useState('')
   const [inputH5ad, setInputH5ad] = useState('')
+  const [maskSource, setMaskSource] = useState('auto')
   const { refetch: refetchXenium } = useStageStatus('xenium', getXeniumStatus, 3000)
   const { refetch: refetchLoupe }  = useStageStatus('loupe',  getLoupeStatus,  3000)
 
   const handleXenium = async () => {
     updateStage('xenium', { status: 'running', progress: 0, message: '匯出至 Xenium Explorer...' })
-    await exportXenium({ output_dir: outDir || undefined, input_h5ad: inputH5ad || undefined })
+    await exportXenium({ output_dir: outDir || undefined, input_h5ad: inputH5ad || undefined, mask_source: maskSource })
     refetchXenium()
   }
 
   const handleLoupe = async () => {
     updateStage('loupe', { status: 'running', progress: 0, message: '匯出至 Loupe Browser...' })
-    await exportLoupe({ output_dir: outDir || undefined, input_h5ad: inputH5ad || undefined })
+    await exportLoupe({ output_dir: outDir || undefined, input_h5ad: inputH5ad || undefined, mask_source: maskSource })
     refetchLoupe()
   }
 
   return (
     <div className="space-y-4">
       <div className="bg-surface-card rounded-xl border border-surface-border p-4">
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
-            <label className="text-xs text-gray-400">來源 h5ad 檔案名稱（選填，留白則自動尋找最新分析結果）</label>
+            <label className="text-xs text-gray-400">來源 h5ad 檔案名稱（選填）</label>
             <input value={inputH5ad} onChange={e => setInputH5ad(e.target.value)}
-                   placeholder="例如：roi/2/proseg_cells.h5ad 或 umap_computed.h5ad"
+                   placeholder="roi/2/proseg_cells.h5ad"
                    className="w-full mt-1 px-3 py-1.5 bg-surface border border-surface-border rounded text-sm text-gray-200 focus:border-primary focus:outline-none" />
           </div>
           <div>
-            <label className="text-xs text-gray-400">輸出目錄（空白 = config 預設）</label>
+            <label className="text-xs text-gray-400">輸出目錄（選填）</label>
             <input value={outDir} onChange={e => setOutDir(e.target.value)}
-                   placeholder="預設：ROI 資料夾內的 export_xenium 或 export_loupe"
+                   placeholder="預設：export_xenium"
                    className="w-full mt-1 px-3 py-1.5 bg-surface border border-surface-border rounded text-sm text-gray-200 focus:border-primary focus:outline-none" />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400">強制細胞遮罩來源</label>
+            <div className="flex gap-2 mt-1">
+              {['auto', 'cellpose', 'proseg'].map(src => (
+                <button key={src} onClick={() => setMaskSource(src)}
+                        className={`flex-1 py-1.5 rounded text-sm transition-colors border ${
+                          maskSource === src ? 'bg-primary/20 border-primary text-primary-light' 
+                          : 'bg-surface border-surface-border text-gray-400 hover:text-gray-200'
+                        }`}>
+                  {src.toUpperCase()}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
