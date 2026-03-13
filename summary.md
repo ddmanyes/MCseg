@@ -1,4 +1,4 @@
-# visiumHD Pipeline 3 — 開發進度總結（更新：2026-03-10 Session 12）
+# visiumHD Pipeline 3 — 開發進度總結（更新：2026-03-13）
 
 ---
 
@@ -13,6 +13,27 @@
 | **Stage 2.5** | **Proseg RNA 重分配（可選）** | ✅ **新增** |
 | Stage 3 | Scanpy QC + UMAP + Leiden + CellTypist | ✅ |
 | Stage 4 | Xenium Explorer + Loupe Browser 匯出 | ✅ |
+
+---
+
+## 本 Session 完成（2026-03-11 至 2026-03-13）
+
+### 1. 安全性修復與整理（2026-03-13）
+- **依賴升級：** 進行 Node 測試腳本 `test_parse.js` Code Review，修復高危險漏洞套件 `xmldom`（替換為安全分支 `@xmldom/xmldom`）。
+- **防呆與移動：** 增加 `getElementsByTagName` 與屬性讀取的防例外保護，並將測試腳本移入 `scripts/` 以落實專案管理。
+
+### 2. Stage 4 匯出：Xenium Explorer 細部修復（2026-03-11）
+- **`is_merged_mode` 誤判**：修正單一 ROI 下會錯認為合併模式，改為偵測 `obs_names` 是否包含 `__` 作為基準。
+- **背景圖遺失**：修復單一 ROI 模式下 `he_crop.tif` 無法正常載入打包的問題。
+- **`active_roi` 狀態讀取**：修正從 `h5ad.uns` 讀取活躍 ROI 設定。
+- **`full_id` 對齊修復 (Critical)**：修正 `_mask_to_geojson` 的 Polygon ID 格式由 `"cell_N"` 改為 `str(N-1)`，確保完全吻合 `cellpose_cells.h5ad` 或 `umap_computed.h5ad` 中的 `obs_names`（'0', '1', '2'），解決多邊形沒有任何檢測基因表現的匹配漏洞。
+
+> **⚠️ 暫存區實驗性功能（`bf75c74` 備份）**：
+> 已於 `bf75c74` 實作過 `proseg_results.json` gzip 自動解壓讀取與 Stage 4 UI 原生 h5ad 來源切換器。如未來要正式對接 Proseg 結果，可隨時 `cherry-pick bf75c74` 快速恢復。
+
+### 3. Stage 4 分析視覺化改善
+- 優化 UMAP 在 Matplotlib 繪製的美觀度（`frameon=False`，圖例附著資料並加入外框加粗）。
+- 新增 `cmap="magma"` 專為連續型基因表現特徵配置高對比配色。
 
 ---
 
