@@ -60,14 +60,50 @@ def _get_spatial_coords(adata) -> np.ndarray:
     raise ValueError("adata_002um.h5ad 缺少空間座標（obsm['spatial'] 或 obs 欄位）")
 
 
-def _dilate_mask(seg_mask: np.ndarray, radius: int) -> np.ndarray:
-    """對分割遮罩套用正方形膨脹核（保留 cell_id）。"""
+def _expand_mask(seg_mask: np.ndarray, radius: int, use_watershed: bool = False, cyto_mask: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    擴展分割遮罩以保留 cell_id。
+    支援普通膨脹 (Dilation) 與分水嶺演算法 (Watershed)。
+    """
     import cv2
+    from skimage.segmentation import watershed
+    from scipy import ndimage as ndi
+
     if radius <= 0:
         return seg_mask
-    ksize = 2 * radius + 1
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
-    return cv2.dilate(seg_mask.astype(np.float32), kernel).astype(np.int32)
+
+    if not use_watershed:
+        # 普通正方形膨脹
+        ksize = 2 * radius + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ksize, ksize))
+        return cv2.dilate(seg_mask.astype(np.float32), kernel).astype(np.int32)
+    else:
+        # Watershed 隔離擴張
+        # 原理：以 nuclei (seg_mask) 為種子，向外擴張直到碰撞或達到距離限制
+        H, W = seg_mask.shape
+        mask_binary = (seg_mask > 0).astype(np.uint8)
+        
+        # 建立距離場
+        # 限制最大擴張距離 (radius px)
+        unknown = np.ones((H, W), dtype=np.uint8)
+        ksize = 2 * radius + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        dilated_temp = cv2.dilate(mask_binary, kernel)
+        
+        # 若提供 cyto_mask，則將其作為空間防護邊界 (遮罩區域外不分配)
+        if cyto_mask is not None:
+             dilated_temp = (dilated_temp > 0) & (cyto_mask > 0)
+        
+        # Watershed 需要標記 (markers) 與遮罩 (mask)
+        # 標記即為原始 nuclei
+        markers = seg_mask.astype(np.int32)
+        
+        # 執行分水嶺
+        # 我們希望各細胞「平權」競爭空間，故使用負距離場作為地勢
+        distance = ndi.distance_transform_edt(dilated_temp)
+        labels = watershed(-distance, markers, mask=dilated_temp)
+        
+        return labels.astype(np.int32)
 
 
 # ── 核心函式 1：bins → 偽轉錄本 CSV ─────────────────────────────────
@@ -80,6 +116,8 @@ def bins_to_transcript_csv(
     out_csv: Path,
     pixel_size_um: float = VISIUM_UM_PX,
     dilation_px: int = DEFAULT_DILATION,
+    use_watershed: bool = False,
+    cyto_protection: bool = False,
 ) -> int:
     """
     將 Visium HD 2µm bins 展開為 Proseg 格式的偽轉錄本 CSV。
@@ -87,10 +125,11 @@ def bins_to_transcript_csv(
     每個 bin 的每個基因計數（非零）展開為 count 條 CSV 行：
         x（ROI local µm）、y、gene、qv（=40）、cell_id（dilated mask）、z（=0）
 
-    Returns
-    -------
-    int
-        寫入的總轉錄本行數
+    Parameters
+    ----------
+    ...
+    use_watershed : 是否使用分水嶺演算法隔離細胞邊界（防止碰撞合併）
+    cyto_protection : 空間防護，若啟用將嘗試讀取 cyto 遮罩限制擴張範圍
     """
     import scanpy as sc
     import scipy.sparse as sp
@@ -108,8 +147,21 @@ def bins_to_transcript_csv(
     logger.info(f"  遮罩 {W}×{H}，細胞數：{n_cells}")
 
     # 膨脹遮罩以擴大 cell_id 查找範圍
-    logger.info(f"膨脹遮罩（radius={dilation_px}px）...")
-    lookup_mask = _dilate_mask(seg_mask, dilation_px)
+    if use_watershed:
+        logger.info(f"使用 Watershed 隔離擴張（radius={dilation_px}px）...")
+    else:
+        logger.info(f"使用普通膨脹（radius={dilation_px}px）...")
+    
+    # 若啟用空間防護，嘗試尋找 cyto 遮罩檔
+    cyto_mask = None
+    if cyto_protection:
+        # 假設 cyto 遮罩與 nuclei 遮罩在同目錄，檔名為 seg_cyto.npy 或相似
+        cyto_path = mask_path.parent / "segmentation_masks_cyto.npy"
+        if cyto_path.exists():
+            logger.info(f"套用 Cyto 空間防護：{cyto_path}")
+            cyto_mask = np.load(str(cyto_path))
+    
+    lookup_mask = _expand_mask(seg_mask, dilation_px, use_watershed=use_watershed, cyto_mask=cyto_mask)
 
     # bin 全域 px → ROI 局部 px
     coords = _get_spatial_coords(adata)
@@ -181,7 +233,7 @@ def run_proseg_binary(
     csv_path: Path,
     out_dir: Path,
     proseg_bin: str,
-    coordinate_scale: float = VISIUM_UM_PX,
+    coordinate_scale: float = 1.0,  # 預設為 1.0，因為 bins_to_transcript_csv 已轉換為 µm
     max_dist: float = DEFAULT_MAX_DIST,
     compactness: float = DEFAULT_COMPACTNESS,
     samples: int = DEFAULT_SAMPLES,
@@ -200,9 +252,6 @@ def run_proseg_binary(
         "genes":    out_dir / "genes.csv",
     }
 
-    if all(p.exists() for p in outputs.values()):
-        logger.info("偵測到 Proseg 輸出已存在，跳過執行（Smart Resume）")
-        return outputs
 
     cmd = [
         proseg_bin,
@@ -350,9 +399,9 @@ def run_proseg_rna_pipeline(config: dict, roi_name: Optional[str] = None):
     max_dist     = float(stage25.get("max_dist",          DEFAULT_MAX_DIST))
     compactness  = float(stage25.get("compactness",       DEFAULT_COMPACTNESS))
     dilation_px  = int(stage25.get("dilation",            DEFAULT_DILATION))
-    samples      = int(stage25.get("samples",             DEFAULT_SAMPLES))
-    burnin       = int(stage25.get("burnin_samples",      DEFAULT_BURNIN))
     recorded     = int(stage25.get("recorded_samples",    DEFAULT_RECORDED))
+    use_watershed = bool(stage25.get("use_watershed",     False))
+    cyto_protection = bool(stage25.get("cyto_protection",  False))
 
     if roi_name:
         rois = [r for r in rois if r.get("name") == roi_name]
@@ -397,6 +446,8 @@ def run_proseg_rna_pipeline(config: dict, roi_name: Optional[str] = None):
             out_csv=csv_path,
             pixel_size_um=pixel_size_um,
             dilation_px=dilation_px,
+            use_watershed=use_watershed,
+            cyto_protection=cyto_protection,
         )
         logger.info(f"[{rn}]   {n_tx:,} 偽轉錄本")
 
@@ -408,7 +459,7 @@ def run_proseg_rna_pipeline(config: dict, roi_name: Optional[str] = None):
             csv_path=csv_path,
             out_dir=work_dir,
             proseg_bin=proseg_bin,
-            coordinate_scale=pixel_size_um,
+            coordinate_scale=1.0,  # CSV 已是 µm 單位
             max_dist=max_dist,
             compactness=compactness,
             samples=samples,

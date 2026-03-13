@@ -97,6 +97,8 @@ proseg:
     samples: 500            # MCMC 採樣數
     burnin_samples: 150     # burnin 採樣數
     recorded_samples: 150   # 記錄採樣數
+    use_watershed: true     # 啟用 Watershed 隔離（防止邊界碰撞合併）
+    cyto_protection: true   # 啟用 Cyto 空間防護
   golden_params:
     dilation: 0
     max_dist: 20.0
