@@ -89,43 +89,43 @@ function ComparisonModal({ roiName, onClose }: { roiName: string; onClose: () =>
             </button>
         </div>
 
-        {/* Viewer Area */}
         <div className="flex-1 overflow-auto bg-[#0a0a0a] relative flex items-center justify-center p-8">
-            <div className="relative shadow-2xl" style={{ 
-                width: data ? 'auto' : 0, 
-                height: data ? 'auto' : 0,
-                maxWidth: '100%',
-                maxHeight: '70vh'
-            }}>
-                {data && (
-                    <>
+            {data && (
+                <div className="relative shadow-2xl inline-block w-fit mx-auto" style={{ 
+                    maxWidth: '100%',
+                    maxHeight: '70vh'
+                }}>
+                    <img 
+                        src={`data:image/jpeg;base64,${data.he}`} 
+                        className={`max-w-full h-auto rounded transition-opacity duration-300 block ${showHe ? 'opacity-100' : 'opacity-0'}`}
+                        style={{ imageRendering: 'auto', display: 'block' }}
+                        alt="HE" 
+                    />
+                    {data.cellpose && (
                         <img 
-                            src={`data:image/jpeg;base64,${data.he}`} 
-                            className={`max-w-full h-auto rounded transition-opacity duration-300 block ${showHe ? 'opacity-100' : 'opacity-0'}`}
-                            style={{ imageRendering: 'auto' }}
-                            alt="HE" 
+                            src={`data:image/png;base64,${data.cellpose}`} 
+                            className={`absolute top-0 left-0 w-full h-full pointer-events-none transition-opacity duration-300 block ${showCellpose ? 'opacity-100' : 'opacity-0'}`}
+                            style={{ imageRendering: 'pixelated', display: 'block' }}
+                            alt="Cellpose" 
                         />
-                        {data.cellpose && (
-                            <img 
-                                src={`data:image/png;base64,${data.cellpose}`} 
-                                className={`absolute inset-0 w-full h-full pointer-events-none transition-opacity duration-300 block ${showCellpose ? 'opacity-100' : 'opacity-0'}`}
-                                style={{ imageRendering: 'pixelated' }}
-                                alt="Cellpose" 
-                            />
-                        )}
-                        {data.proseg && (
-                            <img 
-                                src={`data:image/png;base64,${data.proseg}`} 
-                                className={`absolute inset-0 w-full h-full pointer-events-none transition-opacity duration-300 block ${showProseg ? 'opacity-100' : 'opacity-0'}`}
-                                style={{ imageRendering: 'pixelated' }}
-                                alt="Proseg" 
-                            />
-                        )}
-                    </>
-                )}
-            </div>
-            
-            {!data && <div className="text-gray-600 italic">無可用比較影像</div>}
+                    )}
+                    {data.proseg && (
+                        <img 
+                            src={`data:image/png;base64,${data.proseg}`} 
+                            className={`absolute top-0 left-0 w-full h-full pointer-events-none transition-opacity duration-300 block ${showProseg ? 'opacity-100' : 'opacity-0'}`}
+                            style={{ imageRendering: 'pixelated', display: 'block' }}
+                            alt="Proseg" 
+                        />
+                    )}
+                </div>
+            )}
+            {!data && !loading && <div className="text-gray-600 italic">無可用比較影像</div>}
+            {!data && loading && (
+                <div className="flex flex-col items-center gap-4 text-gray-400">
+                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
+                    <p>正在生成對照影像...</p>
+                </div>
+            )}
         </div>
 
         {/* Footer info */}
