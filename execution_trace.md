@@ -102,3 +102,21 @@
   2. Implement smart `cyto_constraint` unassignment: RNA points outside Eosin cyto foreground are set to `cell_id = 0` instead of dropping them, allowing Proseg to claim them only if statistical probability is overwhelming.
 - **Status:** Done
 - [🔄 恢復至此階段](command:antigravity.restore?{"hash":"TBD"})
+
+---
+
+### [2026-03-13 10:35:00] 🤖 Code Review 紀錄 (v3.0)
+- **路由模型**: Gemini
+- **複雜度評分**: 0 / 10
+- **判定理由**: 目前無暫存的 Git 變更，僅偵測到未追蹤的 `test_parse.js`（Node.js XML 測試檔）。未觸及 Python 核心架構、Bioinformatics 分析或 GPU 效能敏感區，因此判定走 Gemini 快捷路由。
+- **狀態**: ✅ 已完成審查
+
+**審查清單 (`test_parse.js`)**：
+
+| 等級 | 發現問題 | 建議處理方式 |
+|:---:|---|---|
+| 🔴 H-1 | 依賴漏洞 | `xmldom` 為高資安風險舊套件（存在 XXE 等漏洞）。強烈建議改用安全分支 `@xmldom/xmldom`。 |
+| 🟡 M-1 | 錯誤處理 | `getElementsByTagName("Size")[0]` 極易引發 `TypeError` 操作，需加上預防機制 (null check)。 |
+| 🟢 L-1 | 範圍管理 | `test_parse.js` 檔案未被 Git 追蹤且功能單一，測試完成後可直接移除，或是納入 `.gitignore` 中。 |
+
+[🔄 點擊恢復至審查前狀態](command:antigravity.restore?{"hash":"296a8a5edf4bb0abea8566b4a7e64b0dcb033cda"})
