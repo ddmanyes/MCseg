@@ -202,7 +202,8 @@ async def get_proseg_comparison(
             "data": {
                 "combined_b64": img_b64,
                 "width": W,
-                "height": H
+                "height": H,
+                "cyto_active": cyto_active
             }
         }
     except Exception as e:

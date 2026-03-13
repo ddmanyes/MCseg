@@ -274,7 +274,7 @@ def run_segmentation(config: dict):
         if success:
             logger.info("Macenko calibration successful")
         else:
-            logger.warning("Macenko calibration failed, using grayscale fallback")
+            logger.warning("Macenko calibration failed (possible lack of tissue or poor contrast), falling back to grayscale.")
 
     tif.close()
 
@@ -282,71 +282,62 @@ def run_segmentation(config: dict):
     model = models.CellposeModel(gpu=use_gpu, pretrained_model=model_type)
     logger.info(f"Cellpose model: {model_type}, GPU: {use_gpu}")
 
-    # Tiling
-    final_masks = np.zeros((h_full, w_full), dtype=np.int32)
-    global_id = 0
+    # ==========================
+    # 執行分割 (內建分塊拼接 Tiling)
+    # ==========================
+    # 優點：Cellpose 內建 Tiling 會在 Flow/Probability 階段進行平均融合，徹底消除拼縫直線
+    
+    # 1. 全域預處理
+    if normalize_stains and normalizer.stain_matrix is not None:
+        logger.info("Applying Macenko Color Deconvolution (Hematoxylin)...")
+        gray_full = normalizer.extract_hematoxylin(img_full)
+    elif img_full.ndim == 3 and img_full.shape[-1] >= 3:
+        gray_full = cv2.cvtColor(img_full[..., :3], cv2.COLOR_RGB2GRAY)
+    else:
+        gray_full = img_full.squeeze()
+        
+    gray_full = apply_clahe(gray_full)
+    input_full = np.stack([gray_full, gray_full, gray_full], axis=-1)
+    
+    # 2. 雙直徑評估 (Dual Inference)
+    # 使用 tile=True，Cellpose 會自動處理大型影像
+    tile_overlap_ratio = min(0.9, max(0.1, overlap / block_size))
+    
+    logger.info(f"Running Cellpose built-in tiling (dia={dia_small}, overlap={tile_overlap_ratio:.2f})...")
+    masks_s, _, _ = model.eval(
+        input_full, 
+        diameter=dia_small,
+        flow_threshold=flow_thresh,
+        cellprob_threshold=cellprob_thresh,
+        batch_size=batch_size,
+        tile=True,
+        tile_overlap=tile_overlap_ratio,
+        resample=True # 啟用 resample 以獲得更平滑的拼縫拼合
+    )
+    
+    logger.info(f"Running Cellpose built-in tiling (dia={dia_large}, overlap={tile_overlap_ratio:.2f})...")
+    masks_l, _, _ = model.eval(
+        input_full, 
+        diameter=dia_large,
+        flow_threshold=flow_thresh,
+        cellprob_threshold=cellprob_thresh,
+        batch_size=batch_size,
+        tile=True,
+        tile_overlap=tile_overlap_ratio,
+        resample=True
+    )
+    
+    # 資源釋放：input_full 為 3-通道疊加，佔用大量記憶體。
+    # 既然預測已完成，主動將其清空以利後續合併運算。
+    input_full = None
+    import gc
+    gc.collect()
 
-    ny = max(1, (h_full - overlap) // (block_size - overlap) + 1)
-    nx = max(1, (w_full - overlap) // (block_size - overlap) + 1)
-    total_tiles = ny * nx
-
-    logger.info(f"Processing {total_tiles} tiles ({nx}x{ny})")
-
-    for iy in tqdm(range(ny), desc="Rows"):
-        for ix in range(nx):
-            y0 = iy * (block_size - overlap)
-            x0 = ix * (block_size - overlap)
-            y1 = min(y0 + block_size, h_full)
-            x1 = min(x0 + block_size, w_full)
-
-            tile = img_full[y0:y1, x0:x1]
-
-            # Preprocess
-            if normalize_stains and normalizer.stain_matrix is not None:
-                gray = normalizer.extract_hematoxylin(tile)
-            elif tile.ndim == 3 and tile.shape[-1] >= 3:
-                gray = cv2.cvtColor(tile[..., :3], cv2.COLOR_RGB2GRAY)
-            else:
-                # Already grayscale or single channel
-                gray = tile.squeeze()
-
-            gray = apply_clahe(gray)
-            input_img = np.stack([gray, gray, gray], axis=-1)
-
-            # Dual inference
-            masks_s, _, _ = model.eval(
-                input_img, diameter=dia_small,
-                flow_threshold=flow_thresh,
-                cellprob_threshold=cellprob_thresh,
-                batch_size=batch_size
-            )
-
-            masks_l, _, _ = model.eval(
-                input_img, diameter=dia_large,
-                flow_threshold=flow_thresh,
-                cellprob_threshold=cellprob_thresh,
-                batch_size=batch_size
-            )
-
-            # Merge
-            merged = _merge_masks_logic_a(masks_s, masks_l, frag_thresh)
-
-            # Stitch into global
-            inner_y0 = overlap // 2 if iy > 0 else 0
-            inner_x0 = overlap // 2 if ix > 0 else 0
-            inner_y1 = merged.shape[0] - (overlap // 2 if iy < ny - 1 else 0)
-            inner_x1 = merged.shape[1] - (overlap // 2 if ix < nx - 1 else 0)
-
-            inner_mask = merged[inner_y0:inner_y1, inner_x0:inner_x1]
-
-            ids = np.unique(inner_mask)
-            ids = ids[ids > 0]
-
-            for old_id in ids:
-                global_id += 1
-                final_masks[y0+inner_y0:y0+inner_y1, x0+inner_x0:x0+inner_x1][inner_mask == old_id] = global_id
-
-    logger.info(f"Total cells: {global_id}")
+    # 3. 合併雙尺寸結果
+    logger.info("Merging small and large diameter masks...")
+    final_masks = _merge_masks_logic_a(masks_s, masks_l, frag_thresh)
+    global_id = int(final_masks.max())
+    logger.info(f"Stitching finished. Total cells: {global_id}")
 
     # 合併被完全封閉在其他細胞內的子細胞
     if pp_config.get("enable_merge_enclosed", True):
@@ -380,6 +371,8 @@ _ROI_OVERRIDE_FIELD_MAP: dict[str, tuple[str, str]] = {
     "flow_threshold":     ("strategy",       "flow_threshold"),
     "cellprob_threshold": ("strategy",       "cellprob_threshold"),
     "fragment_threshold": ("strategy",       "fragment_threshold"),
+    "block_size":         ("tiling",         "block_size"),
+    "overlap":            ("tiling",         "overlap"),
 }
 
 
