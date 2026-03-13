@@ -46,7 +46,10 @@ export const runProsegRNA = (roiName: string | null) =>
   api.post('/proseg_rna/run', roiName ? { roi_name: roiName } : {})
 export const getProsegRNAStatus = () => api.get('/proseg_rna/status')
 export const listProsegRNARois = () => api.get('/proseg_rna/available_rois')
-export const getProsegComparison = (roiName: string) => api.get(`/proseg_rna/comparison/${roiName}`)
+export const getProsegComparison = (roiName: string, showHe: boolean, showCellpose: boolean, showProseg: boolean) => 
+  api.get(`/proseg_rna/comparison/${roiName}`, { 
+    params: { show_he: showHe, show_cellpose: showCellpose, show_proseg: showProseg } 
+  })
 
 // Stage 3: Analysis (舊版整合執行)
 export const runAnalysis = (params?: object) => api.post('/analysis/run', params ?? {})

@@ -10,30 +10,36 @@ interface RoiProsegInfo {
   name: string
   has_adata: boolean
   has_mask: boolean
+  has_cyto_mask: boolean
   has_proseg: boolean
 }
 
 function ComparisonModal({ roiName, onClose }: { roiName: string; onClose: () => void }) {
-  const [data, setData] = useState<{ he: string; cellpose: string; proseg: string; width: number; height: number } | null>(null)
+  const [data, setData] = useState<{ combined_b64: string; width: number; height: number; cyto_active?: boolean } | null>(null)
   const [loading, setLoading] = useState(true)
   const [showHe, setShowHe] = useState(true)
   const [showCellpose, setShowCellpose] = useState(true)
-  const [showProseg, setShowProseg] = useState(true)
+  const [showProseg, setShowProseg] = useState(false)
+  const [cache, setCache] = useState<Record<string, any>>({})
 
   useEffect(() => {
-    getProsegComparison(roiName).then(res => {
-      if (res.data?.data) setData(res.data.data)
+    const cacheKey = `${showHe}-${showCellpose}-${showProseg}`
+    if (cache[cacheKey]) {
+      setData(cache[cacheKey])
+      setLoading(false)
+      return
+    }
+
+    setLoading(true)
+    getProsegComparison(roiName, showHe, showCellpose, showProseg).then(res => {
+      const result = res.data?.data
+      if (result) {
+        setData(result)
+        setCache(prev => ({ ...prev, [cacheKey]: result }))
+      }
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [roiName])
-
-  if (loading) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-        <div className="text-purple-400 animate-pulse">載入比較資料中...</div>
-      </div>
-    )
-  }
+  }, [roiName, showHe, showCellpose, showProseg])
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/90 p-4 sm:p-8">
@@ -93,45 +99,48 @@ function ComparisonModal({ roiName, onClose }: { roiName: string; onClose: () =>
             {data && (
                 <div className="relative shadow-2xl inline-block w-fit mx-auto" style={{ 
                     maxWidth: '100%',
-                    maxHeight: '70vh'
+                    maxHeight: '70vh',
                 }}>
                     <img 
-                        src={`data:image/jpeg;base64,${data.he}`} 
-                        className={`max-w-full h-auto rounded transition-opacity duration-300 block ${showHe ? 'opacity-100' : 'opacity-0'}`}
+                        src={`data:image/jpeg;base64,${data.combined_b64}`} 
+                        className="max-w-full h-auto rounded block"
                         style={{ imageRendering: 'auto', display: 'block' }}
-                        alt="HE" 
+                        alt="Comparison" 
                     />
-                    {data.cellpose && (
-                        <img 
-                            src={`data:image/png;base64,${data.cellpose}`} 
-                            className={`absolute top-0 left-0 w-full h-full pointer-events-none transition-opacity duration-300 block ${showCellpose ? 'opacity-100' : 'opacity-0'}`}
-                            style={{ imageRendering: 'pixelated', display: 'block' }}
-                            alt="Cellpose" 
-                        />
-                    )}
-                    {data.proseg && (
-                        <img 
-                            src={`data:image/png;base64,${data.proseg}`} 
-                            className={`absolute top-0 left-0 w-full h-full pointer-events-none transition-opacity duration-300 block ${showProseg ? 'opacity-100' : 'opacity-0'}`}
-                            style={{ imageRendering: 'pixelated', display: 'block' }}
-                            alt="Proseg" 
-                        />
+                    {/* 遮罩，當正在從後端重新取得疊圖時顯示微小動畫 */}
+                    {loading && (
+                        <div className="absolute inset-0 bg-black/20 animate-pulse pointer-events-none rounded" />
                     )}
                 </div>
             )}
-            {!data && !loading && <div className="text-gray-600 italic">無可用比較影像</div>}
             {!data && loading && (
                 <div className="flex flex-col items-center gap-4 text-gray-400">
                     <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
-                    <p>正在生成對照影像...</p>
+                    <p>正在從後端渲染對照影像...</p>
                 </div>
+            )}
+            {!data && !loading && (
+                <div className="text-gray-500 italic">無法載入影像</div>
             )}
         </div>
 
         {/* Footer info */}
-        <div className="p-3 bg-surface border-t border-surface-border text-[10px] text-gray-500 flex justify-between">
-            <span>建議事項：Proseg 通常會依據 RNA 分布對邊界進行微調 (Dilation)</span>
-            <span>{data?.width} x {data?.height} px</span>
+        <div className="p-3 bg-surface border-t border-surface-border text-[10px] text-gray-500 flex justify-between items-center">
+            <div className="flex items-center gap-4">
+                <span className="flex items-center gap-1">
+                    <div className={`w-1.5 h-1.5 rounded-full ${data?.combined_b64 ? 'bg-green-500' : 'bg-gray-700'}`}></div>
+                    解析度: {data?.width || '?'} x {data?.height || '?'} px
+                </span>
+                {data?.cyto_active && (
+                    <span className="flex items-center gap-1 text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                        Cyto 空間防護：已啟動 (自動裁剪邊界)
+                    </span>
+                )}
+            </div>
+            <span className="italic">Proseg 會依據 RNA 分布對邊界進行機率重分配 (MCMC)</span>
         </div>
       </div>
     </div>
@@ -251,7 +260,8 @@ export default function Stage25_ProsegRNA() {
                   <th className="text-left py-2 pr-4 font-medium">ROI</th>
                   <th className="text-center py-2 px-3 font-medium">Bins (S0)</th>
                   <th className="text-center py-2 px-3 font-medium">Mask (S1)</th>
-                    <th className="text-center py-2 px-3 font-medium">Proseg 結果</th>
+                  <th className="text-center py-2 px-3 font-medium text-emerald-500">Cyto 防護</th>
+                  <th className="text-center py-2 px-3 font-medium">Proseg 結果</th>
                   <th className="text-center py-2 px-3 font-medium">比較與驗證</th>
                   <th className="text-center py-2 px-3 font-medium">單獨執行</th>
                 </tr>
@@ -269,6 +279,16 @@ export default function Stage25_ProsegRNA() {
                       {roi.has_mask
                         ? <span className="text-green-400">✓</span>
                         : <span className="text-gray-600">—</span>}
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      {roi.has_cyto_mask
+                        ? <span className="text-emerald-400 flex items-center justify-center gap-1">
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                            OK
+                          </span>
+                        : <span className="text-gray-700 italic">未偵測</span>}
                     </td>
                     <td className="py-2 px-3 text-center">
                       {roi.has_proseg

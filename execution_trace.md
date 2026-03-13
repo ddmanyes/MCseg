@@ -120,3 +120,12 @@
 | 🟢 L-1 | 範圍管理 | `test_parse.js` 檔案未被 Git 追蹤且功能單一，測試完成後可直接移除，或是納入 `.gitignore` 中。 |
 
 [🔄 點擊恢復至審查前狀態](command:antigravity.restore?{"hash":"296a8a5edf4bb0abea8566b4a7e64b0dcb033cda"})
+### [2026-03-13 10:57:14] Code Review 紀錄
+- **路由模型**: Gemini
+- **複雜度評分**: 5 / 10
+- **判定理由**: 新增了 Stage 4 匯出時可選遮罩來源的 API 參數與前端介面，同時移除了錯誤入版控的大型 proseg-output.zarr 檔案。
+- **狀態**: ✅ 已完成審查
+
+---
+🔄 **[點擊恢復至此審查前狀態]**(command:antigravity.restore?{"hash":"c8203f70"})
+

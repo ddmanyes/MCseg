@@ -134,12 +134,12 @@ def _clip_polygons_with_cyto(json_path: Path, cyto_mask: np.ndarray, pixel_size_
             pts = cnt.reshape(-1, 2).astype(np.float64) * pixel_size_um
             try:
                 poly = Polygon(pts)
-                if poly.is_valid:
-                    cyto_polys.append(poly)
-                else:
+                if not poly.is_valid:
                     poly = poly.buffer(0)
-                    if not poly.is_empty:
-                        cyto_polys.append(poly)
+                
+                # [優化] 簡化幾何形狀以加速 unary_union
+                if not poly.is_empty:
+                    cyto_polys.append(poly.simplify(0.5, preserve_topology=True))
             except Exception:
                 continue
                 
@@ -508,6 +508,11 @@ def run_proseg_rna_pipeline(config: dict, roi_name: Optional[str] = None):
     cyto_protection = bool(stage25.get("cyto_protection",  False))
     nuclear_prob = float(stage25.get("nuclear_reassignment_prob", 0.0))
     prior_prob   = float(stage25.get("prior_reassignment_prob",   0.0))
+    
+    # [安全性] 參數範圍校驗
+    nuclear_prob = max(0.0, min(1.0, nuclear_prob))
+    prior_prob   = max(0.0, min(1.0, prior_prob))
+    
     samples      = int(stage25.get("samples",             DEFAULT_SAMPLES))
     burnin       = int(stage25.get("burnin_samples",      DEFAULT_BURNIN))
 

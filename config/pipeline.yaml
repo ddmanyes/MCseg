@@ -26,7 +26,7 @@ rois:
   pixel_size_um: 0.2737
 segmentation:
   cellpose_model:
-    model_type: cyto2
+    model_type: nuclei
     use_gpu: true
     batch_size: 4
   strategy:
@@ -44,7 +44,7 @@ segmentation:
     block_size: 2048
     overlap: 256
   preprocessing:
-    normalize_stains: true
+    normalize_stains: false
     calibration_roi: null
     clahe_clip_limit: 1.0
   output:
@@ -101,8 +101,8 @@ proseg:
     recorded_samples: 150   # 記錄採樣數
     use_watershed: true     # 啟用 Watershed 隔離（防止邊界碰撞合併）
     cyto_protection: true   # 啟用 Cyto 空間防護
-    nuclear_reassignment_prob: 0.0  # 細胞核區域重新分配機率 (0: 嚴格保護核區域)
-    prior_reassignment_prob: 0.0    # 初始分割區域重新分配機率
+    nuclear_reassignment_prob: 0.05  # 細胞核區域重新分配機率 (0: 嚴格保護核區域)
+    prior_reassignment_prob: 0.05    # 初始分割區域重新分配機率
   golden_params:
     dilation: 0
     max_dist: 20.0

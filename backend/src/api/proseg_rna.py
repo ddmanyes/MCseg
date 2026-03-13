@@ -102,12 +102,14 @@ async def get_available_rois():
             try:
                 has_adata  = (out_base / name / "adata_002um.h5ad").exists()
                 has_mask   = (out_base / name / "segmentation_masks.npy").exists()
+                has_cyto   = (out_base / name / "segmentation_masks_cyto.npy").exists()
                 has_proseg = (out_base / name / "proseg_cells.h5ad").exists()
                 result.append({
-                    "name":       name,
-                    "has_adata":  has_adata,
-                    "has_mask":   has_mask,
-                    "has_proseg": has_proseg,
+                    "name":          name,
+                    "has_adata":     has_adata,
+                    "has_mask":      has_mask,
+                    "has_cyto_mask": has_cyto,
+                    "has_proseg":    has_proseg,
                 })
             except (PermissionError, OSError) as e:
                 logger.warning(f"跳過 {name}：{e}")
@@ -116,17 +118,22 @@ async def get_available_rois():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 @router.get("/comparison/{roi_name}")
-async def get_comparison(roi_name: str):
+async def get_proseg_comparison(
+    roi_name: str,
+    show_he: bool = True,
+    show_cellpose: bool = True,
+    show_proseg: bool = True
+):
     """
-    產生三層疊圖供前端比較：
-    1. HE 底圖 (base64)
-    2. Cellpose 輪廓 (base64 PNG, 透明背景)
-    3. Proseg 輪廓 (base64 PNG, 透明背景)
+    獲取 ROI 的對照影像。
+    為了徹底解決 CSS 疊圖位移問題，改由後端進行合併渲染，回傳單一完美的疊圖。
     """
     config = load_config()
     from backend.src.utils.config import resolve_path
-    from backend.src.api.export import _mask_to_geojson, _read_proseg_geojson
+    from backend.src.api.export import _read_proseg_geojson
     from backend.src.utils.constants import VISIUM_UM_PX
+
+    cyto_active = config.get("proseg", {}).get("stage25", {}).get("cyto_protection", False)
 
     out_base = resolve_path(config["paths"]["output_dir"]) / "roi"
     roi_dir = out_base / roi_name
@@ -138,39 +145,32 @@ async def get_comparison(roi_name: str):
         raise HTTPException(status_code=404, detail="找不到 H&E 影像")
 
     try:
-        # 1. 讀取 HE 並轉為 base64
+        # 1. 讀取基礎影像
         he = tifffile.imread(str(he_path))
         if he.ndim == 3 and he.shape[-1] == 4:
             he = he[..., :3]
         H, W = he.shape[:2]
-        _, buffer = cv2.imencode(".jpg", cv2.cvtColor(he, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
-        he_b64 = base64.b64encode(buffer).decode()
 
-        # 取得 ROI 參數
-        rois = config.get("rois", [])
-        roi_cfg = next((r for r in rois if r.get("name") == roi_name), {})
-        pixel_size_um = float(roi_cfg.get("pixel_size_um", VISIUM_UM_PX))
+        # 建立畫布層
+        if show_he:
+            # 必須複製，避免原地修改緩存中的影像
+            canvas = he.copy().astype(np.uint8)
+        else:
+            canvas = np.zeros((H, W, 3), dtype=np.uint8)
 
-        # 2. 生成 Cellpose 輪廓圖層
-        cellpose_b64 = ""
-        if mask_path.exists():
-            overlay = np.zeros((H, W, 4), dtype=np.uint8) # BGRA
+        # 2. 疊加 Cellpose (亮青色)
+        if show_cellpose and mask_path.exists():
             seg_mask = np.load(str(mask_path))
-            
-            # 使用 find_boundaries 確保 1:1 像素精確度，避免 findContours 的 0.5px 位移
-            # mode='thick' 對應 1px 像素邊界
             boundaries = find_boundaries(seg_mask, mode='thick')
-            
-            # Cyan: B=255, G=255, R=0, A=180
-            overlay[boundaries] = [255, 255, 0, 180] 
-            
-            _, buffer = cv2.imencode(".png", overlay)
-            cellpose_b64 = base64.b64encode(buffer).decode()
+            # 青色: Cyan [R=0, G=255, B=255]
+            canvas[boundaries] = [0, 255, 255]
 
-        # 3. 生成 Proseg 輪廓圖層
-        proseg_b64 = ""
-        if proseg_json_path.exists():
-            overlay = np.zeros((H, W, 4), dtype=np.uint8) # BGRA
+        # 3. 疊加 Proseg (鮮紅色)
+        if show_proseg and proseg_json_path.exists():
+            rois = config.get("rois", [])
+            roi_cfg = next((r for r in rois if r.get("name") == roi_name), {})
+            pixel_size_um = float(roi_cfg.get("pixel_size_um", VISIUM_UM_PX))
+            
             try:
                 proseg_geo = _read_proseg_geojson(proseg_json_path)
                 for feat in proseg_geo.get("features", []):
@@ -188,20 +188,19 @@ async def get_comparison(roi_name: str):
                         # µm -> px
                         pts = (np.array(ring) / pixel_size_um).astype(np.int32)
                         if pts.size >= 6:
-                            # Red: B=0, G=0, R=255, A=200
-                            cv2.polylines(overlay, [pts], True, (0, 0, 255, 200), 1)
-                
-                _, buffer = cv2.imencode(".png", overlay)
-                proseg_b64 = base64.b64encode(buffer).decode()
+                            # 紅色: Red [R=255, G=0, B=0]
+                            cv2.polylines(canvas, [pts], True, (255, 0, 0), 1)
             except Exception as e:
-                logger.warning(f"解析 Proseg GeoJSON 失敗供比較視圖：{e}")
+                logger.warning(f"解析 Proseg GeoJSON 失敗：{e}")
+
+        # 4. 轉為 base64 JPEG
+        _, buffer = cv2.imencode(".jpg", cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+        img_b64 = base64.b64encode(buffer).decode()
 
         return {
             "status": "ok",
             "data": {
-                "he": he_b64,
-                "cellpose": cellpose_b64,
-                "proseg": proseg_b64,
+                "combined_b64": img_b64,
                 "width": W,
                 "height": H
             }
