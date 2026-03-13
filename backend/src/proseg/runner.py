@@ -106,6 +106,95 @@ def _expand_mask(seg_mask: np.ndarray, radius: int, use_watershed: bool = False,
         return labels.astype(np.int32)
 
 
+def _clip_polygons_with_cyto(json_path: Path, cyto_mask: np.ndarray, pixel_size_um: float):
+    """
+    使用 cyto_mask (像素陣列) 裁剪 Proseg 輸出的 GeoJSON 多邊形。
+    防止細胞邊界擴張到組織外的空白區域。
+    """
+    if not json_path.exists():
+        return
+
+    import json
+    import cv2
+    from shapely.geometry import shape, mapping, Polygon
+    from shapely.ops import unary_union
+
+    logger.info(f"✂️ 開始進行 Polygon Cyto 邊界裁剪：{json_path.name}")
+    
+    # 1. 將 cyto_mask 轉換為 µm 座標系的 Shapely Polygon
+    # 做微小閉合運算以填補空隙
+    mask_binary = (cyto_mask > 0).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask_closed = cv2.morphologyEx(mask_binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+    
+    contours, _ = cv2.findContours(mask_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cyto_polys = []
+    for cnt in contours:
+        if len(cnt) >= 3:
+            pts = cnt.reshape(-1, 2).astype(np.float64) * pixel_size_um
+            try:
+                poly = Polygon(pts)
+                if poly.is_valid:
+                    cyto_polys.append(poly)
+                else:
+                    poly = poly.buffer(0)
+                    if not poly.is_empty:
+                        cyto_polys.append(poly)
+            except Exception:
+                continue
+                
+    if not cyto_polys:
+        logger.warning("  ⚠️ 找不到有效的 Cyto 遮罩輪廓，跳過裁剪")
+        return
+        
+    cyto_union = unary_union(cyto_polys)
+
+    # 2. 讀取並裁剪 GeoJSON
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            
+        new_features = []
+        clipped_count = 0
+        
+        for feat in data.get('features', []):
+            geom_dict = feat.get('geometry')
+            if not geom_dict:
+                continue
+                
+            try:
+                cell_poly = shape(geom_dict)
+                if not cell_poly.is_valid:
+                    cell_poly = cell_poly.buffer(0)
+                
+                # 進行交集運算
+                intersected = cell_poly.intersection(cyto_union)
+                
+                if intersected.is_empty:
+                    continue # 細胞完全在組織外，捨棄
+                    
+                # 保持單一多邊形邏輯 (MultiPolygon 取最大塊)
+                if intersected.geom_type == 'MultiPolygon':
+                    areas = [p.area for p in intersected.geoms]
+                    intersected = intersected.geoms[np.argmax(areas)]
+                elif intersected.geom_type not in ('Polygon'):
+                    continue
+                    
+                feat['geometry'] = mapping(intersected)
+                new_features.append(feat)
+                clipped_count += 1
+            except Exception:
+                new_features.append(feat)
+                
+        data['features'] = new_features
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+            
+        logger.info(f"  ✅ 裁剪完成：處理了 {clipped_count} 個細胞")
+    except Exception as e:
+        logger.error(f"  ❌ 裁剪失敗：{e}")
+
+
 # ── 核心函式 1：bins → 偽轉錄本 CSV ─────────────────────────────────
 
 def bins_to_transcript_csv(
@@ -118,7 +207,7 @@ def bins_to_transcript_csv(
     dilation_px: int = DEFAULT_DILATION,
     use_watershed: bool = False,
     cyto_protection: bool = False,
-) -> int:
+) -> tuple[int, Optional[np.ndarray]]:
     """
     將 Visium HD 2µm bins 展開為 Proseg 格式的偽轉錄本 CSV。
 
@@ -191,6 +280,19 @@ def bins_to_transcript_csv(
     cell_ids = lookup_mask[row_px[bin_idx], col_px[bin_idx]].astype(int)
     genes    = gene_names[gene_idx]
 
+    # [新增] 空間防護過濾：若啟用，則完全捨棄 cyto_mask 以外的點
+    if cyto_protection and cyto_mask is not None:
+        in_cyto = cyto_mask[row_px[bin_idx], col_px[bin_idx]] > 0
+        keep = (cell_ids > 0) | in_cyto
+        bin_idx = bin_idx[keep]
+        gene_idx = gene_idx[keep]
+        counts = counts[keep]
+        x_um = x_um[keep]
+        y_um = y_um[keep]
+        cell_ids = cell_ids[keep]
+        genes = genes[keep]
+        logger.info(f"  Cyto 空間過濾：移除 {int((~keep).sum()):,} 越界點位")
+
     # 依計數展開（每個 count 對應一行偽轉錄本）
     total_tx = int(counts.sum())
     logger.info(f"展開計數（共 {total_tx:,} 偽轉錄本）...")
@@ -224,7 +326,7 @@ def bins_to_transcript_csv(
     logger.info(
         f"  寫出 {total_tx:,} 行；落在細胞內：{n_in_cell:,}（{n_in_cell/total_tx*100:.1f}%）"
     )
-    return total_tx
+    return total_tx, cyto_mask
 
 
 # ── 核心函式 2：執行 Proseg binary ───────────────────────────────────
@@ -402,6 +504,8 @@ def run_proseg_rna_pipeline(config: dict, roi_name: Optional[str] = None):
     recorded     = int(stage25.get("recorded_samples",    DEFAULT_RECORDED))
     use_watershed = bool(stage25.get("use_watershed",     False))
     cyto_protection = bool(stage25.get("cyto_protection",  False))
+    samples      = int(stage25.get("samples",             DEFAULT_SAMPLES))
+    burnin       = int(stage25.get("burnin_samples",      DEFAULT_BURNIN))
 
     if roi_name:
         rois = [r for r in rois if r.get("name") == roi_name]
@@ -438,7 +542,7 @@ def run_proseg_rna_pipeline(config: dict, roi_name: Optional[str] = None):
         work_dir.mkdir(parents=True, exist_ok=True)
         csv_path = work_dir / "transcripts_for_proseg.csv"
 
-        n_tx = bins_to_transcript_csv(
+        n_tx, cyto_mask = bins_to_transcript_csv(
             adata_path=adata_path,
             mask_path=mask_path,
             roi_x_px=roi_x_px,
@@ -466,6 +570,10 @@ def run_proseg_rna_pipeline(config: dict, roi_name: Optional[str] = None):
             burnin=burnin,
             recorded=recorded,
         )
+
+        # [新增] 空間防護：裁剪多邊形
+        if cyto_protection and cyto_mask is not None:
+             _clip_polygons_with_cyto(proseg_outputs['polygons'], cyto_mask, pixel_size_um)
 
         logger.info(f"[{rn}] Step 3/3：組建 proseg_cells.h5ad...")
         import scanpy as sc
