@@ -10,6 +10,7 @@ import numpy as np
 import tifffile
 import cv2
 from pathlib import Path
+from skimage.segmentation import find_boundaries
 
 from backend.src.utils.config import load_config
 from backend.src.utils.logging import set_current_stage
@@ -139,6 +140,8 @@ async def get_comparison(roi_name: str):
     try:
         # 1. 讀取 HE 並轉為 base64
         he = tifffile.imread(str(he_path))
+        if he.ndim == 3 and he.shape[-1] == 4:
+            he = he[..., :3]
         H, W = he.shape[:2]
         _, buffer = cv2.imencode(".jpg", cv2.cvtColor(he, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
         he_b64 = base64.b64encode(buffer).decode()
@@ -151,31 +154,43 @@ async def get_comparison(roi_name: str):
         # 2. 生成 Cellpose 輪廓圖層
         cellpose_b64 = ""
         if mask_path.exists():
-            overlay = np.zeros((H, W, 4), dtype=np.uint8) # RGBA
+            overlay = np.zeros((H, W, 4), dtype=np.uint8) # BGRA
             seg_mask = np.load(str(mask_path))
-            # 簡化：只畫輪廓
-            # 我們可以直接用 cv2.findContours 或是從 _mask_to_geojson 取得座標畫
-            # 這裡用 cv2 會更快
-            unique_ids = np.unique(seg_mask)
-            unique_ids = unique_ids[unique_ids > 0]
-            for cid in unique_ids:
-                single_mask = (seg_mask == cid).astype(np.uint8)
-                cnts, _ = cv2.findContours(single_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                cv2.drawContours(overlay, cnts, -1, (0, 255, 255, 200), 1) # Cyan
+            
+            # 使用 find_boundaries 確保 1:1 像素精確度，避免 findContours 的 0.5px 位移
+            # mode='thick' 對應 1px 像素邊界
+            boundaries = find_boundaries(seg_mask, mode='thick')
+            
+            # Cyan: B=255, G=255, R=0, A=180
+            overlay[boundaries] = [255, 255, 0, 180] 
+            
             _, buffer = cv2.imencode(".png", overlay)
             cellpose_b64 = base64.b64encode(buffer).decode()
 
         # 3. 生成 Proseg 輪廓圖層
         proseg_b64 = ""
         if proseg_json_path.exists():
-            overlay = np.zeros((H, W, 4), dtype=np.uint8) # RGBA
+            overlay = np.zeros((H, W, 4), dtype=np.uint8) # BGRA
             try:
                 proseg_geo = _read_proseg_geojson(proseg_json_path)
                 for feat in proseg_geo.get("features", []):
-                    coords = feat["geometry"]["coordinates"][0]
-                    # µm -> px
-                    pts = (np.array(coords) / pixel_size_um).astype(np.int32)
-                    cv2.polylines(overlay, [pts], True, (0, 0, 255, 200), 1) # Red
+                    geometry = feat.get("geometry", {})
+                    g_type = geometry.get("type", "Polygon")
+                    
+                    coordinates = []
+                    if g_type == "Polygon":
+                        coordinates = geometry.get("coordinates", [])
+                    elif g_type == "MultiPolygon":
+                        for poly in geometry.get("coordinates", []):
+                            coordinates.extend(poly)
+                    
+                    for ring in coordinates:
+                        # µm -> px
+                        pts = (np.array(ring) / pixel_size_um).astype(np.int32)
+                        if pts.size >= 6:
+                            # Red: B=0, G=0, R=255, A=200
+                            cv2.polylines(overlay, [pts], True, (0, 0, 255, 200), 1)
+                
                 _, buffer = cv2.imencode(".png", overlay)
                 proseg_b64 = base64.b64encode(buffer).decode()
             except Exception as e:

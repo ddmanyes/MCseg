@@ -101,20 +101,23 @@ function ComparisonModal({ roiName, onClose }: { roiName: string; onClose: () =>
                     <>
                         <img 
                             src={`data:image/jpeg;base64,${data.he}`} 
-                            className={`max-w-full h-auto rounded transition-opacity duration-300 ${showHe ? 'opacity-100' : 'opacity-0'}`}
+                            className={`max-w-full h-auto rounded transition-opacity duration-300 block ${showHe ? 'opacity-100' : 'opacity-0'}`}
+                            style={{ imageRendering: 'auto' }}
                             alt="HE" 
                         />
                         {data.cellpose && (
                             <img 
                                 src={`data:image/png;base64,${data.cellpose}`} 
-                                className={`absolute inset-0 w-full h-full pointer-events-none transition-opacity duration-300 ${showCellpose ? 'opacity-100' : 'opacity-0'}`}
+                                className={`absolute inset-0 w-full h-full pointer-events-none transition-opacity duration-300 block ${showCellpose ? 'opacity-100' : 'opacity-0'}`}
+                                style={{ imageRendering: 'pixelated' }}
                                 alt="Cellpose" 
                             />
                         )}
                         {data.proseg && (
                             <img 
                                 src={`data:image/png;base64,${data.proseg}`} 
-                                className={`absolute inset-0 w-full h-full pointer-events-none transition-opacity duration-300 ${showProseg ? 'opacity-100' : 'opacity-0'}`}
+                                className={`absolute inset-0 w-full h-full pointer-events-none transition-opacity duration-300 block ${showProseg ? 'opacity-100' : 'opacity-0'}`}
+                                style={{ imageRendering: 'pixelated' }}
                                 alt="Proseg" 
                             />
                         )}
