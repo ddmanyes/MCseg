@@ -38,8 +38,8 @@ segmentation:
     fragment_threshold: 20
   postprocessing:
     enable_merge_enclosed: true
-    enable_eosin_watershed: true  # 產生 Tissue/Cyto 遮罩
-    eosin_bg_threshold: 20        # 背景亮度閾值 (0-255)
+    enable_eosin_watershed: true
+    eosin_bg_threshold: 20        # 極度放寬：幾乎不裁剪，除非是純白背景
   tiling:
     block_size: 2048
     overlap: 256
@@ -93,9 +93,9 @@ condition_test:
 proseg:
   # Stage 2.5：Proseg RNA 重分配（固定參數，不做條件測試）
   stage25:
-    max_dist: 20.0          # µm，轉錄本至細胞核最大距離
-    compactness: 0.06       # 細胞緊密度懲罰
-    dilation: 5             # px，Cellpose 遮罩膨脹半徑（初始 cell_id 分配）
+    max_dist: 35.0          # µm，大幅度放寬生長範圍
+    compactness: 0.01       # 極度降低緊實度，讓形狀隨意擴張
+    dilation: 10            # px，擴大初始領地預熱
     samples: 500            # MCMC 採樣數
     burnin_samples: 150     # burnin 採樣數
     recorded_samples: 150   # 記錄採樣數
@@ -130,6 +130,7 @@ analysis:
       max_genes: 8000
       min_cells: 5
       max_pct_mito: 80.0
+      min_complexity: 0.8          # [新增] 剔除低多樣性噪音 (log10 Genes / log10 Counts)
       mito_prefix: MT-
       min_counts: 5
     normalization:

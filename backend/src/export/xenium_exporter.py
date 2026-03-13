@@ -7,13 +7,13 @@ spatialdata_xenium_explorer 可讀取的 Xenium Explorer bundle。
 座標系設計
 ----------
 遵循 SpatialData 慣例：shapes/points 以物理 µm 傳入，影像以 pixel 傳入並
-附加 Scale 轉換標記其解析度。spatialdata_xenium_explorer.write() 根據
-pixel_size=XENIUM_UM_PX 統一轉換，不在程式碼中手動換算以避免雙重縮放。
+附加 Scale 轉換標記其解析度。write() 與 Scale 使用相同的 pixel_size_um，
+避免 library 重採樣不一致（與 Proseg-Zarr-Integration 做法相同）。
 
 1. 影像：原始 pixel + Scale([pixel_size_um, pixel_size_um]) 轉換
 2. 多邊形：GeoJSON µm → ShapesModel（Identity，物理 µm）
 3. 轉錄點：CSV/zarr µm → PointsModel（Identity，物理 µm）
-4. experiment.xenium：pixel_size = XENIUM_UM_PX = 0.2125
+4. experiment.xenium：pixel_size = pixel_size_um（修補 spatialdata_xenium_explorer bug）
 
 移植自：Proseg-Zarr-Integration/scripts/export_to_xenium_full.py
 """
@@ -32,16 +32,15 @@ import numpy as np
 import pandas as pd
 import shapely.geometry
 import spatialdata as sd
-from shapely.affinity import scale as shapely_scale
 from spatialdata.models import (
     Image2DModel,
     PointsModel,
     ShapesModel,
     TableModel,
 )
-from spatialdata.transformations import Identity
+from spatialdata.transformations import Identity, Scale
 
-from backend.src.utils.constants import PROSEG_UM_PX, PROSEG_NM_PX, VISIUM_UM_PX, XENIUM_UM_PX
+from backend.src.utils.constants import VISIUM_UM_PX
 
 logger = logging.getLogger("pipeline.export.xenium")
 
@@ -167,9 +166,6 @@ class XeniumExporter:
             sd_points=sd_points,
         )
 
-        # 6. 修補 experiment.xenium pixel_size Bug
-        self._patch_experiment_xenium(out_xenium_dir)
-
         logger.info(f"=== Xenium Explorer bundle 完成：{out_xenium_dir} ===")
         return out_xenium_dir
 
@@ -240,7 +236,7 @@ class XeniumExporter:
             import tifffile
             import dask
             import dask.array as da
-            from spatialdata.transformations import Scale, Translation, Sequence as TransformSequence
+            from spatialdata.transformations import Scale
 
             if self.he_image_path is None or not self.he_image_path.exists():
                 return None
@@ -336,14 +332,8 @@ class XeniumExporter:
             # (y, x, c) → (c, y, x)，只取 RGB
             raw = da.transpose(raw, (2, 0, 1))[:3]
 
-            # Transform：scale pixel→µm，再平移到全域原點
-            transform = TransformSequence([
-                Scale([self.pixel_size_um, self.pixel_size_um], axes=("y", "x")),
-                Translation(
-                    [y0 * self.pixel_size_um, x0 * self.pixel_size_um],
-                    axes=("y", "x"),
-                ),
-            ])
+            # Transform：scale pixel→µm
+            transform = Scale([self.pixel_size_um, self.pixel_size_um], axes=("y", "x"))
 
             sd_image = Image2DModel.parse(
                 raw,
@@ -402,6 +392,21 @@ class XeniumExporter:
             logger.error(f"讀取多邊形 JSON 失敗：{exc}")
             return None, None, {}
 
+        # 建立 ID 查找表，支援多種 ID 格式（原始 ID, cell_id 數值, 'cell_N' 格式）
+        id_to_obs = {str(name): name for name in adata.obs_names}
+        if "cell_id" in adata.obs.columns:
+            for obs_name, cid in zip(adata.obs_names, adata.obs["cell_id"]):
+                id_to_obs[str(int(cid))] = obs_name
+        
+        # 處理 'cell_N' 格式的對應
+        for name in adata.obs_names:
+            if name.startswith("cell_"):
+                try:
+                    num_id = name.split("_")[1]
+                    id_to_obs[num_id] = name
+                except Exception:
+                    pass
+
         features = geo_data.get("features", [])
         polygons: list = []
         valid_cell_ids: list[str] = []
@@ -410,11 +415,28 @@ class XeniumExporter:
 
         for feat in features:
             props = feat.get("properties", {})
-            full_id = props.get("full_id")
-
-            # 只保留通過 QC 的細胞
-            if full_id not in obs_set:
+            
+            # 優先從 full_id 找，找不到則從 cell/cell_id 找
+            raw_id = props.get("full_id") or props.get("cell_id") or props.get("cell")
+            if raw_id is None:
                 continue
+            
+            str_id = str(raw_id)
+            if str_id not in id_to_obs:
+                # 針對 LUAD 這種 'cell_N' 與 'N' 的對應
+                alt_id = f"cell_{str_id}"
+                if alt_id in obs_set:
+                    full_id = alt_id
+                else:
+                    # 嘗試將 '1.0' 轉為 '1'
+                    try:
+                        f_id = str(int(float(str_id)))
+                        if f_id in id_to_obs: full_id = id_to_obs[f_id]
+                        elif f"cell_{f_id}" in obs_set: full_id = f"cell_{f_id}"
+                        else: continue
+                    except: continue
+            else:
+                full_id = id_to_obs[str_id]
 
             geom_type = feat["geometry"]["type"]
             coords = feat["geometry"]["coordinates"]
@@ -434,7 +456,6 @@ class XeniumExporter:
 
                 # 保持 µm 座標傳入 SpatialData（SpatialData 慣例：全域座標為物理 µm）
                 # spatialdata_xenium_explorer.write() 根據 pixel_size 自行轉換為 Xenium px
-                # 不在此手動 ÷ XENIUM_UM_PX，否則 library 又除一次造成雙重縮放
                 poly_out = self._smooth_polygon(poly_um)
 
                 # Xenium Explorer 要求全部為 MultiPolygon
@@ -491,6 +512,7 @@ class XeniumExporter:
         3. buffer(-1.0)   — 收縮回原大小，整平邊緣
         """
         try:
+            # 針對 µm 座標的平滑邏輯
             smooth = poly.simplify(0.4, preserve_topology=True)
             smooth = smooth.buffer(1.0, join_style=1).buffer(-1.0, join_style=1)
             if (
@@ -501,7 +523,7 @@ class XeniumExporter:
                 return smooth
         except Exception:
             pass
-        return poly  # 失敗時回退到原始多邊形
+        return poly
 
     def _load_transcripts(self, id_remap: dict) -> Optional[sd.models.PointsModel]:
         """
@@ -537,7 +559,12 @@ class XeniumExporter:
             if "gene" in sample.columns:
                 parse_kwargs["feature_key"] = "gene"
 
-            sd_points = PointsModel.parse(tx_dd, sort=True, transformations={"global": Identity()}, **parse_kwargs)
+            sd_points = PointsModel.parse(
+                tx_dd, 
+                sort=True, 
+                transformations={"global": Identity()}, 
+                **parse_kwargs
+            )
             logger.info("轉錄點 PointsModel 建立完成。")
             return sd_points
 
@@ -623,6 +650,39 @@ class XeniumExporter:
             },
         )
 
+    def _patch_experiment_xenium(self, out_xenium_dir: Path, pixel_size: float) -> None:
+        """
+        修補 spatialdata_xenium_explorer 的已知 bug：
+        write() 可能在 experiment.xenium 寫入錯誤的 pixel_size，
+        導致 Xenium Explorer 座標顯示錯誤。
+
+        強制將 pixel_size 覆寫為實際使用的值，確保：
+        - 細胞邊界座標（µm / pixel_size）與影像像素一一對應
+        - Xenium Explorer 的比例尺正確
+        """
+        import json as _json
+
+        exp_file = out_xenium_dir / "experiment.xenium"
+        if not exp_file.exists():
+            logger.warning(f"experiment.xenium 不存在，跳過 pixel_size 修補：{exp_file}")
+            return
+
+        try:
+            with open(exp_file, "r", encoding="utf-8") as f:
+                exp_data = _json.load(f)
+
+            old_ps = exp_data.get("pixel_size", "未知")
+            exp_data["pixel_size"] = pixel_size
+
+            with open(exp_file, "w", encoding="utf-8") as f:
+                _json.dump(exp_data, f, indent=2)
+
+            logger.info(
+                f"experiment.xenium pixel_size 修補完成：{old_ps} → {pixel_size} µm/px"
+            )
+        except Exception as exc:
+            logger.error(f"修補 experiment.xenium 失敗：{exc}")
+
     def _write_xenium_bundle(
         self,
         out_xenium_dir: Path,
@@ -644,6 +704,9 @@ class XeniumExporter:
             logger.info("未偵測到影像層，自動建立佔位影像以滿足 Xenium Explorer 需求。")
             sd_image = self._create_dummy_image(sd_shapes)
 
+        # 確保影像至少有一個名為 'global' 的座標系轉換
+        # 如果 sd_image 已經有轉換，則維持原樣
+
         # 相容 spatialdata 新舊 API（tables vs table 參數）
         sdata_kwargs: dict = {}
         sd_init_sig = inspect.signature(sd.SpatialData.__init__)
@@ -660,12 +723,14 @@ class XeniumExporter:
         if sd_points is not None:
             sdata_kwargs["points"] = {"transcripts": sd_points}
 
-        logger.info("組裝 SpatialData 物件...")
+        logger.info(f"組裝 SpatialData 物件 (可用座標系: {['global']})")
         sdata = sd.SpatialData(**sdata_kwargs)
 
-        # 使用 Xenium 原生 pixel_size=0.2125，確保 Explorer 正確對齊
-        # 影像已在 _load_image() 中縮放至 0.2125 µm/px，座標亦對應使用 XENIUM_UM_PX 轉換
-        logger.info(f"寫出 Xenium Explorer bundle 至：{out_xenium_dir}（pixel_size={XENIUM_UM_PX}，大型資料集耗時較長）")
+        # 使用與影像 Scale 相同的 pixel_size，避免 library 重採樣不一致。
+        # 原則：write(pixel_size=X) 與影像 Scale([X, X]) 必須相同，
+        # 對應 Proseg-Zarr-Integration 的做法（pixel_size=PROSEG_SCALE_UM_PX）。
+        out_pixel_size = self.pixel_size_um
+        logger.info(f"寫出 Xenium Explorer bundle 至：{out_xenium_dir}（pixel_size={out_pixel_size}，大型資料集耗時較長）")
         spatialdata_xenium_explorer.write(
             path=str(out_xenium_dir),
             sdata=sdata,
@@ -673,40 +738,17 @@ class XeniumExporter:
             shapes_key="cell_boundaries" if sd_shapes is not None else None,
             points_key="transcripts" if sd_points is not None else None,
             gene_column="gene" if sd_points is not None else None,
-            pixel_size=XENIUM_UM_PX,
+            pixel_size=out_pixel_size,
             lazy=True,
             ram_threshold_gb=self.ram_threshold_gb,
         )
         logger.info("spatialdata_xenium_explorer.write() 完成。")
 
-    def _patch_experiment_xenium(self, out_xenium_dir: Path) -> None:
-        """
-        修補 experiment.xenium 的 pixel_size Bug。
-
-        spatialdata_xenium_explorer 內部硬編碼 pixel_size=0.2125（Xenium 原生值），
-        即使呼叫時傳入正確的 pixel_size_um，寫出後仍會被覆蓋。
-        此方法在寫出後強制將 pixel_size 改寫為正確的 self.pixel_size_um。
-        """
-        exp_file = out_xenium_dir / "experiment.xenium"
-        if not exp_file.exists():
-            logger.warning(f"experiment.xenium 不存在，跳過修補：{exp_file}")
-            return
-
-        try:
-            with open(exp_file, "r") as f:
-                exp_data = json.load(f)
-
-            old_val = exp_data.get("pixel_size", "N/A")
-            exp_data["pixel_size"] = XENIUM_UM_PX  # 統一使用 Xenium 原生 0.2125 µm/px
-
-            with open(exp_file, "w") as f:
-                json.dump(exp_data, f, indent=2)
-
-            logger.info(
-                f"experiment.xenium pixel_size 修補完成：{old_val} → {XENIUM_UM_PX}"
-            )
-        except Exception as exc:
-            logger.error(f"experiment.xenium 修補失敗：{exc}")
+        # 6. 修補 experiment.xenium pixel_size Bug
+        # spatialdata_xenium_explorer 有已知 bug：write() 寫出的 experiment.xenium
+        # pixel_size 可能不正確（不等於傳入的 pixel_size 參數）。
+        # 強制覆寫確保 Xenium Explorer 使用正確比例。
+        self._patch_experiment_xenium(out_xenium_dir, out_pixel_size)
 
 
 def generate_combined_geojson(

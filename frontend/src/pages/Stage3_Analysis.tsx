@@ -237,6 +237,7 @@ export default function Stage4_Analysis() {
     min_genes: 10, max_genes: 8000,
     min_counts: 5, min_cells: 3,
     max_pct_mito: 80.0, n_top_genes: 2000, n_pcs: 30,
+    min_complexity: 0.8,
   })
 
   // ── UMAP 參數 ──
@@ -314,6 +315,7 @@ export default function Stage4_Analysis() {
         min_counts: c.min_counts ?? p.min_counts,
         min_cells: c.min_cells ?? p.min_cells,
         max_pct_mito: c.max_pct_mito ?? p.max_pct_mito,
+        min_complexity: c.min_complexity ?? p.min_complexity,
         n_top_genes: h.n_top_genes ?? p.n_top_genes,
         n_pcs: cl.n_pcs ?? p.n_pcs,
       }))
@@ -725,7 +727,7 @@ export default function Stage4_Analysis() {
           )}
 
           {histData && (
-            <div className={`grid gap-6 ${Object.keys(histData.metrics).length === 3 ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-1 md:grid-cols-2'}`}>
+            <div className={`grid gap-6 ${Object.keys(histData.metrics).length >= 4 ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3' : 'grid-cols-1 md:grid-cols-3'}`}>
               {/* Transcripts Per Cell */}
               {histData.metrics.total_counts && (
                 <QcHistogram
@@ -774,6 +776,40 @@ export default function Stage4_Analysis() {
                   totalCells={histData.n_cells}
                 />
               )}
+
+              {/* Complexity Score */}
+              {histData.metrics.complexity && (
+                <QcHistogram
+                  metric={histData.metrics.complexity}
+                  minVal={qcParams.min_complexity}
+                  maxVal={null}
+                  showMin={true}
+                  showMax={false}
+                  showMad={true}
+                  onMinChange={v => setQcParams(p => ({ ...p, min_complexity: v ?? 0 }))}
+                  onMaxChange={() => {}}
+                  logScale={!!logScales.complexity}
+                  onLogScaleToggle={() => setLogScales(s => ({ ...s, complexity: !s.complexity }))}
+                  totalCells={histData.n_cells}
+                />
+              )}
+
+              {/* Mitochondrial % */}
+              {histData.metrics.pct_counts_mt && (
+                <QcHistogram
+                  metric={histData.metrics.pct_counts_mt}
+                  minVal={null}
+                  maxVal={qcParams.max_pct_mito}
+                  showMin={false}
+                  showMax={true}
+                  showMad={true}
+                  onMinChange={() => {}}
+                  onMaxChange={v => setQcParams(p => ({ ...p, max_pct_mito: v ?? 100 }))}
+                  logScale={!!logScales.pct_counts_mt}
+                  onLogScaleToggle={() => setLogScales(s => ({ ...s, pct_counts_mt: !s.pct_counts_mt }))}
+                  totalCells={histData.n_cells}
+                />
+              )}
             </div>
           )}
         </div>
@@ -790,6 +826,8 @@ export default function Stage4_Analysis() {
             onChange={v => setQcParams(p => ({ ...p, min_cells: v }))} min={0} />
           <NumberField label="粒線體上限 % (max_pct_mito)" value={qcParams.max_pct_mito}
             onChange={v => setQcParams(p => ({ ...p, max_pct_mito: v }))} step={0.5} min={0} />
+          <NumberField label="最低複雜度 (min_complexity)" value={qcParams.min_complexity}
+            onChange={v => setQcParams(p => ({ ...p, min_complexity: v }))} step={0.01} min={0} hint="建議 0.8 以上" />
           <NumberField label="HVG 數量 (n_top_genes)" value={qcParams.n_top_genes}
             onChange={v => setQcParams(p => ({ ...p, n_top_genes: v }))} min={100} />
           <NumberField label="PCA 維度數 (n_pcs)" value={qcParams.n_pcs}

@@ -1,6 +1,6 @@
 # VisiumHD Pipeline 3
 
-VisiumHD Pipeline 3 是一個為處理 10x Genomics **Visium HD** 空間轉錄體學資料而設計的精簡全端應用程式。相較於 Pipeline 2，本版本**移除 Zarr 建構與 Proseg**，改用 Cellpose 分割遮罩直接將 2µm bins 分配至細胞，大幅縮短分析流程並降低運算資源需求。
+VisiumHD Pipeline 3 是一個為處理 10x Genomics **Visium HD** 空間轉錄體學資料而設計的架構優化版。相較於前代，本版本將核心路徑精簡為 **Cellpose 原生分配模式**，大幅縮短分析流程；同時**保留了 Proseg 作為選配 (Stage 2.5)**，提供分子層級的高精度重分配能力。
 
 架構同樣採用 **FastAPI 後端** 搭配 **React + Vite 前端**，支援瀏覽器中的視覺化操作與即時日誌追蹤。
 
@@ -57,17 +57,21 @@ Pipeline 3 共 6 個步驟，透過左側選單（或頂部進度條）在頁面
 - **操作說明**：頁面內嵌 **OpenSeadragon** 多解析度瀏覽器，直接從原始 BTF 動態載入 DZI tile，支援即時縮放與平移。拖曳框選即可自動填入 fullres pixel 座標，系統精準裁切 H&E 影像與 Visium HD `h5ad` 矩陣。
 - **輸出**：`he_crop.tif`、`adata_002um.h5ad`（ROI 範圍內的 2µm bins）
 
-### 🦠 Stage 1: 細胞分割 (Segmentation)
-
 - **用途**：利用高解析度 H&E 影像標定細胞核與細胞質範圍。
-- **操作說明**：調用 **Cellpose**（可選 `nuclei` 或 `cyto2` 模型）對影像進行 tile-based 分割，支援多 ROI 平行執行。
+- **操作說明**：調用 **Cellpose**（ViT Transformer 架構）對影像進行分割。本版本新增了 **「無縫拼接技術 (Label Reconciliation)」** 與 **「原生 Tiling 融合」**，徹底解決了大圖分塊運算時產生的邊界接縫與綠色線條問題。
 - **輸出**：`segmentation_masks.npy`（H×W 整數陣列，像素值 = cell ID）
 
 ### 🧬 Stage 2: RNA 計數 (RNA Count)
 
 - **用途**：將 Visium HD 2µm bins 的 RNA 計數依 Cellpose 分割遮罩分配至細胞層級。
-- **操作說明**：後端讀取 `adata_002um.h5ad` 的 bin 空間座標，對應至 `segmentation_masks.npy` 的像素位置，以稀疏矩陣乘法高效彙總每個細胞的基因計數。**不需要 Zarr 或 Proseg**。
-- **輸出**：`cellpose_cells.h5ad`（cells × genes 稀疏矩陣，含 ROI local µm 座標）
+- **操作說明**：後端讀取 `adata_002um.h5ad` 的 bin 空間座標，對應至 `segmentation_masks.npy` 的像素位置，以稀疏矩陣法高效彙總。此為預設路徑，具有極高的運算速度。
+- **輸出**：`cellpose_cells.h5ad`（或 `proseg_cells.h5ad`，若後續執行 Stage 2.5）
+
+### 🧪 Stage 2.5: Proseg 重分配 (Proseg - Optional)
+
+- **用途**：進階功能。使用概率模型將單個 RNA 分子重新指派給最可能的細胞。
+- **操作說明**：若 Cellpose 分割結果在某些緻密區域不夠理想，可執行此步驟。系統會自動建立 Zarr 數據立方體並調用 Proseg 進行 MCMC 抽樣分配。
+- **輸出**：`proseg_cells.h5ad`、`proseg_results.json`
 
 ### 📊 Stage 3: 下游分析 (Analysis)
 
@@ -84,13 +88,12 @@ Pipeline 3 共 6 個步驟，透過左側選單（或頂部進度條）在頁面
 
 ## 🛠 技術亮點
 
-1. **零 Zarr/Proseg 架構**：直接稀疏矩陣計數（`scipy.sparse.csr_matrix` + `A @ adata.X`），比 Pipeline 2 少兩個耗時 Stage，適合快速迭代分析。
-2. **完全非同步 (Fully Async)**：後端耗時任務採用 FastAPI `BackgroundTasks`，保證 UI 不卡頓，並透過 **WebSocket** 即時將命令列輸出串流推送到前端。
-3. **xterm.js Terminal**：前端 Terminal 元件使用 xterm.js canvas 渲染，支援 ANSI 顏色（ERROR 紅、WARNING 黃、DEBUG 灰、INFO 綠）與增量寫入，不因大量 log 重新渲染整個 DOM。
-4. **TanStack Query Polling**：所有 stage 狀態查詢改用 TanStack Query，`refetchInterval` 只在 `status === 'running'` 時啟動，unmount 自動清理，解決 setInterval 記憶體洩漏問題。
-5. **OpenSeadragon DZI Tile Server**：Stage 0 直接對 BTF 進行 tile-by-tile 讀取，透過 Deep Zoom Image 協定將 gigapixel 組織影像分層串流至前端。
-6. **Cellpose 原生平滑輪廓**：Cellpose 訓練於 flow field 梯度，輸出輪廓天然圓滑，使用 `skimage.measure.find_contours` 提取後無需額外多邊形平滑處理。
-7. **macOS 外接硬碟友好 (`._` 防護)**：`discovery.py` 自動過濾 `._*` 與 `.DS_Store`，uv 套件管理使用 symlink 指向 SSD，確保 ExFAT 環境下穩定運作。
+1. **混合多路徑架構**：提供「極速 Cellpose 直接計數」與「高精度 Proseg 分子分配」雙重路徑，適配不同研究需求。
+2. **無縫拼接優化**：首創 `reconcile_stitched_labels` 演算法，在 GPU 分塊運算後自動偵測並修補斷裂的細胞核，徹底消除切割線。
+3. **完全非同步 (Fully Async)**：後端耗時任務採用 FastAPI `BackgroundTasks` 與 WebSocket 即時回報 log，保證大型 ROI 運算時 UI 流暢。
+4. **xterm.js Terminal**：前端使用高效能 canvas 渲染終端機日誌，支援即時彩色視圖與異常標記。
+5. **OpenSeadragon DZI Tile Server**：Stage 0 直接對 BTF 進行分層串流，支援瀏覽器內流暢操作 Gigapixel 大型圖檔。
+6. **macOS 外接硬碟友好 (`._` 防護)**：自動過濾 ExFAT / APFS 混用產生的 metadata 檔案，確保 Pipeline 穩健運行。
 
 ---
 
@@ -114,13 +117,12 @@ results/
 
 | 功能 | Pipeline 2 | Pipeline 3 |
 |------|-----------|-----------|
-| Zarr 建構 | ✅ Stage 2 | ❌ 移除 |
-| Proseg 條件測試 | ✅ Stage 2.5 | ❌ 移除 |
-| Proseg 分子分配 | ✅ Stage 3 | ❌ 移除 |
-| RNA 計數方式 | Proseg 機率分配 | **直接 mask 查詢 + 稀疏矩陣** |
-| 細胞輪廓來源 | Proseg GeoJSON | **skimage.find_contours** |
+| 核心路徑 | Proseg Only | **Cellpose 優先 (Proseg 選配)** |
+| 處理速度 | 較慢 (需 Zarr/MCMC) | **極速 (直接計數) / 靈活 (可選 MCMC)** |
+| 拼接問題 | 存在邊界接縫 | **已修復 (Seamless Stitching)** |
+| RNA 計數方式 | Proseg 機率分配 | **直接 mask 查詢 或 Proseg 重分配** |
 | 後端 Port | 8000 | **8001** |
-| 分析輸入 | `proseg_cells.h5ad` | `cellpose_cells.h5ad` |
+| 環境管理 | Pip/Conda | **uv (推薦)** |
 
 ## 🛠 測試與除錯
 

@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from pathlib import Path
+from typing import Optional
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 
@@ -80,10 +81,8 @@ def _mask_to_geojson(
         if not np.allclose(xy_um[0], xy_um[-1]):
             xy_um = np.vstack([xy_um, xy_um[0]])
 
-        # 簡化：點數 > 200 時間隔取樣（避免 Xenium Explorer 過慢）
-        if len(xy_um) > 200:
-            step = max(1, len(xy_um) // 100)
-            xy_um = np.vstack([xy_um[::step], xy_um[-1:]])
+        # 移除過度的點取樣簡化，保留原始精度以利 Xenium Explorer 顯示
+        xy_um = xy_um
 
         features.append({
             "type": "Feature",
@@ -92,7 +91,7 @@ def _mask_to_geojson(
                 "coordinates": [xy_um.tolist()],
             },
             "properties": {
-                "full_id":   str(int(cid) - 1),   # Cellpose cid 從 1 起，h5ad obs_names 從 '0' 起
+                "full_id":   str(int(cid)),
                 "cell_id":   int(cid),
             },
         })
@@ -186,10 +185,9 @@ async def _run_xenium(config: dict, req: ExportRequest):
                     logger.info(f"  [{rn}] 發現 Proseg 結果，使用 Proseg 擴展邊界")
                     roi_geo = _read_proseg_geojson(proseg_json)
                     for feat in roi_geo.get("features", []):
-                        if "full_id" not in feat["properties"]:
                             cid = feat["properties"].get("cell") or feat["properties"].get("cell_id")
                             if cid is not None:
-                                # proseg_cells.h5ad 的 obs_names 是純數字字串 '0','1','2'...
+                                # 在合併模式下，這裡的 cid 通常是 proseg 或 cellpose 的原始 ID
                                 feat["properties"]["full_id"] = str(int(cid))
                 elif req.mask_source in ["auto", "cellpose"] and mask_path.exists():
                     logger.info(f"  [{rn}] 使用 Cellpose 遮罩生成多邊形")
@@ -260,6 +258,31 @@ async def _run_xenium(config: dict, req: ExportRequest):
                 he_image_path = None
             he_crop_bounds    = None
 
+            # ── 自動偵測 Xenium 轉錄點並裁切至 ROI ──────────────────────────
+            transcripts_csv_path = None
+            xenium_tx_cfg = paths.get("xenium_transcripts", "")
+            if xenium_tx_cfg:
+                xenium_tx_path = resolve_path(xenium_tx_cfg)
+            else:
+                xenium_tx_path = None
+                for candidate in [
+                    data_root_dir / "xenium" / "transcripts.parquet",
+                    data_root_dir / "xenium" / "transcripts.csv.gz",
+                ]:
+                    if candidate.exists():
+                        xenium_tx_path = candidate
+                        break
+
+            if xenium_tx_path and xenium_tx_path.exists():
+                transcripts_csv_path = _crop_and_save_transcripts(
+                    xenium_tx_path,
+                    roi_cfg,
+                    roi_out_dir / "transcripts_roi.csv",
+                    pixel_size_um,
+                )
+            else:
+                logger.info("未偵測到 Xenium 轉錄點檔案，不匯出 transcripts 層。")
+
         if req.output_dir:
             out_dir = Path(req.output_dir)
         else:
@@ -268,7 +291,7 @@ async def _run_xenium(config: dict, req: ExportRequest):
         exporter = XeniumExporter(
             zarr_path=None,
             poly_json_path=combined_poly_path if (combined_poly_path and combined_poly_path.exists()) else None,
-            transcripts_csv_path=None,
+            transcripts_csv_path=transcripts_csv_path if not is_merged_mode else None,
             pixel_size_um=roi_pixel_size_um,
             he_image_path=he_image_path,
             he_crop_bounds=he_crop_bounds,
@@ -448,6 +471,84 @@ async def export_loupe(req: ExportRequest, background_tasks: BackgroundTasks):
 # ──────────────────────────────────────────────────────────────────────────────
 # 工具函式
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _crop_and_save_transcripts(
+    src_path: Path,
+    roi_cfg: dict,
+    out_path: Path,
+    pixel_size_um: float,
+) -> "Optional[Path]":
+    """
+    從 Xenium transcripts.parquet/csv.gz 裁切 ROI 範圍的轉錄點，
+    座標平移為 ROI 局部 µm，寫出為 transcripts_roi.csv。
+
+    座標換算：Xenium µm → 裁切後以 (0,0) 為原點的 ROI 局部 µm。
+    過濾條件：is_gene == True（排除 blank/control probes）。
+
+    Returns: out_path（寫出成功），或 None（無轉錄點 / 失敗）。
+    """
+    import pandas as pd
+
+    ps = pixel_size_um
+    x0 = roi_cfg.get("x", 0) * ps
+    y0 = roi_cfg.get("y", 0) * ps
+    x1 = x0 + roi_cfg.get("width_px", 0) * ps
+    y1 = y0 + roi_cfg.get("height_px", 0) * ps
+
+    logger.info(
+        f"裁切 Xenium 轉錄點至 ROI：x=[{x0:.1f},{x1:.1f}] µm, y=[{y0:.1f},{y1:.1f}] µm"
+    )
+
+    try:
+        src = Path(src_path)
+        if src.suffix == ".parquet":
+            import dask.dataframe as dd
+            # 只讀必要欄位，依 parquet row-group 過濾以節省記憶體
+            needed = ["x_location", "y_location", "feature_name"]
+            try:
+                # 優先加載 is_gene 欄位（若存在）
+                tx_dd = dd.read_parquet(str(src), columns=needed + ["is_gene"])
+                tx_dd = tx_dd[tx_dd["is_gene"]]
+            except Exception:
+                tx_dd = dd.read_parquet(str(src), columns=needed)
+
+            tx_dd = tx_dd[
+                (tx_dd["x_location"] >= x0) & (tx_dd["x_location"] < x1) &
+                (tx_dd["y_location"] >= y0) & (tx_dd["y_location"] < y1)
+            ]
+            df = tx_dd.compute()
+        else:
+            # CSV / CSV.GZ
+            df = pd.read_csv(str(src))
+            if "is_gene" in df.columns:
+                df = df[df["is_gene"]]
+            df = df[
+                (df["x_location"] >= x0) & (df["x_location"] < x1) &
+                (df["y_location"] >= y0) & (df["y_location"] < y1)
+            ].copy()
+
+        if len(df) == 0:
+            logger.warning("裁切後無轉錄點，跳過 transcripts 層")
+            return None
+
+        df = df.rename(columns={
+            "x_location": "x",
+            "y_location": "y",
+            "feature_name": "gene",
+        })
+
+        # 平移至 ROI 局部座標（原點 = ROI 左上角）
+        df["x"] = df["x"] - x0
+        df["y"] = df["y"] - y0
+
+        df[["x", "y", "gene"]].to_csv(str(out_path), index=False)
+        logger.info(f"已寫出 {len(df):,} 個 ROI 轉錄點至 {out_path}")
+        return out_path
+
+    except Exception as exc:
+        logger.warning(f"轉錄點裁切失敗（繼續執行）：{exc}")
+        return None
+
 
 def _shift_geojson_coords(feat: dict, dx: float, dy: float):
     """In-place 平移 GeoJSON feature 的座標。"""

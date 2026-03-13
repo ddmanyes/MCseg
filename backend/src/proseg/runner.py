@@ -151,8 +151,19 @@ def _clip_polygons_with_cyto(json_path: Path, cyto_mask: np.ndarray, pixel_size_
 
     # 2. 讀取並裁剪 GeoJSON
     try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        import gzip
+        # 檢查是否為 GZIP 壓縮檔
+        with open(json_path, 'rb') as f:
+            magic = f.read(2)
+        
+        is_gzipped = False
+        if magic == b'\x1f\x8b':
+            is_gzipped = True
+            with gzip.open(json_path, 'rt', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
             
         new_features = []
         clipped_count = 0
@@ -184,11 +195,30 @@ def _clip_polygons_with_cyto(json_path: Path, cyto_mask: np.ndarray, pixel_size_
                 new_features.append(feat)
                 clipped_count += 1
             except Exception:
+                # 若交集失敗，嘗試修復 cell_poly 再試一次
+                try:
+                    repaired_cell = cell_poly.buffer(0)
+                    intersected = repaired_cell.intersection(cyto_union.buffer(0))
+                    if not intersected.is_empty:
+                        if intersected.geom_type == 'MultiPolygon':
+                            areas = [p.area for p in intersected.geoms]
+                            intersected = intersected.geoms[np.argmax(areas)]
+                        feat['geometry'] = mapping(intersected)
+                        new_features.append(feat)
+                        clipped_count += 1
+                        continue
+                except:
+                    pass
+                # 最終失敗則保留原樣
                 new_features.append(feat)
                 
         data['features'] = new_features
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
+        if is_gzipped:
+            with gzip.open(json_path, 'wt', encoding='utf-8') as f:
+                json.dump(data, f)
+        else:
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
             
         logger.info(f"  ✅ 裁剪完成：處理了 {clipped_count} 個細胞")
     except Exception as e:
@@ -547,7 +577,7 @@ def run_proseg_rna_pipeline(config: dict, roi_name: Optional[str] = None):
         roi_y_px      = int(roi.get("y", 0))
         pixel_size_um = float(roi.get("pixel_size_um", VISIUM_UM_PX))
 
-        logger.info(f"[{rn}] Step 1/3：bins → 偽轉錄本 CSV（dilation={dilation_px}px）...")
+        logger.info(f"[{rn}] Step 1/3：bins → 偽轉錄本 CSV ({pixel_size_um:.4f}µm/px)...")
         work_dir.mkdir(parents=True, exist_ok=True)
         csv_path = work_dir / "transcripts_for_proseg.csv"
 

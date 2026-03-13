@@ -78,9 +78,17 @@ class Preprocessor:
             inplace=True
         )
 
+        # [新增] Complexity Score: log10(Genes) / log10(Counts)
+        # 用於衡量單細胞測序內容的豐富度，協助剔除低多樣性噪音
+        with np.errstate(divide='ignore', invalid='ignore'):
+            adata.obs['complexity'] = np.log10(adata.obs['n_genes_by_counts']) / np.log10(adata.obs['total_counts'])
+            # 處理 log10(1) = 0 或 log10(0) = -inf 的極端值
+            adata.obs['complexity'] = adata.obs['complexity'].replace([np.inf, -np.inf], 0).fillna(0)
+
         logger.info(f"  - 粒線體基因數: {adata.var['mt'].sum()}")
         logger.info(f"  - 平均 UMI/細胞: {adata.obs['total_counts'].mean():.1f}")
         logger.info(f"  - 平均基因/細胞: {adata.obs['n_genes_by_counts'].mean():.1f}")
+        logger.info(f"  - 平均複雜度 (Complexity): {adata.obs['complexity'].mean():.3f}")
 
         return adata
 
@@ -96,9 +104,14 @@ class Preprocessor:
         max_genes = params.get("max_genes", 8000)
         max_pct_mito = params.get("max_pct_mito", 20)
         min_counts = params.get("min_counts")
+        min_complexity = params.get("min_complexity", 0.0) # 預設不強制，建議值為 0.8
 
         logger.info("過濾細胞...")
-        logger.info(f"  - 參數: min_genes={min_genes}, max_genes={max_genes}, max_pct_mito={max_pct_mito}, min_counts={min_counts}")
+        logger.info(
+            f"  - 參數: min_genes={min_genes}, max_genes={max_genes}, "
+            f"max_pct_mito={max_pct_mito}, min_counts={min_counts}, "
+            f"min_complexity={min_complexity}"
+        )
         logger.info(f"  - 過濾前: {n_before:,} 細胞")
 
         # 基因數過濾
@@ -115,6 +128,10 @@ class Preprocessor:
         # 粒線體過濾
         if "pct_counts_mt" in adata.obs.columns:
             adata = adata[adata.obs["pct_counts_mt"] < max_pct_mito, :].copy()
+
+        # 複雜度過濾
+        if min_complexity > 0 and "complexity" in adata.obs.columns:
+            adata = adata[adata.obs["complexity"] >= min_complexity, :].copy()
 
         n_after = adata.n_obs
         logger.info(f"  - 過濾後: {n_after:,} 細胞 (移除 {n_before - n_after:,})")

@@ -210,7 +210,7 @@ export default function Stage25_ProsegRNA() {
           </p>
           <ul className="list-disc pl-4 space-y-0.5 text-purple-400">
             <li>輸入：<code>adata_002um.h5ad</code>、<code>segmentation_masks.npy</code>（沿用 Cellpose）</li>
-            <li>固定參數：max_dist=20 µm、compactness=0.06、dilation=5 px</li>
+            <li>固定參數：max_dist=15 µm、compactness=0.1、dilation=5 px</li>
             <li>輸出：<code>proseg_cells.h5ad</code>（cells × genes，供 Stage 3 選用）</li>
             <li>Stage 3 可選擇使用 Cellpose 或 Proseg 版本的 RNA 計數</li>
           </ul>

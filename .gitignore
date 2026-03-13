@@ -8,3 +8,5 @@ __pycache__/
 results/
 figures/
 config/state.json
+*.zarr
+*.h5ad

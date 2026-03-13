@@ -190,7 +190,8 @@ def _hist_metric(arr: "np.ndarray", label: str, unit: str = "", n_bins: int = 60
     counts, bin_edges = np.histogram(arr, bins=n_bins)
     median = float(np.median(arr))
     # MAD 在 log1p 空間計算後轉回線性空間，適合 count data（高度右偏分布）
-    # 等同 scran::isOutlier(log=TRUE)，避免線性 MAD 下界恆為 0 的問題
+    # 這裡移除 1.4826 比例因子，使用原始 MAD 以提供更直覺且緊湊的建議範圍
+    # 避免在 exp 轉回後上界被過度放大（Exponential Inflation）
     log_arr = np.log1p(arr)
     log_median = float(np.median(log_arr))
     log_mad = float(np.median(np.abs(log_arr - log_median)))
@@ -257,6 +258,14 @@ async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = F
             metrics["total_counts"] = _hist_metric(obs["total_counts"].values, "Transcripts Per Cell")
         if "n_genes_by_counts" in obs:
             metrics["n_genes_by_counts"] = _hist_metric(obs["n_genes_by_counts"].values, "Genes Per Cell")
+        if "pct_counts_mt" in obs:
+            metrics["pct_counts_mt"] = _hist_metric(obs["pct_counts_mt"].values, "Mitochondrial %", unit="%")
+        
+        # [計算] Complexity: log10(Genes) / log10(Counts)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            complexity = np.log10(obs["n_genes_by_counts"]) / np.log10(obs["total_counts"])
+            metrics["complexity"] = _hist_metric(complexity.replace([np.inf, -np.inf], 0).fillna(0).values, "Complexity Score")
+            
         if "cell_area_um2" in obs:
             metrics["cell_area"] = _hist_metric(obs["cell_area_um2"].values, "Cell Size", "µm²")
 
