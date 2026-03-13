@@ -39,7 +39,7 @@ segmentation:
   postprocessing:
     enable_merge_enclosed: true
     enable_eosin_watershed: true  # 產生 Tissue/Cyto 遮罩
-    eosin_bg_threshold: 40        # 背景亮度閾值 (0-255)
+    eosin_bg_threshold: 20        # 背景亮度閾值 (0-255)
   tiling:
     block_size: 2048
     overlap: 256
@@ -101,6 +101,8 @@ proseg:
     recorded_samples: 150   # 記錄採樣數
     use_watershed: true     # 啟用 Watershed 隔離（防止邊界碰撞合併）
     cyto_protection: true   # 啟用 Cyto 空間防護
+    nuclear_reassignment_prob: 0.0  # 細胞核區域重新分配機率 (0: 嚴格保護核區域)
+    prior_reassignment_prob: 0.0    # 初始分割區域重新分配機率
   golden_params:
     dilation: 0
     max_dist: 20.0

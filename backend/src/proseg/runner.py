@@ -341,6 +341,8 @@ def run_proseg_binary(
     samples: int = DEFAULT_SAMPLES,
     burnin: int = DEFAULT_BURNIN,
     recorded: int = DEFAULT_RECORDED,
+    nuclear_prob: float = 0.0,
+    prior_prob: float = 0.0,
 ) -> dict:
     """
     呼叫 proseg binary，回傳輸出檔案路徑字典。
@@ -379,8 +381,8 @@ def run_proseg_binary(
         "--samples",                    str(samples),
         "--burnin-samples",             str(burnin),
         "--recorded-samples",           str(recorded),
-        "--nuclear-reassignment-prob",  "0",
-        "--prior-seg-reassignment-prob", "0",
+        "--nuclear-reassignment-prob",  str(nuclear_prob),
+        "--prior-seg-reassignment-prob", str(prior_prob),
         "--enforce-connectivity",
         str(csv_path),
     ]
@@ -504,6 +506,8 @@ def run_proseg_rna_pipeline(config: dict, roi_name: Optional[str] = None):
     recorded     = int(stage25.get("recorded_samples",    DEFAULT_RECORDED))
     use_watershed = bool(stage25.get("use_watershed",     False))
     cyto_protection = bool(stage25.get("cyto_protection",  False))
+    nuclear_prob = float(stage25.get("nuclear_reassignment_prob", 0.0))
+    prior_prob   = float(stage25.get("prior_reassignment_prob",   0.0))
     samples      = int(stage25.get("samples",             DEFAULT_SAMPLES))
     burnin       = int(stage25.get("burnin_samples",      DEFAULT_BURNIN))
 
@@ -569,6 +573,8 @@ def run_proseg_rna_pipeline(config: dict, roi_name: Optional[str] = None):
             samples=samples,
             burnin=burnin,
             recorded=recorded,
+            nuclear_prob=nuclear_prob,
+            prior_prob=prior_prob,
         )
 
         # [新增] 空間防護：裁剪多邊形
