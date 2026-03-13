@@ -2,15 +2,137 @@ import { useState, useEffect } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
 import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
-import { getProsegRNAStatus, runProsegRNA, listProsegRNARois } from '../api/client'
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
+import { getProsegRNAStatus, runProsegRNA, listProsegRNARois, getProsegComparison } from '../api/client'
 
 interface RoiProsegInfo {
   name: string
   has_adata: boolean
   has_mask: boolean
   has_proseg: boolean
+}
+
+function ComparisonModal({ roiName, onClose }: { roiName: string; onClose: () => void }) {
+  const [data, setData] = useState<{ he: string; cellpose: string; proseg: string; width: number; height: number } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [showHe, setShowHe] = useState(true)
+  const [showCellpose, setShowCellpose] = useState(true)
+  const [showProseg, setShowProseg] = useState(true)
+
+  useEffect(() => {
+    getProsegComparison(roiName).then(res => {
+      if (res.data?.data) setData(res.data.data)
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  }, [roiName])
+
+  if (loading) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+        <div className="text-purple-400 animate-pulse">載入比較資料中...</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/90 p-4 sm:p-8">
+      <div className="relative w-full max-w-5xl bg-surface-card rounded-2xl border border-surface-border overflow-hidden flex flex-col max-h-full shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-surface-border bg-surface">
+          <div>
+            <h3 className="text-lg font-bold text-white flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-purple-500"></span>
+                分群邊界比較：{roiName}
+            </h3>
+            <p className="text-xs text-gray-400">交叉確認 Cellpose 與 Proseg 的分群結果</p>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+            <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Controls */}
+        <div className="p-3 bg-surface-card/50 border-b border-surface-border flex flex-wrap gap-4 items-center">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 font-bold mr-2">圖層切換</div>
+            
+            <button 
+                onClick={() => setShowHe(!showHe)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                    showHe ? 'bg-gray-700 border-gray-500 text-white' : 'bg-transparent border-gray-700 text-gray-500'
+                }`}
+            >
+                <div className={`w-2 h-2 rounded-full ${showHe ? 'bg-gray-300' : 'bg-gray-700'}`}></div>
+                HE 影像
+            </button>
+
+            <button 
+                onClick={() => setShowCellpose(!showCellpose)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                    showCellpose ? 'bg-cyan-900/40 border-cyan-700 text-cyan-300' : 'bg-transparent border-gray-700 text-gray-500'
+                }`}
+            >
+                <div className={`w-2 h-2 rounded-full ${showCellpose ? 'bg-cyan-400' : 'bg-gray-700'}`}></div>
+                Cellpose 遮罩 (青色)
+            </button>
+
+            <button 
+                onClick={() => setShowProseg(!showProseg)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                    showProseg ? 'bg-red-900/40 border-red-700 text-red-300' : 'bg-transparent border-gray-700 text-gray-500'
+                }`}
+            >
+                <div className={`w-2 h-2 rounded-full ${showProseg ? 'bg-red-500' : 'bg-gray-700'}`}></div>
+                Proseg 輪廓 (紅色)
+            </button>
+        </div>
+
+        {/* Viewer Area */}
+        <div className="flex-1 overflow-auto bg-[#0a0a0a] relative flex items-center justify-center p-8">
+            <div className="relative shadow-2xl" style={{ 
+                width: data ? 'auto' : 0, 
+                height: data ? 'auto' : 0,
+                maxWidth: '100%',
+                maxHeight: '70vh'
+            }}>
+                {data && (
+                    <>
+                        <img 
+                            src={`data:image/jpeg;base64,${data.he}`} 
+                            className={`max-w-full h-auto rounded transition-opacity duration-300 ${showHe ? 'opacity-100' : 'opacity-0'}`}
+                            alt="HE" 
+                        />
+                        {data.cellpose && (
+                            <img 
+                                src={`data:image/png;base64,${data.cellpose}`} 
+                                className={`absolute inset-0 w-full h-full pointer-events-none transition-opacity duration-300 ${showCellpose ? 'opacity-100' : 'opacity-0'}`}
+                                alt="Cellpose" 
+                            />
+                        )}
+                        {data.proseg && (
+                            <img 
+                                src={`data:image/png;base64,${data.proseg}`} 
+                                className={`absolute inset-0 w-full h-full pointer-events-none transition-opacity duration-300 ${showProseg ? 'opacity-100' : 'opacity-0'}`}
+                                alt="Proseg" 
+                            />
+                        )}
+                    </>
+                )}
+            </div>
+            
+            {!data && <div className="text-gray-600 italic">無可用比較影像</div>}
+        </div>
+
+        {/* Footer info */}
+        <div className="p-3 bg-surface border-t border-surface-border text-[10px] text-gray-500 flex justify-between">
+            <span>建議事項：Proseg 通常會依據 RNA 分布對邊界進行微調 (Dilation)</span>
+            <span>{data?.width} x {data?.height} px</span>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export default function Stage25_ProsegRNA() {
@@ -51,9 +173,16 @@ export default function Stage25_ProsegRNA() {
   const readyRois   = roiInfos.filter(r => r.has_adata && r.has_mask)
   const doneRois    = roiInfos.filter(r => r.has_proseg)
   const missingRois = roiInfos.filter(r => !r.has_adata || !r.has_mask)
+  const [comparingRoi, setComparingRoi] = useState<string | null>(null)
 
   return (
     <div className="space-y-4">
+      {comparingRoi && (
+        <ComparisonModal
+          roiName={comparingRoi}
+          onClose={() => setComparingRoi(null)}
+        />
+      )}
       <StageCard
         title="Proseg RNA 重分配（Stage 2.5）"
         status={stage.status}
@@ -119,7 +248,8 @@ export default function Stage25_ProsegRNA() {
                   <th className="text-left py-2 pr-4 font-medium">ROI</th>
                   <th className="text-center py-2 px-3 font-medium">Bins (S0)</th>
                   <th className="text-center py-2 px-3 font-medium">Mask (S1)</th>
-                  <th className="text-center py-2 px-3 font-medium">Proseg 結果</th>
+                    <th className="text-center py-2 px-3 font-medium">Proseg 結果</th>
+                  <th className="text-center py-2 px-3 font-medium">比較與驗證</th>
                   <th className="text-center py-2 px-3 font-medium">單獨執行</th>
                 </tr>
               </thead>
@@ -139,8 +269,24 @@ export default function Stage25_ProsegRNA() {
                     </td>
                     <td className="py-2 px-3 text-center">
                       {roi.has_proseg
-                        ? <span className="text-green-400">✓ proseg_cells.h5ad</span>
-                        : <span className="text-gray-600">尚未執行</span>}
+                        ? <span className="text-green-400">✓</span>
+                        : <span className="text-gray-600">—</span>}
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      <button
+                        onClick={() => setComparingRoi(roi.name)}
+                        disabled={!roi.has_mask}
+                        className="px-2 py-0.5 rounded text-xs font-medium transition-colors
+                                   bg-cyan-900/40 border border-cyan-800 text-cyan-300
+                                   hover:bg-cyan-800/60
+                                   disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 mx-auto"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                        檢視輪廓
+                      </button>
                     </td>
                     <td className="py-2 px-3 text-center">
                       <button
@@ -149,9 +295,9 @@ export default function Stage25_ProsegRNA() {
                         className="px-2 py-0.5 rounded text-xs font-medium transition-colors
                                    bg-purple-700/40 border border-purple-600 text-purple-300
                                    hover:bg-purple-600/60
-                                   disabled:opacity-40 disabled:cursor-not-allowed"
+                                   disabled:opacity-40 disabled:cursor-not-allowed mx-auto"
                       >
-                        執行
+                        再次執行
                       </button>
                     </td>
                   </tr>

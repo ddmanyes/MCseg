@@ -1,9 +1,15 @@
 """Stage 2.5：Proseg RNA 重分配 API"""
 import asyncio
 import logging
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Any
+import base64
+import json
+import numpy as np
+import tifffile
+import cv2
+from pathlib import Path
 
 from backend.src.utils.config import load_config
 from backend.src.utils.logging import set_current_stage
@@ -107,4 +113,84 @@ async def get_available_rois():
                 continue
         return {"status": "ok", "data": result}
     except Exception as e:
+        return {"status": "error", "message": str(e)}
+@router.get("/comparison/{roi_name}")
+async def get_comparison(roi_name: str):
+    """
+    產生三層疊圖供前端比較：
+    1. HE 底圖 (base64)
+    2. Cellpose 輪廓 (base64 PNG, 透明背景)
+    3. Proseg 輪廓 (base64 PNG, 透明背景)
+    """
+    config = load_config()
+    from backend.src.utils.config import resolve_path
+    from backend.src.api.export import _mask_to_geojson, _read_proseg_geojson
+    from backend.src.utils.constants import VISIUM_UM_PX
+
+    out_base = resolve_path(config["paths"]["output_dir"]) / "roi"
+    roi_dir = out_base / roi_name
+    he_path = roi_dir / "he_crop.tif"
+    mask_path = roi_dir / "segmentation_masks.npy"
+    proseg_json_path = roi_dir / "_proseg_work" / "proseg_results.json"
+
+    if not he_path.exists():
+        raise HTTPException(status_code=404, detail="找不到 H&E 影像")
+
+    try:
+        # 1. 讀取 HE 並轉為 base64
+        he = tifffile.imread(str(he_path))
+        H, W = he.shape[:2]
+        _, buffer = cv2.imencode(".jpg", cv2.cvtColor(he, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])
+        he_b64 = base64.b64encode(buffer).decode()
+
+        # 取得 ROI 參數
+        rois = config.get("rois", [])
+        roi_cfg = next((r for r in rois if r.get("name") == roi_name), {})
+        pixel_size_um = float(roi_cfg.get("pixel_size_um", VISIUM_UM_PX))
+
+        # 2. 生成 Cellpose 輪廓圖層
+        cellpose_b64 = ""
+        if mask_path.exists():
+            overlay = np.zeros((H, W, 4), dtype=np.uint8) # RGBA
+            seg_mask = np.load(str(mask_path))
+            # 簡化：只畫輪廓
+            # 我們可以直接用 cv2.findContours 或是從 _mask_to_geojson 取得座標畫
+            # 這裡用 cv2 會更快
+            unique_ids = np.unique(seg_mask)
+            unique_ids = unique_ids[unique_ids > 0]
+            for cid in unique_ids:
+                single_mask = (seg_mask == cid).astype(np.uint8)
+                cnts, _ = cv2.findContours(single_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(overlay, cnts, -1, (0, 255, 255, 200), 1) # Cyan
+            _, buffer = cv2.imencode(".png", overlay)
+            cellpose_b64 = base64.b64encode(buffer).decode()
+
+        # 3. 生成 Proseg 輪廓圖層
+        proseg_b64 = ""
+        if proseg_json_path.exists():
+            overlay = np.zeros((H, W, 4), dtype=np.uint8) # RGBA
+            try:
+                proseg_geo = _read_proseg_geojson(proseg_json_path)
+                for feat in proseg_geo.get("features", []):
+                    coords = feat["geometry"]["coordinates"][0]
+                    # µm -> px
+                    pts = (np.array(coords) / pixel_size_um).astype(np.int32)
+                    cv2.polylines(overlay, [pts], True, (0, 0, 255, 200), 1) # Red
+                _, buffer = cv2.imencode(".png", overlay)
+                proseg_b64 = base64.b64encode(buffer).decode()
+            except Exception as e:
+                logger.warning(f"解析 Proseg GeoJSON 失敗供比較視圖：{e}")
+
+        return {
+            "status": "ok",
+            "data": {
+                "he": he_b64,
+                "cellpose": cellpose_b64,
+                "proseg": proseg_b64,
+                "width": W,
+                "height": H
+            }
+        }
+    except Exception as e:
+        logger.error(f"產生比較視圖失敗：{e}", exc_info=True)
         return {"status": "error", "message": str(e)}
