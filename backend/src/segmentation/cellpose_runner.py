@@ -607,6 +607,19 @@ def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dic
         except Exception as e:
             logger.warning(f"Flow visualization failed: {e}")
 
+    if pp_config.get("enable_eosin_watershed", True) and not is_grayscale:
+        logger.info("Generating Tissue/Cyto Mask for Spatial Protection...")
+        bg_thresh = pp_config.get("eosin_bg_threshold", 40)
+        # 亮度法：白色空白背景被排除，組織區域保留
+        # 使用 max(R,G,B) 判斷背景強度
+        brightness = img_full[:, :, :3].astype(np.float32).max(axis=2)
+        is_background = (brightness > (255 - bg_thresh))
+        
+        # 產生組織遮罩 (Cyto Mask) 供 Proseg 約束使用 (0=背景, 1=組織)
+        cyto_mask = (~is_background).astype(np.int32)
+        cyto_npy_path = output_dir / "segmentation_masks_cyto.npy"
+        np.save(str(cyto_npy_path), cyto_mask)
+        logger.info(f"Saved Cyto Mask for Proseg: {cyto_npy_path}")
 
     npy_path = output_dir / mask_filename
     tif_path = output_dir / mask_tif_filename

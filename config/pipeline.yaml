@@ -38,6 +38,8 @@ segmentation:
     fragment_threshold: 20
   postprocessing:
     enable_merge_enclosed: true
+    enable_eosin_watershed: true  # 產生 Tissue/Cyto 遮罩
+    eosin_bg_threshold: 40        # 背景亮度閾值 (0-255)
   tiling:
     block_size: 2048
     overlap: 256
