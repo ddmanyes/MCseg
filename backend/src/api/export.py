@@ -272,30 +272,18 @@ async def _run_xenium(config: dict, req: ExportRequest):
                 he_image_path = None
             he_crop_bounds    = None
 
-            # ── 自動偵測 Xenium 轉錄點並裁切至 ROI ──────────────────────────
+            # ── 從 Visium HD 2µm bins 生成轉錄點 ──────────────────────────
             transcripts_csv_path = None
-            xenium_tx_cfg = paths.get("xenium_transcripts", "")
-            if xenium_tx_cfg:
-                xenium_tx_path = resolve_path(xenium_tx_cfg)
-            else:
-                xenium_tx_path = None
-                for candidate in [
-                    data_root_dir / "xenium" / "transcripts.parquet",
-                    data_root_dir / "xenium" / "transcripts.csv.gz",
-                ]:
-                    if candidate.exists():
-                        xenium_tx_path = candidate
-                        break
-
-            if xenium_tx_path and xenium_tx_path.exists():
-                transcripts_csv_path = _crop_and_save_transcripts(
-                    xenium_tx_path,
+            adata_002um_path = roi_out_dir / "adata_002um.h5ad"
+            if adata_002um_path.exists():
+                transcripts_csv_path = _generate_visiumhd_transcripts(
+                    adata_002um_path,
                     roi_cfg,
                     roi_out_dir / "transcripts_roi.csv",
                     pixel_size_um,
                 )
             else:
-                logger.info("未偵測到 Xenium 轉錄點檔案，不匯出 transcripts 層。")
+                logger.info("未找到 adata_002um.h5ad，不匯出 transcripts 層。")
 
         if req.output_dir:
             out_dir = Path(req.output_dir)
@@ -500,81 +488,62 @@ async def export_loupe(req: ExportRequest, background_tasks: BackgroundTasks):
 # 工具函式
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _crop_and_save_transcripts(
-    src_path: Path,
+def _generate_visiumhd_transcripts(
+    adata_002um_path: Path,
     roi_cfg: dict,
     out_path: Path,
     pixel_size_um: float,
 ) -> "Optional[Path]":
     """
-    從 Xenium transcripts.parquet/csv.gz 裁切 ROI 範圍的轉錄點，
-    座標平移為 ROI 局部 µm，寫出為 transcripts_roi.csv。
+    從 Visium HD 2µm bin AnnData 生成 transcript-like CSV，供 Xenium Explorer 視覺化。
 
-    座標換算：Xenium µm → 裁切後以 (0,0) 為原點的 ROI 局部 µm。
-    過濾條件：is_gene == True（排除 blank/control probes）。
+    資料來源：roi_out_dir/adata_002um.h5ad（bins 已裁切至 ROI 範圍）
+    座標：ROI 局部 µm（原點 = ROI 左上角），由 obsm['spatial'] fullres px 換算。
+    輸出：每個非零 (bin, gene) 對應一行 (x, y, gene)。
 
-    Returns: out_path（寫出成功），或 None（無轉錄點 / 失敗）。
+    Returns: out_path（寫出成功），或 None（失敗）。
     """
+    import scanpy as sc
+    import scipy.sparse as sp
+    import numpy as np
     import pandas as pd
 
-    ps = pixel_size_um
-    x0 = roi_cfg.get("x", 0) * ps
-    y0 = roi_cfg.get("y", 0) * ps
-    x1 = x0 + roi_cfg.get("width_px", 0) * ps
-    y1 = y0 + roi_cfg.get("height_px", 0) * ps
-
-    logger.info(
-        f"裁切 Xenium 轉錄點至 ROI：x=[{x0:.1f},{x1:.1f}] µm, y=[{y0:.1f},{y1:.1f}] µm"
-    )
-
+    logger.info(f"從 Visium HD 2µm bins 生成 transcripts：{adata_002um_path}")
     try:
-        src = Path(src_path)
-        if src.suffix == ".parquet":
-            import dask.dataframe as dd
-            # 只讀必要欄位，依 parquet row-group 過濾以節省記憶體
-            needed = ["x_location", "y_location", "feature_name"]
-            try:
-                # 優先加載 is_gene 欄位（若存在）
-                tx_dd = dd.read_parquet(str(src), columns=needed + ["is_gene"])
-                tx_dd = tx_dd[tx_dd["is_gene"]]
-            except Exception:
-                tx_dd = dd.read_parquet(str(src), columns=needed)
+        adata = sc.read_h5ad(str(adata_002um_path))
 
-            tx_dd = tx_dd[
-                (tx_dd["x_location"] >= x0) & (tx_dd["x_location"] < x1) &
-                (tx_dd["y_location"] >= y0) & (tx_dd["y_location"] < y1)
-            ]
-            df = tx_dd.compute()
-        else:
-            # CSV / CSV.GZ
-            df = pd.read_csv(str(src))
-            if "is_gene" in df.columns:
-                df = df[df["is_gene"]]
-            df = df[
-                (df["x_location"] >= x0) & (df["x_location"] < x1) &
-                (df["y_location"] >= y0) & (df["y_location"] < y1)
-            ].copy()
+        # bin 空間位置：obsm['spatial'] = (n_bins, 2)，fullres px，col/x 在前
+        spatial = adata.obsm["spatial"]
+        roi_x0 = float(roi_cfg.get("x", 0))
+        roi_y0 = float(roi_cfg.get("y", 0))
 
-        if len(df) == 0:
-            logger.warning("裁切後無轉錄點，跳過 transcripts 層")
+        # 轉換為 ROI 局部 µm
+        x_local = (spatial[:, 0] - roi_x0) * pixel_size_um
+        y_local = (spatial[:, 1] - roi_y0) * pixel_size_um
+
+        # 取出稀疏矩陣的非零位置 (bin_idx, gene_idx)
+        X = adata.X
+        csr = X.tocsr() if sp.issparse(X) else sp.csr_matrix(X)
+        rows, cols = csr.nonzero()
+
+        if len(rows) == 0:
+            logger.warning("2µm bin 矩陣無非零 entries，跳過 transcripts 層")
             return None
 
-        df = df.rename(columns={
-            "x_location": "x",
-            "y_location": "y",
-            "feature_name": "gene",
+        gene_names = np.array(adata.var_names)
+        df = pd.DataFrame({
+            "x": x_local[rows],
+            "y": y_local[rows],
+            "gene": gene_names[cols],
         })
 
-        # 平移至 ROI 局部座標（原點 = ROI 左上角）
-        df["x"] = df["x"] - x0
-        df["y"] = df["y"] - y0
-
-        df[["x", "y", "gene"]].to_csv(str(out_path), index=False)
-        logger.info(f"已寫出 {len(df):,} 個 ROI 轉錄點至 {out_path}")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(str(out_path), index=False)
+        logger.info(f"已寫出 {len(df):,} 個 Visium HD 轉錄點至 {out_path}")
         return out_path
 
     except Exception as exc:
-        logger.warning(f"轉錄點裁切失敗（繼續執行）：{exc}")
+        logger.warning(f"Visium HD transcripts 生成失敗（繼續執行）：{exc}")
         return None
 
 
