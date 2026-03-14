@@ -153,6 +153,20 @@ async def _run_xenium(config: dict, req: ExportRequest):
                 if p.exists():
                     h5ad_path = p
                     break
+            # 新路徑：roi/{roi_name}/ 底下
+            if h5ad_path is None:
+                for roi in rois:
+                    roi_name = roi.get("name", "")
+                    if not roi_name:
+                        continue
+                    roi_dir = output_dir_base / "roi" / roi_name
+                    for candidate in ["umap_computed.h5ad", "qc_preprocessed.h5ad"]:
+                        p = roi_dir / candidate
+                        if p.exists():
+                            h5ad_path = p
+                            break
+                    if h5ad_path is not None:
+                        break
         if h5ad_path is None:
             raise FileNotFoundError(f"找不到分析結果 h5ad，請先執行 Stage 3 分析。\n搜尋位置：{output_dir_base}")
 
@@ -346,6 +360,20 @@ async def _run_loupe(config: dict, req: ExportRequest):
                 if p.exists():
                     h5ad_path = p
                     break
+            # 新路徑：roi/{roi_name}/ 底下
+            if h5ad_path is None:
+                for roi in rois:
+                    roi_name = roi.get("name", "")
+                    if not roi_name:
+                        continue
+                    roi_dir = output_dir_base / "roi" / roi_name
+                    for candidate in ["umap_computed.h5ad", "qc_preprocessed.h5ad"]:
+                        p = roi_dir / candidate
+                        if p.exists():
+                            h5ad_path = p
+                            break
+                    if h5ad_path is not None:
+                        break
             if h5ad_path is None:
                 raise FileNotFoundError(f"找不到分析結果 h5ad，請先執行 Stage 3 分析。搜尋位置：{output_dir_base}")
 

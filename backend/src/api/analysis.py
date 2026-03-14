@@ -284,8 +284,11 @@ async def get_qc_status():
     # 記憶體為 idle 時，查磁碟判斷是否已有產出
     if _qc_status["status"] == "idle":
         try:
+            config = load_config()
             output_dir = _get_output_dir()
-            if (output_dir / "qc_preprocessed.h5ad").exists():
+            from backend.src.analysis.pipeline import _get_analysis_h5ad_dir
+            h5ad_dir = _get_analysis_h5ad_dir(config, output_dir)
+            if (h5ad_dir / "qc_preprocessed.h5ad").exists():
                 _qc_status = {"status": "done", "progress": 1.0, "message": "QC 完成（從磁碟恢復）"}
         except Exception:
             pass
@@ -405,8 +408,11 @@ async def get_umap_status():
     global _umap_status
     if _umap_status["status"] == "idle":
         try:
+            config = load_config()
             output_dir = _get_output_dir()
-            if (output_dir / "umap_computed.h5ad").exists():
+            from backend.src.analysis.pipeline import _get_analysis_h5ad_dir
+            h5ad_dir = _get_analysis_h5ad_dir(config, output_dir)
+            if (h5ad_dir / "umap_computed.h5ad").exists():
                 _umap_status = {"status": "done", "progress": 1.0, "message": "UMAP 完成（從磁碟恢復）"}
         except Exception:
             pass

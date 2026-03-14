@@ -475,6 +475,20 @@ def _generate_roi_comparison_grid(
 
 # ─────────────────────── Step 1: QC + PCA ─────────────────────────
 
+def _get_analysis_h5ad_dir(config: dict, output_dir: Path) -> Path:
+    """
+    決定 qc_preprocessed.h5ad / umap_computed.h5ad 的儲存目錄（純路徑計算，不建立目錄）。
+    - 單 ROI 模式：output_dir/roi/{roi_name}/
+    - 合併模式：output_dir/
+    """
+    analysis_cfg = config.get("analysis", {})
+    rois = config.get("rois", [{"name": "test"}])
+    merge_mode = analysis_cfg.get("merge_rois", False) and len(rois) > 1
+    if merge_mode:
+        return output_dir
+    roi_name = rois[0].get("name", "test")
+    return output_dir / "roi" / roi_name
+
 def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
     """
     Step 1：QC 前處理 + PCA。
@@ -717,7 +731,9 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
 
     # ── 7. 儲存前處理結果 ──
     _fix_log1p(adata)
-    qc_h5ad = output_dir / "qc_preprocessed.h5ad"
+    qc_h5ad_dir = _get_analysis_h5ad_dir(config, output_dir)
+    qc_h5ad_dir.mkdir(parents=True, exist_ok=True)
+    qc_h5ad = qc_h5ad_dir / "qc_preprocessed.h5ad"
     adata.write_h5ad(str(qc_h5ad))
     logger.info(f"QC Step 完成：{adata.n_obs:,} 細胞剩餘，已儲存 {qc_h5ad}")
 
@@ -747,8 +763,9 @@ def run_umap_step(
     paths = config["paths"]
     output_dir = resolve_path(paths["output_dir"])
     fig_dir = resolve_path(paths["figure_dir"])
+    h5ad_dir = _get_analysis_h5ad_dir(config, output_dir)
 
-    qc_h5ad = output_dir / "qc_preprocessed.h5ad"
+    qc_h5ad = h5ad_dir / "qc_preprocessed.h5ad"
     if not qc_h5ad.exists():
         raise FileNotFoundError(f"找不到前處理資料，請先執行 QC 步驟：{qc_h5ad}")
 
@@ -815,7 +832,8 @@ def run_umap_step(
 
     # ── 儲存含所有 Leiden 結果的 h5ad ──
     _fix_log1p(adata)
-    umap_h5ad = output_dir / "umap_computed.h5ad"
+    h5ad_dir.mkdir(parents=True, exist_ok=True)
+    umap_h5ad = h5ad_dir / "umap_computed.h5ad"
     adata.write_h5ad(str(umap_h5ad))
     logger.info(f"UMAP Step 完成，已儲存 {umap_h5ad}")
 
@@ -838,7 +856,7 @@ def get_cluster_ids(config: dict[str, Any], resolution: float) -> tuple[list[str
     """取得指定 resolution 的 cluster ID 列表（字串排序）。"""
     paths = config["paths"]
     output_dir = resolve_path(paths["output_dir"])
-    umap_h5ad = output_dir / "umap_computed.h5ad"
+    umap_h5ad = _get_analysis_h5ad_dir(config, output_dir) / "umap_computed.h5ad"
     if not umap_h5ad.exists():
         raise FileNotFoundError(f"找不到 UMAP 資料：{umap_h5ad}")
 
@@ -1015,7 +1033,7 @@ def run_celltypist_annotation(
 
     paths = config["paths"]
     output_dir = resolve_path(paths["output_dir"])
-    umap_h5ad = output_dir / "umap_computed.h5ad"
+    umap_h5ad = _get_analysis_h5ad_dir(config, output_dir) / "umap_computed.h5ad"
     if not umap_h5ad.exists():
         raise FileNotFoundError(f"找不到 UMAP 資料：{umap_h5ad}")
 
@@ -1129,7 +1147,7 @@ def apply_cluster_labels(
     """
     paths = config["paths"]
     output_dir = resolve_path(paths["output_dir"])
-    umap_h5ad = output_dir / "umap_computed.h5ad"
+    umap_h5ad = _get_analysis_h5ad_dir(config, output_dir) / "umap_computed.h5ad"
     if not umap_h5ad.exists():
         raise FileNotFoundError(f"找不到 UMAP 資料：{umap_h5ad}")
 
@@ -1183,7 +1201,7 @@ def run_heatmap_step(
     output_dir = resolve_path(paths["output_dir"])
     fig_dir = resolve_path(paths["figure_dir"])
 
-    umap_h5ad = output_dir / "umap_computed.h5ad"
+    umap_h5ad = _get_analysis_h5ad_dir(config, output_dir) / "umap_computed.h5ad"
     if not umap_h5ad.exists():
         raise FileNotFoundError(f"找不到 UMAP 資料，請先執行 UMAP 步驟：{umap_h5ad}")
 
