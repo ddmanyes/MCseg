@@ -20,9 +20,10 @@ from backend.src.utils.config import resolve_path
 logger = logging.getLogger("pipeline.analysis")
 
 
-# ─────────────────── CRC TME 基因評分常數 ─────────────────────────
+# ─────────────────── TME 基因評分常數（CRC 預設，作為 fallback）──────────────
+# 正常使用時由 tissue profile (config/profiles/*.yaml) 的 tme_panels 取代。
+# 僅在 config=None 或 profile 未定義 tme_panels 時使用。
 
-# 每個功能狀態的 marker gene panel（CRC TME 文獻彙整）
 TME_PANELS: dict[str, list[str]] = {
     "T_exhausted":  ["PDCD1", "LAG3", "TIGIT", "HAVCR2", "TOX", "CTLA4"],
     "T_effector":   ["GZMB", "PRF1", "IFNG", "TNF", "NKG7", "GNLY"],
@@ -34,7 +35,6 @@ TME_PANELS: dict[str, list[str]] = {
     "NK_cytotox":   ["GNLY", "NKG7", "KLRB1", "KLRD1", "NCR1"],
 }
 
-# 哪個 CellTypist 大類標籤應該優先跑哪幾個 panel
 IMMUNE_PANEL_MAP: dict[str, list[str]] = {
     "cd8":        ["T_exhausted", "T_effector"],
     "cd4":        ["Treg", "T_effector"],
@@ -60,18 +60,43 @@ _PANEL_STATE_LABELS: dict[str, str] = {
 }
 
 
+def _build_tme_config(
+    config: "dict[str, Any] | None",
+) -> "tuple[dict[str, list[str]], dict[str, list[str]], dict[str, str]]":
+    """
+    從 tissue profile config 動態建立 TME 設定。
+
+    若 config 包含 tme_panels（由 config/profiles/*.yaml 載入），使用 profile 定義。
+    否則 fallback 到模組常數（CRC 預設值）。
+
+    Returns
+    -------
+    (tme_panels, immune_panel_map, panel_state_labels)
+    """
+    tme_cfg = (config or {}).get("tme_panels") if config else None
+    if tme_cfg:
+        panels = {name: data.get("genes", []) for name, data in tme_cfg.items()}
+        state_labels = {name: data.get("state_label", name) for name, data in tme_cfg.items()}
+        ip_map = (config or {}).get("immune_panel_map", IMMUNE_PANEL_MAP)
+        profile_name = ((config or {}).get("global") or {}).get("tissue_profile", "unknown")
+        logger.info(f"  [TME] 使用 profile tme_panels（{profile_name}）：{list(panels.keys())}")
+        return panels, ip_map, state_labels
+    # Fallback
+    logger.info("  [TME] 使用預設 CRC TME_PANELS（未設定 tissue profile）")
+    return TME_PANELS, IMMUNE_PANEL_MAP, _PANEL_STATE_LABELS
+
+
 def _panel_to_state(panel_name: str) -> str:
     return _PANEL_STATE_LABELS.get(panel_name, panel_name)
 
 
 def _relevant_panels_for_label(immune_label: str) -> list[str]:
-    """根據 CellTypist 大類標籤，回傳應跑的 panel 名稱列表。"""
+    """根據 CellTypist 大類標籤，回傳應跑的 panel 名稱列表（使用模組預設 map）。"""
     label_lower = immune_label.lower()
     panels: list[str] = []
     for keyword, panel_list in IMMUNE_PANEL_MAP.items():
         if keyword in label_lower:
             panels.extend(panel_list)
-    # 去重保序
     seen: set[str] = set()
     result = []
     for p in panels:
@@ -87,6 +112,7 @@ def refine_immune_labels(
     cluster_info: dict[str, dict],
     score_threshold: float = 0.3,
     uncertain_threshold: float = 0.7,
+    config: "dict[str, Any] | None" = None,
 ) -> dict[str, dict]:
     """
     對 source="immune" 的 cluster 執行兩件事：
@@ -99,13 +125,22 @@ def refine_immune_labels(
        - 標記 uncertain=True（前端顯示警告色）
 
     cluster_info 在原地修改後回傳。
+
+    Parameters
+    ----------
+    config : dict, optional
+        pipeline config（含 tissue profile tme_panels）。
+        若為 None 則 fallback 到模組層級的 CRC 預設常數。
     """
+    # 從 profile 或 fallback 取得動態 TME 設定
+    tme_panels, immune_panel_map, panel_state_labels = _build_tme_config(config)
+
     available_genes = set(adata_ct.var_names)
     leiden_vals = adata_ct.obs[leiden_key].astype(str).values
 
     # 預計算所有有效 panel 的基因評分
     panel_scores: dict[str, np.ndarray] = {}
-    for panel_name, genes in TME_PANELS.items():
+    for panel_name, genes in tme_panels.items():
         valid = [g for g in genes if g in available_genes]
         if len(valid) < 2:
             logger.info(f"  [gene score] {panel_name}: 可用基因 {len(valid)}/{len(genes)}，跳過")
@@ -143,8 +178,15 @@ def refine_immune_labels(
         immune_label = info.get("label", "")
         mask = leiden_vals == cluster
 
-        # 決定要跑哪些 panel
-        target_panels = _relevant_panels_for_label(immune_label)
+        # 決定要跑哪些 panel（使用 profile immune_panel_map）
+        label_lower = immune_label.lower()
+        target_panels: list[str] = []
+        for keyword, panel_list in immune_panel_map.items():
+            if keyword in label_lower:
+                target_panels.extend(panel_list)
+        # 去重保序
+        seen_panels: set[str] = set()
+        target_panels = [p for p in target_panels if not (p in seen_panels or seen_panels.add(p))]
         if not target_panels:
             target_panels = list(panel_scores.keys())  # 無對應 → 跑全部
 
@@ -160,7 +202,7 @@ def refine_immune_labels(
                 best_panel = pname
 
         if best_panel:
-            state_label = _panel_to_state(best_panel)
+            state_label = panel_state_labels.get(best_panel, best_panel)
             info["label"] = f"{immune_label} [{state_label}]"
             info["state"] = best_panel
             info["state_score"] = round(best_score, 4)
@@ -267,8 +309,9 @@ def _generate_overlay_images(
     he_path: Path,
     fig_dir: Path,
     pixel_size_um: float,
+    input_source: str = "cellpose",
 ) -> dict[str, str]:
-    """在 H&E 底圖上疊加細胞重心，產生 QC 前後比較圖。
+    """在 H&E 底圖上疊加細胞重心或遮罩輪廓，產生 QC 前後比較圖。
 
     Returns
     -------
@@ -280,6 +323,7 @@ def _generate_overlay_images(
     import matplotlib.pyplot as plt
     import tifffile
     import numpy as np
+    from skimage.segmentation import find_boundaries
 
     figures: dict[str, str] = {}
 
@@ -290,7 +334,6 @@ def _generate_overlay_images(
     he = tifffile.imread(str(he_path))
     H, W = he.shape[:2]
 
-    # µm → HE 像素
     x_px = pre_spatial[:, 0] / pixel_size_um
     y_px = pre_spatial[:, 1] / pixel_size_um
 
@@ -300,18 +343,107 @@ def _generate_overlay_images(
     n_kept   = int(kept_mask.sum())
     n_removed = int(removed_mask.sum())
 
-    # marker size：preview dpi=150 → s=12（≈4px radius），HD dpi=300 → s=3（≈2pt）
+    mask_path = he_path.parent / "segmentation_masks.npy"
+    has_mask = mask_path.exists()
+    
+    he_pre = he.copy()
+    he_post = he.copy()
+    
+    if he_pre.ndim == 2:
+        he_pre = np.stack([he_pre]*3, axis=-1)
+        he_post = np.stack([he_post]*3, axis=-1)
+    elif he_pre.ndim == 3 and he_pre.shape[-1] == 4:
+        he_pre = he_pre[..., :3]
+        he_post = he_post[..., :3]
+
+    if has_mask:
+        import cv2
+        import json
+        logger.info(f"為 {he_path.parent.name} 繪製細胞輪廓 ({input_source})")
+        seg_mask = np.load(str(mask_path))
+        def _get_id(n):
+            import re
+            m = re.search(r'\d+$', n.split("__")[-1])
+            return int(m.group()) if m else -1
+            
+        proseg_polys = {}
+        if input_source == "proseg":
+            json_path = he_path.parent / "_proseg_work" / "proseg_results.json"
+            if json_path.exists():
+                import gzip
+                with open(json_path, "rb") as f:
+                    magic = f.read(2)
+                if magic == b"\x1f\x8b":
+                    with gzip.open(json_path, "rt", encoding="utf-8") as f:
+                        js = json.load(f)
+                else:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        js = json.load(f)
+                for feat in js.get("features", []):
+                    cid = feat["properties"]["cell"]
+                    g_type = feat["geometry"].get("type", "Polygon")
+                    coords = feat["geometry"].get("coordinates", [])
+                    rings = []
+                    if g_type == "Polygon" and coords:
+                        pts = (np.array(coords[0]) / pixel_size_um).astype(np.int32)
+                        rings.append(pts)
+                    elif g_type == "MultiPolygon" and coords:
+                        for poly in coords:
+                            if poly:
+                                pts = (np.array(poly[0]) / pixel_size_um).astype(np.int32)
+                                rings.append(pts)
+                    if rings:
+                        proseg_polys[cid] = rings
+        
+        fallback_all_ids, fallback_kept_ids, fallback_removed_ids = [], [], []
+        poly_all, poly_kept, poly_removed = [], [], []
+
+        for name, k, r in zip(pre_obs_names, kept_mask, removed_mask):
+            cid = _get_id(name)
+            if input_source == "proseg" and cid in proseg_polys:
+                poly_all.extend(proseg_polys[cid])
+                if k: poly_kept.extend(proseg_polys[cid])
+                if r: poly_removed.extend(proseg_polys[cid])
+            else:
+                fallback_all_ids.append(cid)
+                if k: fallback_kept_ids.append(cid)
+                if r: fallback_removed_ids.append(cid)
+
+        if poly_all:
+            cv2.polylines(he_pre, poly_all, True, (0, 255, 255), 1)
+        if poly_kept:
+            cv2.polylines(he_post, poly_kept, True, (0, 255, 0), 1)
+        if poly_removed:
+            cv2.polylines(he_post, poly_removed, True, (255, 0, 0), 1)
+
+        if fallback_all_ids:
+            b_all = find_boundaries(np.isin(seg_mask, fallback_all_ids), mode="thick")
+            he_pre[b_all] = [255, 255, 0] if input_source == "proseg" else [0, 255, 255]
+        if fallback_kept_ids:
+            b_kept = find_boundaries(np.isin(seg_mask, fallback_kept_ids), mode="thick")
+            he_post[b_kept] = [0, 128, 128] if input_source == "proseg" else [0, 255, 0]
+        if fallback_removed_ids:
+            b_removed = find_boundaries(np.isin(seg_mask, fallback_removed_ids), mode="thick")
+            he_post[b_removed] = [255, 128, 0] if input_source == "proseg" else [255, 0, 0]
+
     for dpi, suffix, s in [(150, "", 12), (300, "_hd", 3)]:
         figsize = (W / dpi, H / dpi)
 
         # ── Pre-QC overlay ──
         fig, ax = plt.subplots(figsize=figsize)
-        ax.imshow(he)
-        ax.scatter(x_px, y_px, s=s, c="cyan", alpha=0.6, linewidths=0,
-                   label=f"All cells ({n_total:,})")
+        ax.imshow(he_pre)
+        if not has_mask:
+            ax.scatter(x_px, y_px, s=s, c="cyan", alpha=0.6, linewidths=0, label=f"All cells ({n_total:,})")
+        else:
+            if input_source == "proseg":
+                if poly_all: ax.plot([], [], "o", color="cyan", markersize=4, label=f"Proseg All ({len(poly_all):,})")
+                if fallback_all_ids: ax.plot([], [], "o", color="gold", markersize=4, label=f"Fallback All ({len(fallback_all_ids):,})")
+            else:
+                ax.plot([], [], "o", color="cyan", markersize=4, label=f"All cells ({n_total:,})")
+            
         ax.set_title(f"Pre-QC  ·  {n_total:,} cells", fontsize=9)
         ax.axis("off")
-        ax.legend(loc="upper right", fontsize=7, markerscale=2, framealpha=0.5)
+        ax.legend(loc="upper right", fontsize=7, markerscale=2 if not has_mask else 1, framealpha=0.5)
         path = fig_dir / f"overlay_pre_qc{suffix}.png"
         fig.savefig(str(path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
         plt.close(fig)
@@ -319,18 +451,27 @@ def _generate_overlay_images(
             figures["pre_qc"] = _encode_image(path)
         logger.info(f"已儲存 {path.name}")
 
-        # ── Post-QC overlay（kept=綠，removed=紅）──
+        # ── Post-QC overlay ──
         fig, ax = plt.subplots(figsize=figsize)
-        ax.imshow(he)
-        if removed_mask.any():
-            ax.scatter(x_px[removed_mask], y_px[removed_mask], s=s, c="red",
-                       alpha=0.5, linewidths=0, label=f"Removed ({n_removed:,})")
-        ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="lime",
-                   alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
-        ax.set_title(
-            f"Post-QC  ·  kept {n_kept:,} / removed {n_removed:,}", fontsize=9)
+        ax.imshow(he_post)
+        if not has_mask:
+            if removed_mask.any():
+                ax.scatter(x_px[removed_mask], y_px[removed_mask], s=s, c="red", alpha=0.5, linewidths=0, label=f"Removed ({n_removed:,})")
+            ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="lime", alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
+        else:
+            if input_source == "proseg":
+                if poly_kept: ax.plot([], [], "o", color="lime", markersize=4, label=f"Proseg Kept ({len(poly_kept):,})")
+                if poly_removed: ax.plot([], [], "o", color="red", markersize=4, label=f"Proseg Removed ({len(poly_removed):,})")
+                if fallback_kept_ids: ax.plot([], [], "o", color="teal", markersize=4, label=f"Fallback Kept ({len(fallback_kept_ids):,})")
+                if fallback_removed_ids: ax.plot([], [], "o", color="darkorange", markersize=4, label=f"Fallback Removed ({len(fallback_removed_ids):,})")
+            else:
+                if removed_mask.any():
+                    ax.plot([], [], "o", color="red", markersize=4, label=f"Removed ({n_removed:,})")
+                ax.plot([], [], "o", color="lime", markersize=4, label=f"Kept ({n_kept:,})")
+            
+        ax.set_title(f"Post-QC  ·  kept {n_kept:,} / removed {n_removed:,}", fontsize=9)
         ax.axis("off")
-        ax.legend(loc="upper right", fontsize=7, markerscale=2, framealpha=0.5)
+        ax.legend(loc="upper right", fontsize=7, markerscale=2 if not has_mask else 1, framealpha=0.5)
         path = fig_dir / f"overlay_post_qc{suffix}.png"
         fig.savefig(str(path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
         plt.close(fig)
@@ -349,8 +490,9 @@ def _save_roi_overlay_images(
     fig_dir: Path,
     pixel_size_um: float,
     roi_name: str,
+    input_source: str = "cellpose",
 ) -> None:
-    """為單一 ROI 生成 QC 前後細胞重心疊圖（供多 ROI 比較視圖），150 DPI。
+    """為單一 ROI 生成 QC 前後細胞重心或遮罩輪廓疊圖（供多 ROI 比較視圖），150 DPI。
 
     儲存至 fig_dir/overlay_{roi_name}_pre_qc.png 及 overlay_{roi_name}_post_qc.png。
     """
@@ -359,6 +501,7 @@ def _save_roi_overlay_images(
     import matplotlib.pyplot as plt
     import tifffile
     import numpy as np
+    from skimage.segmentation import find_boundaries
 
     if not he_path.exists():
         logger.warning(f"找不到 H&E：{he_path}，跳過 {roi_name} per-ROI 疊圖")
@@ -376,18 +519,107 @@ def _save_roi_overlay_images(
     n_kept    = int(kept_mask.sum())
     n_removed = int(removed_mask.sum())
 
+    mask_path = he_path.parent / "segmentation_masks.npy"
+    has_mask = mask_path.exists()
+    
+    he_pre = he.copy()
+    he_post = he.copy()
+    
+    if he_pre.ndim == 2:
+        he_pre = np.stack([he_pre]*3, axis=-1)
+        he_post = np.stack([he_post]*3, axis=-1)
+    elif he_pre.ndim == 3 and he_pre.shape[-1] == 4:
+        he_pre = he_pre[..., :3]
+        he_post = he_post[..., :3]
+
+    if has_mask:
+        import cv2
+        import json
+        logger.info(f"為 {he_path.parent.name} 繪製細胞輪廓 ({input_source})")
+        seg_mask = np.load(str(mask_path))
+        def _get_id(n):
+            import re
+            m = re.search(r'\d+$', n.split("__")[-1])
+            return int(m.group()) if m else -1
+            
+        proseg_polys = {}
+        if input_source == "proseg":
+            json_path = he_path.parent / "_proseg_work" / "proseg_results.json"
+            if json_path.exists():
+                import gzip
+                with open(json_path, "rb") as f:
+                    magic = f.read(2)
+                if magic == b"\x1f\x8b":
+                    with gzip.open(json_path, "rt", encoding="utf-8") as f:
+                        js = json.load(f)
+                else:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        js = json.load(f)
+                for feat in js.get("features", []):
+                    cid = feat["properties"]["cell"]
+                    g_type = feat["geometry"].get("type", "Polygon")
+                    coords = feat["geometry"].get("coordinates", [])
+                    rings = []
+                    if g_type == "Polygon" and coords:
+                        pts = (np.array(coords[0]) / pixel_size_um).astype(np.int32)
+                        rings.append(pts)
+                    elif g_type == "MultiPolygon" and coords:
+                        for poly in coords:
+                            if poly:
+                                pts = (np.array(poly[0]) / pixel_size_um).astype(np.int32)
+                                rings.append(pts)
+                    if rings:
+                        proseg_polys[cid] = rings
+        
+        fallback_all_ids, fallback_kept_ids, fallback_removed_ids = [], [], []
+        poly_all, poly_kept, poly_removed = [], [], []
+
+        for name, k, r in zip(pre_obs_names, kept_mask, removed_mask):
+            cid = _get_id(name)
+            if input_source == "proseg" and cid in proseg_polys:
+                poly_all.extend(proseg_polys[cid])
+                if k: poly_kept.extend(proseg_polys[cid])
+                if r: poly_removed.extend(proseg_polys[cid])
+            else:
+                fallback_all_ids.append(cid)
+                if k: fallback_kept_ids.append(cid)
+                if r: fallback_removed_ids.append(cid)
+
+        if poly_all:
+            cv2.polylines(he_pre, poly_all, True, (0, 255, 255), 1)
+        if poly_kept:
+            cv2.polylines(he_post, poly_kept, True, (0, 255, 0), 1)
+        if poly_removed:
+            cv2.polylines(he_post, poly_removed, True, (255, 0, 0), 1)
+
+        if fallback_all_ids:
+            b_all = find_boundaries(np.isin(seg_mask, fallback_all_ids), mode="thick")
+            he_pre[b_all] = [255, 255, 0] if input_source == "proseg" else [0, 255, 255]
+        if fallback_kept_ids:
+            b_kept = find_boundaries(np.isin(seg_mask, fallback_kept_ids), mode="thick")
+            he_post[b_kept] = [0, 128, 128] if input_source == "proseg" else [0, 255, 0]
+        if fallback_removed_ids:
+            b_removed = find_boundaries(np.isin(seg_mask, fallback_removed_ids), mode="thick")
+            he_post[b_removed] = [255, 128, 0] if input_source == "proseg" else [255, 0, 0]
+
     dpi = 150
     figsize = (W / dpi, H / dpi)
     s = 12
 
     # Pre-QC
     fig, ax = plt.subplots(figsize=figsize)
-    ax.imshow(he)
-    ax.scatter(x_px, y_px, s=s, c="cyan", alpha=0.6, linewidths=0,
-               label=f"All cells ({n_total:,})")
+    ax.imshow(he_pre)
+    if not has_mask:
+        ax.scatter(x_px, y_px, s=s, c="cyan", alpha=0.6, linewidths=0, label=f"All cells ({n_total:,})")
+    else:
+        if input_source == "proseg":
+            if poly_all: ax.plot([], [], "o", color="cyan", markersize=4, label=f"Proseg All ({len(poly_all):,})")
+            if fallback_all_ids: ax.plot([], [], "o", color="gold", markersize=4, label=f"Fallback All ({len(fallback_all_ids):,})")
+        else:
+            ax.plot([], [], "o", color="cyan", markersize=4, label=f"All cells ({n_total:,})")
     ax.set_title(f"Pre-QC  ·  {n_total:,} cells", fontsize=9)
     ax.axis("off")
-    ax.legend(loc="upper right", fontsize=7, markerscale=2, framealpha=0.5)
+    ax.legend(loc="upper right", fontsize=7, markerscale=2 if not has_mask else 1, framealpha=0.5)
     pre_path = fig_dir / f"overlay_{roi_name}_pre_qc.png"
     fig.savefig(str(pre_path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
@@ -395,20 +627,28 @@ def _save_roi_overlay_images(
 
     # Post-QC
     fig, ax = plt.subplots(figsize=figsize)
-    ax.imshow(he)
-    if removed_mask.any():
-        ax.scatter(x_px[removed_mask], y_px[removed_mask], s=s, c="red",
-                   alpha=0.5, linewidths=0, label=f"Removed ({n_removed:,})")
-    ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="lime",
-               alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
+    ax.imshow(he_post)
+    if not has_mask:
+        if removed_mask.any():
+            ax.scatter(x_px[removed_mask], y_px[removed_mask], s=s, c="red", alpha=0.5, linewidths=0, label=f"Removed ({n_removed:,})")
+        ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="lime", alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
+    else:
+        if input_source == "proseg":
+            if poly_kept: ax.plot([], [], "o", color="lime", markersize=4, label=f"Proseg Kept ({len(poly_kept):,})")
+            if poly_removed: ax.plot([], [], "o", color="red", markersize=4, label=f"Proseg Removed ({len(poly_removed):,})")
+            if fallback_kept_ids: ax.plot([], [], "o", color="teal", markersize=4, label=f"Fallback Kept ({len(fallback_kept_ids):,})")
+            if fallback_removed_ids: ax.plot([], [], "o", color="darkorange", markersize=4, label=f"Fallback Removed ({len(fallback_removed_ids):,})")
+        else:
+            if removed_mask.any():
+                ax.plot([], [], "o", color="red", markersize=4, label=f"Removed ({n_removed:,})")
+            ax.plot([], [], "o", color="lime", markersize=4, label=f"Kept ({n_kept:,})")
     ax.set_title(f"Post-QC  ·  kept {n_kept:,} / removed {n_removed:,}", fontsize=9)
     ax.axis("off")
-    ax.legend(loc="upper right", fontsize=7, markerscale=2, framealpha=0.5)
+    ax.legend(loc="upper right", fontsize=7, markerscale=2 if not has_mask else 1, framealpha=0.5)
     post_path = fig_dir / f"overlay_{roi_name}_post_qc.png"
     fig.savefig(str(post_path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
     logger.info(f"已儲存 {post_path.name}")
-
 
 def _generate_roi_comparison_grid(
     roi_names: list[str],
@@ -664,13 +904,13 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
         pixel_size_um = rois[0].get("pixel_size_um", VISIUM_UM_PX)
         overlay_figs = _generate_overlay_images(
             _pre_spatial, _pre_obs_names, set(adata.obs_names),
-            he_path, fig_dir, pixel_size_um,
+            he_path, fig_dir, pixel_size_um, input_source,
         )
         figures.update(overlay_figs)
         # 同時儲存為 per-ROI 命名（供 /roi_overlays 比較視圖）
         _save_roi_overlay_images(
             _pre_spatial, _pre_obs_names, set(adata.obs_names),
-            he_path, fig_dir, pixel_size_um, roi_name,
+            he_path, fig_dir, pixel_size_um, roi_name, input_source,
         )
     elif _pre_spatial is not None and merge_mode:
         # 合併模式：各 ROI 有獨立 H&E 座標系，逐一生成 per-ROI 疊圖
@@ -709,7 +949,7 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
                 if not first_roi_done and roi_he.exists():
                     overlay_figs = _generate_overlay_images(
                         roi_spatial_local, roi_pre_names, roi_post_set,
-                        roi_he, fig_dir, px_um,
+                        roi_he, fig_dir, px_um, input_source,
                     )
                     figures.update(overlay_figs)
                     first_roi_done = True
@@ -717,7 +957,7 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
                 # 每個 ROI 都儲存獨立命名的疊圖（供 /roi_overlays 比較視圖）
                 _save_roi_overlay_images(
                     roi_spatial_local, roi_pre_names, roi_post_set,
-                    roi_he, fig_dir, px_um, rn,
+                    roi_he, fig_dir, px_um, rn, input_source,
                 )
             except Exception as e:
                 logger.warning(f"合併模式疊圖生成失敗（{rn}）：{e}")
@@ -1118,6 +1358,7 @@ def run_celltypist_annotation(
             cluster_info,
             score_threshold=score_threshold,
             uncertain_threshold=uncertain_threshold,
+            config=config,
         )
 
     # Tier 3：Immune_All_Low.pkl 亞型精細化（選用）

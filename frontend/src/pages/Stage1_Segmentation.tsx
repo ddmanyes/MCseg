@@ -6,45 +6,57 @@ import { runSegmentation, getSegmentationStatus, getSegmentationPreview, runSegm
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
 
+// MCseg v2 ROI 個別參數覆寫（欄位與 SegmentationParams 對應）
 interface RoiOverride {
-  model_type?: string | null
   dia_small?: number | null
+  dia_mid?: number | null
   dia_large?: number | null
+  use_hematoxylin?: boolean | null
+  use_cpsam?: boolean | null
+  voronoi_distance?: number | null
   flow_threshold?: number | null
   cellprob_threshold?: number | null
-  fragment_threshold?: number | null
+  clahe_clip_limit?: number | null
 }
 
+// MCseg v2 全域分割參數
 interface SegParams {
-  mode: 'roi' | 'full'
-  model_type: 'cyto2' | 'cyto3' | 'nuclei'
   use_gpu: boolean
   batch_size: number
+  // cyto3 直徑
   dia_small: number
+  dia_mid: number
   dia_large: number
+  // 可選 pass
+  use_hematoxylin: boolean
+  use_cpsam: boolean
+  // 後處理
+  voronoi_distance: number
+  min_size: number
+  max_size: number
+  // Cellpose
   flow_threshold: number
   cellprob_threshold: number
-  fragment_threshold: number
-  normalize_stains: boolean
   clahe_clip_limit: number
-  block_size: number
-  overlap: number
+  // 轉錄本補救
+  use_transcript_rescue: boolean
 }
 
 const DEFAULT_PARAMS: SegParams = {
-  mode: 'roi',
-  model_type: 'nuclei',
   use_gpu: true,
   batch_size: 4,
-  dia_small: 10,
-  dia_large: 60,
-  flow_threshold: 0.8,
+  dia_small: 13.0,
+  dia_mid: 17.0,
+  dia_large: 22.0,
+  use_hematoxylin: true,
+  use_cpsam: false,
+  voronoi_distance: 9,
+  min_size: 20,
+  max_size: 6000,
+  flow_threshold: 0.4,
   cellprob_threshold: -2.0,
-  fragment_threshold: 150,
-  normalize_stains: true,
-  clahe_clip_limit: 1.0,
-  block_size: 2048,
-  overlap: 256,
+  clahe_clip_limit: 3.0,
+  use_transcript_rescue: true,
 }
 
 function Tooltip({ text }: { text: string }) {
@@ -220,9 +232,9 @@ export default function Stage1_Segmentation() {
   const [prevPatchSize, setPrevPatchSize] = useState(512)
   const [prevLoading, setPrevLoading] = useState(false)
   const [quickSrc, setQuickSrc] = useState<string | null>(null)
-  const [quickMacenko, setQuickMacenko] = useState<string | null>(null)
+  const [quickClahe, setQuickClahe] = useState<string | null>(null)
   const [quickFlows, setQuickFlows] = useState<string | null>(null)
-  const [quickTab, setQuickTab] = useState<'overlay' | 'macenko' | 'flows'>('overlay')
+  const [quickTab, setQuickTab] = useState<'overlay' | 'clahe' | 'flows'>('overlay')
   const [quickInfo, setQuickInfo] = useState<{ n_cells: number; roi_name: string; patch_info: string } | null>(null)
   const [quickError, setQuickError] = useState<string | null>(null)
   const [preprocSrc, setPreprocSrc] = useState<string | null>(null)
@@ -286,16 +298,16 @@ export default function Stage1_Segmentation() {
   )
 
   const handleRunAll = async () => {
-    updateStage('segmentation', { status: 'running', progress: 0, message: '啟動 Cellpose（全部 ROI）...' })
+    updateStage('segmentation', { status: 'running', progress: 0, message: '啟動 MCseg v2（全部 ROI）...' })
     setRunningRoi(null)
-    await runSegmentation({ ...params, roi_overrides: _buildCleanOverrides() })
+    await runSegmentation({ ...params, mode: 'roi', roi_overrides: _buildCleanOverrides() })
     refetchStatus()
   }
 
   const handleRunSingleRoi = async (roiName: string) => {
-    updateStage('segmentation', { status: 'running', progress: 0, message: `啟動 Cellpose（${roiName}）...` })
+    updateStage('segmentation', { status: 'running', progress: 0, message: `啟動 MCseg v2（${roiName}）...` })
     setRunningRoi(roiName)
-    await runSegmentation({ ...params, roi_overrides: _buildCleanOverrides(), target_roi: roiName })
+    await runSegmentation({ ...params, mode: 'roi', roi_overrides: _buildCleanOverrides(), target_roi: roiName })
     refetchStatus()
   }
 
@@ -340,7 +352,7 @@ export default function Stage1_Segmentation() {
   // 參數改變時清除過時的快速預覽圖，避免誤以為舊圖是新參數的結果
   useEffect(() => {
     setQuickSrc(null)
-    setQuickMacenko(null)
+    setQuickClahe(null)
     setQuickFlows(null)
     setQuickInfo(null)
     setQuickError(null)
@@ -352,7 +364,7 @@ export default function Stage1_Segmentation() {
     setQuickError(null)
     setQuickSrc(null)
     setPreprocSrc(null)
-    setQuickMacenko(null)
+    setQuickClahe(null)
     setQuickFlows(null)
     setQuickInfo(null)
     try {
@@ -361,20 +373,21 @@ export default function Stage1_Segmentation() {
         x: prevX,
         y: prevY,
         patch_size: prevPatchSize,
-        model_type: params.model_type,
         use_gpu: params.use_gpu,
         dia_small: params.dia_small,
+        dia_mid: params.dia_mid,
         dia_large: params.dia_large,
+        use_hematoxylin: params.use_hematoxylin,
+        use_cpsam: params.use_cpsam,
+        voronoi_distance: params.voronoi_distance,
         flow_threshold: params.flow_threshold,
         cellprob_threshold: params.cellprob_threshold,
-        fragment_threshold: params.fragment_threshold,
-        normalize_stains: params.normalize_stains,
-        clahe_clip_limit: params.clahe_clip_limit
+        clahe_clip_limit: params.clahe_clip_limit,
       })
       const d = res.data
       if (d?.status === 'ok' && d.data?.image_b64) {
         setQuickSrc(`data:image/jpeg;base64,${d.data.image_b64}`)
-        if (d.data.macenko_b64) setQuickMacenko(`data:image/jpeg;base64,${d.data.macenko_b64}`)
+        if (d.data.clahe_b64) setQuickClahe(`data:image/jpeg;base64,${d.data.clahe_b64}`)
         if (d.data.flows_b64) setQuickFlows(`data:image/jpeg;base64,${d.data.flows_b64}`)
         setQuickTab('overlay')
         setQuickInfo({ n_cells: d.data.n_cells, roi_name: d.data.roi_name, patch_info: d.data.patch_info })
@@ -392,7 +405,7 @@ export default function Stage1_Segmentation() {
     setPreprocLoading(true)
     setQuickError(null)
     setQuickSrc(null)
-    setQuickMacenko(null)
+    setQuickClahe(null)
     setQuickFlows(null)
     setPreprocSrc(null)
     setQuickInfo(null)
@@ -402,14 +415,13 @@ export default function Stage1_Segmentation() {
         x: prevX,
         y: prevY,
         patch_size: prevPatchSize,
-        normalize_stains: params.normalize_stains,
-        clahe_clip_limit: params.clahe_clip_limit
+        clahe_clip_limit: params.clahe_clip_limit,
       })
       const d = res.data
       if (d?.status === 'ok' && d.data?.image_b64) {
         setQuickSrc(`data:image/jpeg;base64,${d.data.image_b64}`)
-        if (d.data.macenko_b64) setQuickMacenko(`data:image/jpeg;base64,${d.data.macenko_b64}`)
-        setQuickTab('macenko') // 前處理預設看 macenko 分頁
+        if (d.data.clahe_b64) setQuickClahe(`data:image/jpeg;base64,${d.data.clahe_b64}`)
+        setQuickTab('clahe') // 前處理預設看 CLAHE 分頁
         setQuickInfo({
           n_cells: 0, // 前處理不會算細胞數
           roi_name: d.data.roi_name || prevRoi || '',
@@ -428,7 +440,7 @@ export default function Stage1_Segmentation() {
   return (
     <div className="space-y-4">
       <StageCard
-        title="細胞分割（Cellpose + Logic A）"
+        title="細胞分割（MCseg v2 — 多模型 Voronoi 集成）"
         status={stage.status}
         progress={stage.progress}
         message={stage.message}
@@ -442,14 +454,13 @@ export default function Stage1_Segmentation() {
             <span className={`transition-transform duration-200 ${showParams ? 'rotate-90' : ''}`}>▶</span>
             <span>{showParams ? '收起參數' : '展開參數設定'}</span>
           </button>
-          {/* 折疊時顯示當前關鍵參數摘要 */}
+          {/* 折疊時顯示關鍵參數摘要 */}
           {!showParams && (
             <div className="flex gap-3 text-xs text-gray-500">
-              <span className="text-gray-400">{params.model_type}</span>
-              <span>小徑 {params.dia_small}px</span>
-              <span>大徑 {params.dia_large}px</span>
+              <span>dia {params.dia_small}/{params.dia_mid}/{params.dia_large}px</span>
+              <span>Voronoi {params.voronoi_distance}px</span>
               <span>Flow {params.flow_threshold}</span>
-              <span>CellProb {params.cellprob_threshold}</span>
+              <span className={params.use_cpsam ? 'text-blue-400' : ''}>cpsam {params.use_cpsam ? 'ON' : 'off'}</span>
             </div>
           )}
         </div>
@@ -460,116 +471,82 @@ export default function Stage1_Segmentation() {
           {/* 左欄 */}
           <div className="space-y-5">
             <Section title="模型設定">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center">
-                  <span className="text-sm text-gray-300">執行範圍</span>
-                  <span className="text-xs text-gray-500 ml-1">
-                    {params.mode === 'roi' ? '（各 ROI 裁切圖）' : '（完整 BTF，耗時）'}
-                  </span>
-                  <Tooltip text="ROI 模式：對每張已裁切的 he_crop.tif 分別執行，速度快、記憶體低。全圖模式：對整張 BTF 大圖執行，需大量記憶體，耗時較長。" />
-                </div>
-                <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
-                  <button
-                    onClick={() => set('mode', 'roi')}
-                    className={`px-3 py-1 transition-colors ${params.mode === 'roi' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                      }`}
-                  >ROI</button>
-                  <button
-                    onClick={() => set('mode', 'full')}
-                    className={`px-3 py-1 transition-colors ${params.mode === 'full' ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                      }`}
-                  >全圖</button>
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center">
-                  <span className="text-sm text-gray-300">模型類型</span>
-                  <Tooltip text="cyto2：適合上皮細胞、狹長形細胞（如大腸癌）。cyto3：Cellpose 3 通用模型，廣泛場景適用。nuclei：只偵測細胞核，適合核仁清晰的場景。" />
-                </div>
-                <select
-                  value={params.model_type}
-                  onChange={e => set('model_type', e.target.value as SegParams['model_type'])}
-                  className="px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded
-                             text-gray-100 focus:outline-none focus:border-blue-500"
-                >
-                  <option value="cyto2">cyto2（上皮/狹長細胞）</option>
-                  <option value="cyto3">cyto3（通用）</option>
-                  <option value="nuclei">nuclei（細胞核）</option>
-                </select>
-              </div>
               <Toggle label="GPU 加速" value={params.use_gpu} onChange={v => set('use_gpu', v)}
-                tooltip="啟用 CUDA GPU 加速推論。GPU 約比 CPU 快 10-20 倍。若無 GPU 可關閉改用 CPU。" />
+                tooltip="啟用 CUDA GPU 加速推論。建議開啟；無 GPU 時可關閉改用 CPU（速度約慢 10-20 倍）。" />
               <NumberInput label="Batch Size" value={params.batch_size}
                 onChange={v => set('batch_size', v)} min={1} max={16}
-                tooltip="每次同時送入 Cellpose 的影像 patch 數量。GPU 記憶體越大可設越高（建議 4-8）。記憶體不足時請降低。" />
+                tooltip="GPU 批次大小。GPU 記憶體越大可設越高（建議 4-8）。記憶體不足請降低。" />
             </Section>
 
-            <Section title="Logic A 雙尺寸策略">
+            <Section title="cyto3 多直徑集成">
               <NumberInput label="小細胞直徑" value={params.dia_small}
-                onChange={v => set('dia_small', v)} step={0.5} min={4} max={50} hint="px"
-                tooltip="Cellpose 小尺寸推論的預期細胞直徑（像素）。設定接近真實細胞核直徑。偏小值 → 傾向過度分割；偏大值 → 傾向欠分割。" />
+                onChange={v => set('dia_small', v)} step={0.5} min={4} max={40} hint="px"
+                tooltip="cyto3 小細胞 pass 的預期直徑。用來補救主 pass 漏掉的小細胞（如淋巴細胞）。預設 13px。" />
+              <NumberInput label="主要直徑" value={params.dia_mid}
+                onChange={v => set('dia_mid', v)} step={0.5} min={8} max={50} hint="px"
+                tooltip="cyto3 主要 pass 的預期細胞直徑（此 pass 結果作為集成基底）。H&E 細胞核通常 15-20px。預設 17px。" />
               <NumberInput label="大細胞直徑" value={params.dia_large}
-                onChange={v => set('dia_large', v)} step={0.5} min={10} max={100} hint="px"
-                tooltip="Cellpose 大尺寸推論的預期細胞直徑。邏輯 A 策略：若大尺寸 mask 內只包含 ≤1 個小尺寸 mask，則保留大尺寸（避免過度分割）；否則保留小尺寸細胞（避免欠分割）。" />
-              <NumberInput label="Flow Threshold" value={params.flow_threshold}
-                onChange={v => set('flow_threshold', v)} step={0.05} min={0} max={2}
-                tooltip="Cellpose dP 光流向量誤差容忍閾值。值越大 → 接受品質更差的細胞邊界（召回率高但精確度低）。值越小 → 只接受高品質邊界。預設 0.4 適合多數場景。" />
-              <NumberInput label="Cell Prob Threshold" value={params.cellprob_threshold}
-                onChange={v => set('cellprob_threshold', v)} step={0.5} min={-6} max={6}
-                tooltip="Cellpose 細胞存在機率的閾值。值越低（如 -3）→ 更容易偵測到細胞（高召回率）；值越高（如 2）→ 只有非常確定的細胞才被接受（高精確度）。預設 -1 適合細胞較密集的場景。" />
-              <NumberInput label="Fragment Threshold" value={params.fragment_threshold}
-                onChange={v => set('fragment_threshold', v)} min={0} max={500} hint="px²"
-                tooltip="LOGIC A 合併時過濾碎片的面積閾值。面積小於此值的 mask 視為雜訊碎片並忽略。單位為像素平方（px²）。值越大 → 過濾掉更多小碎片；設 0 則不過濾。" />
+                onChange={v => set('dia_large', v)} step={0.5} min={12} max={80} hint="px"
+                tooltip="cyto3 大細胞 pass，補救大型細胞（如上皮細胞、巨噬細胞）。預設 22px。" />
+              <Toggle label="Hematoxylin Pass" value={params.use_hematoxylin}
+                onChange={v => set('use_hematoxylin', v)}
+                tooltip="額外對 Ruifrok H&E 分離的 Hematoxylin 通道跑一次 cyto3（dia=主要直徑）。可補充 H 通道清晰但 RGB 不佳的細胞核。建議開啟。" />
+              <Toggle label="cpsam（可選，較慢）" value={params.use_cpsam}
+                onChange={v => set('use_cpsam', v)}
+                tooltip="額外加入 Cellpose SAM 模型（cpsam）的 3 個 pass。可提升小型/不規則細胞的召回率，但會顯著增加運算時間（約 2-3 倍）。預設關閉。" />
             </Section>
           </div>
 
           {/* 右欄 */}
           <div className="space-y-5">
-            <Section title="前處理">
-              <Toggle label="Macenko 色彩標準化" value={params.normalize_stains}
-                onChange={v => set('normalize_stains', v)}
-                tooltip="Macenko 染色標準化：將 H&E 影像分解為 Hematoxylin（藍紫）與 Eosin（粉紅）兩個成分，並提取 Hematoxylin 通道作為 Cellpose 的灰階輸入。可消除不同批次染色差異。若影像已是灰階或染色品質差可關閉。" />
-              <NumberInput label="CLAHE Clip Limit" value={params.clahe_clip_limit}
-                onChange={v => set('clahe_clip_limit', v)} step={0.5} min={0.5} max={8}
-                hint="細長/破碎核用1.0，一般細胞用2.0"
-                tooltip="CLAHE（對比度限幅直方圖均等化）的裁剪限制值。值越高 → 對比度增強越強烈（細胞邊界更清晰，但雜訊也放大）。細長或稀疏的細胞核建議 1.0；一般圓形細胞核建議 2.0。" />
+            <Section title="後處理 / Voronoi 擴張">
+              <NumberInput label="Voronoi 擴張距離" value={params.voronoi_distance}
+                onChange={v => set('voronoi_distance', v)} min={3} max={25} hint="px"
+                tooltip="Voronoi 擴張的最大距離（像素）。每個細胞向外擴張至多此距離，填補細胞間隙中的 RNA bins。擴張不重疊（Voronoi 性質）。預設 9px ≈ 2.5µm。" />
+              <NumberInput label="最小細胞面積" value={params.min_size}
+                onChange={v => set('min_size', v)} min={5} max={100} hint="px²"
+                tooltip="小於此面積的細胞視為雜訊並移除。" />
+              <NumberInput label="最大細胞面積" value={params.max_size}
+                onChange={v => set('max_size', v)} step={500} min={500} max={20000} hint="px²"
+                tooltip="大於此面積的細胞（如組織碎片）視為雜訊並移除。" />
+              <Toggle label="轉錄本密度補救" value={params.use_transcript_rescue}
+                onChange={v => set('use_transcript_rescue', v)}
+                tooltip="從 vhd_pseudo_transcripts.csv 尋找 Cellpose 遺漏的細胞位置（高轉錄本密度但無遮罩的區域）。需要對應的 CSV 檔案存在，若不存在則自動跳過。" />
             </Section>
 
-            <Section title="分塊設定">
-              <NumberInput label="Block Size" value={params.block_size}
-                onChange={v => set('block_size', v)} step={256} min={512} max={8192} hint="px"
-                tooltip="將大圖切分成多個小塊分別執行 Cellpose 的每塊邊長（像素）。值越大 → 需要更多 GPU 記憶體；值越小 → 切塊更多、邊界處理開銷更大。建議依 GPU 記憶體調整，常見值為 2048-4096。" />
-              <NumberInput label="Overlap" value={params.overlap}
-                onChange={v => set('overlap', v)} step={32} min={64} max={512} hint="px"
-                tooltip="相鄰分塊的重疊區域大小（像素）。重疊可避免分塊邊界處細胞被截斷。建議設定約等於最大細胞直徑的 2-3 倍（一般 128-256 px 已足夠）。" />
+            <Section title="Cellpose 品質控制">
+              <NumberInput label="Flow Threshold" value={params.flow_threshold}
+                onChange={v => set('flow_threshold', v)} step={0.05} min={0} max={2}
+                tooltip="dP 光流誤差容忍閾值。值越大 → 召回率高但邊界品質低；值越小 → 精確度高。預設 0.4。" />
+              <NumberInput label="Cell Prob Threshold" value={params.cellprob_threshold}
+                onChange={v => set('cellprob_threshold', v)} step={0.5} min={-6} max={4}
+                tooltip="細胞存在機率閾值。值越低（如 -3）→ 更容易偵測細胞（高召回率）；值越高 → 只接受確定的細胞。預設 -2。" />
+              <NumberInput label="CLAHE Clip Limit" value={params.clahe_clip_limit}
+                onChange={v => set('clahe_clip_limit', v)} step={0.5} min={0.5} max={8}
+                hint="一般組織建議 3.0"
+                tooltip="CLAHE 對比度增強強度。值越高 → 邊界更清晰，但雜訊也放大。預設 3.0 適合多數 H&E 場景。" />
             </Section>
 
             {/* 快速預設 */}
             <Section title="快速預設">
               <div className="flex gap-2 flex-wrap">
                 <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 10, dia_large: 60, flow_threshold: 0.8, cellprob_threshold: -2.0, fragment_threshold: 150, clahe_clip_limit: 1.0 })}
+                  onClick={() => setParams({ ...DEFAULT_PARAMS })}
                   className="px-3 py-1 text-xs bg-blue-800 hover:bg-blue-700 rounded text-gray-200"
                 >
-                  CRC 細胞核
+                  預設（CRC/LUAD）
                 </button>
                 <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'cyto2', dia_small: 10, dia_large: 60, flow_threshold: 0.8, cellprob_threshold: -2.0, fragment_threshold: 150, clahe_clip_limit: 2.0 })}
+                  onClick={() => setParams({ ...DEFAULT_PARAMS, dia_small: 10, dia_mid: 14, dia_large: 18, voronoi_distance: 7 })}
                   className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
                 >
-                  CRC 上皮（cyto2）
+                  小細胞（淋巴）
                 </button>
                 <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 8, dia_large: 40, flow_threshold: 0.4, cellprob_threshold: -2.0, fragment_threshold: 100, clahe_clip_limit: 1.0 })}
+                  onClick={() => setParams({ ...DEFAULT_PARAMS, dia_small: 16, dia_mid: 22, dia_large: 30, voronoi_distance: 11, cellprob_threshold: -1.0 })}
                   className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
                 >
-                  LUAD 細胞核
-                </button>
-                <button
-                  onClick={() => setParams({ ...DEFAULT_PARAMS, model_type: 'nuclei', dia_small: 8, dia_large: 30, flow_threshold: 0.3, cellprob_threshold: -3.0, fragment_threshold: 80, clahe_clip_limit: 1.0 })}
-                  className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
-                >
-                  LUAD 正常肺
+                  大細胞（上皮）
                 </button>
               </div>
             </Section>
@@ -611,12 +588,12 @@ export default function Stage1_Segmentation() {
               <thead>
                 <tr className="text-gray-500 border-b border-gray-700">
                   <th className="text-left py-2 pr-4 font-medium w-36">ROI</th>
-                  <th className="text-center py-2 px-2 font-medium">模型</th>
-                  <th className="text-center py-2 px-2 font-medium">小徑 (px)</th>
-                  <th className="text-center py-2 px-2 font-medium">大徑 (px)</th>
+                  <th className="text-center py-2 px-2 font-medium">小徑</th>
+                  <th className="text-center py-2 px-2 font-medium">主徑</th>
+                  <th className="text-center py-2 px-2 font-medium">大徑</th>
+                  <th className="text-center py-2 px-2 font-medium">Voronoi</th>
                   <th className="text-center py-2 px-2 font-medium">Flow</th>
                   <th className="text-center py-2 px-2 font-medium">Cell Prob</th>
-                  <th className="text-center py-2 px-2 font-medium">Fragment</th>
                   <th className="text-center py-2 px-2 font-medium">重新分割</th>
                   <th className="py-2 px-2 w-8"></th>
                 </tr>
@@ -636,44 +613,25 @@ export default function Stage1_Segmentation() {
                         {roi.tissue && <span className="text-gray-600 ml-1.5 text-xs">{roi.tissue}</span>}
                       </td>
 
-                      {/* 模型類型 */}
                       <td className="py-2 px-2">
-                        {ov.model_type != null ? (
-                          <div className="flex items-center justify-center gap-0.5">
-                            <select
-                              value={ov.model_type}
-                              onChange={e => updateRoiField(roi.name, 'model_type', e.target.value)}
-                              className="px-1 py-0.5 bg-gray-800 border border-blue-500 rounded text-gray-100 text-xs focus:outline-none"
-                            >
-                              <option value="cyto2">cyto2</option>
-                              <option value="cyto3">cyto3</option>
-                              <option value="nuclei">nuclei</option>
-                            </select>
-                            <button
-                              onClick={() => clearRoiField(roi.name, 'model_type')}
-                              className="text-gray-500 hover:text-red-400 leading-none px-0.5"
-                              title="還原為全域"
-                            >×</button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => updateRoiField(roi.name, 'model_type', params.model_type)}
-                            className="mx-auto block px-2 py-0.5 rounded bg-gray-700/60 text-gray-500 hover:bg-gray-600 hover:text-gray-200 transition-colors"
-                          >
-                            全域
-                          </button>
-                        )}
-                      </td>
-
-                      <td className="py-2 px-2">
-                        <RoiNumCell val={ov.dia_small ?? null} defaultVal={params.dia_small} step={0.5} min={4} max={50}
+                        <RoiNumCell val={ov.dia_small ?? null} defaultVal={params.dia_small} step={0.5} min={4} max={40}
                           onUpdate={v => updateRoiField(roi.name, 'dia_small', v)}
                           onClear={() => clearRoiField(roi.name, 'dia_small')} />
                       </td>
                       <td className="py-2 px-2">
-                        <RoiNumCell val={ov.dia_large ?? null} defaultVal={params.dia_large} step={0.5} min={10} max={100}
+                        <RoiNumCell val={ov.dia_mid ?? null} defaultVal={params.dia_mid} step={0.5} min={8} max={50}
+                          onUpdate={v => updateRoiField(roi.name, 'dia_mid', v)}
+                          onClear={() => clearRoiField(roi.name, 'dia_mid')} />
+                      </td>
+                      <td className="py-2 px-2">
+                        <RoiNumCell val={ov.dia_large ?? null} defaultVal={params.dia_large} step={0.5} min={12} max={80}
                           onUpdate={v => updateRoiField(roi.name, 'dia_large', v)}
                           onClear={() => clearRoiField(roi.name, 'dia_large')} />
+                      </td>
+                      <td className="py-2 px-2">
+                        <RoiNumCell val={ov.voronoi_distance ?? null} defaultVal={params.voronoi_distance} step={1} min={3} max={25}
+                          onUpdate={v => updateRoiField(roi.name, 'voronoi_distance', v)}
+                          onClear={() => clearRoiField(roi.name, 'voronoi_distance')} />
                       </td>
                       <td className="py-2 px-2">
                         <RoiNumCell val={ov.flow_threshold ?? null} defaultVal={params.flow_threshold} step={0.05} min={0} max={2}
@@ -684,11 +642,6 @@ export default function Stage1_Segmentation() {
                         <RoiNumCell val={ov.cellprob_threshold ?? null} defaultVal={params.cellprob_threshold} step={0.5} min={-6} max={6}
                           onUpdate={v => updateRoiField(roi.name, 'cellprob_threshold', v)}
                           onClear={() => clearRoiField(roi.name, 'cellprob_threshold')} />
-                      </td>
-                      <td className="py-2 px-2">
-                        <RoiNumCell val={ov.fragment_threshold ?? null} defaultVal={params.fragment_threshold} step={10} min={0} max={500}
-                          onUpdate={v => updateRoiField(roi.name, 'fragment_threshold', v)}
-                          onClear={() => clearRoiField(roi.name, 'fragment_threshold')} />
                       </td>
                       {/* 單 ROI 重新分割 */}
                       <td className="py-2 px-2 text-center">
@@ -833,13 +786,13 @@ export default function Stage1_Segmentation() {
                 </div>
                 {/* 圖層切換 Tab */}
                 <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
-                  {(['overlay', 'macenko', 'flows'] as const).map(tab => {
+                  {(['overlay', 'clahe', 'flows'] as const).map(tab => {
                     const labels: Record<typeof tab, string> = {
                       overlay: 'H&E + 邊界',
-                      macenko: 'Macenko 前處理',
+                      clahe: 'CLAHE 前處理',
                       flows: 'Flow 方向圖'
                     }
-                    const available = tab === 'overlay' || (tab === 'macenko' && !!quickMacenko) || (tab === 'flows' && !!quickFlows)
+                    const available = tab === 'overlay' || (tab === 'clahe' && !!quickClahe) || (tab === 'flows' && !!quickFlows)
                     return (
                       <button
                         key={tab}
@@ -859,15 +812,15 @@ export default function Stage1_Segmentation() {
             )}
             {/* 說明文字 */}
             <p className="text-xs text-gray-500">
-              {quickTab === 'overlay' && 'H&E 原圖 + 綠色細胞邊界（LOGIC_A 合併）'}
-              {quickTab === 'macenko' && 'Macenko Hematoxylin 萃取 → CLAHE 增強（Cellpose 實際輸入）'}
+              {quickTab === 'overlay' && 'H&E 原圖 + 綠色細胞邊界（MCseg v2 Voronoi 集成）'}
+              {quickTab === 'clahe' && 'CLAHE 局部對比增強（Cellpose 實際輸入）'}
               {quickTab === 'flows' && 'Cellpose 小尺寸 dP 光流方向圖（色相 = 方向，飽和度 = 強度）；白線 = 細胞邊界'}
             </p>
             <div className="rounded-lg overflow-hidden border border-surface-border"
               style={{ imageRendering: 'pixelated' }}>
               <img
                 src={
-                  quickTab === 'macenko' ? (quickMacenko ?? quickSrc) :
+                  quickTab === 'clahe' ? (quickClahe ?? quickSrc) :
                     quickTab === 'flows' ? (quickFlows ?? quickSrc) :
                       quickSrc
                 }

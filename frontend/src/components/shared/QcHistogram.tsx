@@ -140,7 +140,8 @@ export default function QcHistogram({
     if (!dragging.current) return
     const raw = xInvert(getSvgPx(e))
     const clamped = Math.max(xMin, Math.min(xMax, raw))
-    const rounded = Math.round(clamped)
+    const range = xMax - xMin
+    const rounded = range <= 10 ? Number(clamped.toFixed(3)) : Math.round(clamped)
     if (dragging.current === 'min') onMinChange(rounded)
     else onMaxChange(rounded)
   }, [xMin, xMax, xInvert, onMinChange, onMaxChange])

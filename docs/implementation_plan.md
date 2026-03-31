@@ -1,6 +1,7 @@
-# visiumHD_pipeline_2 — 前端建置與驗證計畫
+# MSseg — 前端建置與驗證計畫（歷史紀錄）
 
-> 建立日期：2026-03-03
+> 原始建立：2026-03-03（visiumHD_pipeline_2 基礎架構）
+> MSseg v1.0 遷移：2026-03-31（MCseg v2 整合，Proseg 移除）
 > 狀態：✅ 完成
 
 ---
@@ -73,3 +74,7 @@
 | 2026-03-03 | 初始建立，完成前端安裝、編譯、驗證與 Git 初始化 |
 | 2026-03-03 | 新增資料自動發現功能（DataSetup 頁面 + 後端掃描邏輯） |
 | 2026-03-04 | 完成全域整合架構：導入 Zarr Tiling 分塊合併策略防爆記憶體、套用 Dask-Expr 查詢防護（Fix `legacy implementation`）與 React 掛載狀態優化 |
+| 2026-03-19 | **Tissue Profile 系統**：新增 `config/profiles/`（crc.yaml, luad.yaml），`config.py` 支援三層 merge，換組織只需改 `tissue_profile` 一行 |
+| 2026-03-19 | **RNA 計數優化**：`counter.py` 新增 `expand_labels` dilation（6px = 1.64 µm），PQ 0.397 → 0.432（+9%） |
+| 2026-03-19 | **TME Panel 動態化**：`analysis/pipeline.py` 新增 `_build_tme_config(config)`，TME panels 改由 profile YAML 驅動，不再硬編碼 |
+| 2026-03-19 | **Stage 2.5 Method E + Hungarian 回填**：`runner.py` 新增 `_combine_refine_rna()`（Proseg centroid → Cellpose lookup，全向量化）；`pipeline.yaml` 更新最佳參數（md10_c004_sp20，roi1 PQ=0.502）；`hungarian_refine: true` 開關控制 |

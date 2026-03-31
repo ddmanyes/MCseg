@@ -9,7 +9,6 @@ const STAGES = [
   { path: '/roi',          idx: '0',   title: 'ROI',        stage: 'roi',          dep: null },
   { path: '/segmentation', idx: '1',   title: 'Seg',        stage: 'segmentation', dep: 'roi' },
   { path: '/count',        idx: '2',   title: 'Count',      stage: 'count',        dep: 'segmentation' },
-  { path: '/proseg-rna',   idx: '2½',  title: 'Proseg RNA', stage: 'proseg_rna',   dep: 'count' },
   { path: '/analysis',     idx: '3',   title: 'Analysis',   stage: 'analysis',     dep: 'count' },
   { path: '/export',       idx: '4',   title: 'Export',     stage: 'export',       dep: 'analysis' },
 ] as const
@@ -48,9 +47,9 @@ export default function TopNav() {
       {/* ── Logo ───────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-4 h-full border-r border-white/[0.06] flex-shrink-0">
         <Microscope className="w-4 h-4 text-blue-400" strokeWidth={1.5} />
-        <span className="text-sm font-semibold tracking-wide text-gray-100">VisiumHD</span>
+        <span className="text-sm font-semibold tracking-wide text-gray-100">MSseg</span>
         <span className="text-[10px] text-gray-600 font-mono leading-none px-1 py-0.5
-                         bg-white/5 rounded border border-white/10">v3</span>
+                         bg-white/5 rounded border border-white/10">v1</span>
       </div>
 
       {/* ── Stage tabs ─────────────────────────────────────── */}

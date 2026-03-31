@@ -1,5 +1,5 @@
 """
-VisiumHD Pipeline 3 — FastAPI 主應用程式
+MSseg — FastAPI 主應用程式
 
 啟動方式：
     uv run uvicorn backend.main:app --reload --port 8001
@@ -25,7 +25,6 @@ from backend.src.api import (
     cellpose_count,
     data,
     export,
-    proseg_rna,
     roi,
     segmentation,
 )
@@ -38,15 +37,15 @@ async def lifespan(app: FastAPI):
     """啟動/關閉鉤子"""
     config = load_config()
     setup_logging(config.get("global", {}).get("log_level", "INFO"))
-    logger.info("VisiumHD Pipeline 3 started")
+    logger.info("MSseg started")
     yield
-    logger.info("VisiumHD Pipeline 3 shutting down")
+    logger.info("MSseg shutting down")
 
 
 app = FastAPI(
-    title="VisiumHD Pipeline 3",
-    version="3.0.0",
-    description="空間轉錄體分析流水線 API（Cellpose + 選用 Proseg RNA 重分配）",
+    title="MSseg",
+    version="1.0.0",
+    description="MCseg v2 Visium HD 空間轉錄體分析流水線 API",
     lifespan=lifespan,
 )
 
@@ -64,14 +63,13 @@ app.include_router(data.router,          prefix="/api/data",        tags=["Data 
 app.include_router(roi.router,           prefix="/api/roi",         tags=["Stage 0: ROI"])
 app.include_router(segmentation.router,  prefix="/api/segmentation",tags=["Stage 1: Segmentation"])
 app.include_router(cellpose_count.router,prefix="/api/count",       tags=["Stage 2: Count"])
-app.include_router(proseg_rna.router,    prefix="/api/proseg_rna",  tags=["Stage 2.5: Proseg RNA"])
 app.include_router(analysis.router,      prefix="/api/analysis",    tags=["Stage 3: Analysis"])
 app.include_router(export.router,        prefix="/api/export",      tags=["Stage 4: Export"])
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "3.0.0"}
+    return {"status": "ok", "version": "1.0.0"}
 
 
 @app.get("/api/config")

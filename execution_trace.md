@@ -129,3 +129,46 @@
 ---
 🔄 **[點擊恢復至此審查前狀態]**(command:antigravity.restore?{"hash":"c8203f70"})
 
+
+### [2026-03-31] MSseg v1.0 建立（Pipeline 3 → MCseg v2 遷移）
+
+**目標**：以 visiumHD_pipeline_3 框架為基礎，整合 MCseg v2 多模型 Voronoi 集成分割引擎，並移除 Proseg 依賴。
+
+**變更清單**：
+
+| 檔案 | 變更 |
+|------|------|
+| `backend/src/segmentation/cellpose_runner.py` | 全新 MCseg v2 實作（cyto3×3 + Hema pass + Voronoi expand） |
+| `backend/src/api/segmentation.py` | MCseg v2 Pydantic 參數模型，移除 Macenko/LOGIC_A 欄位 |
+| `backend/main.py` | 移除 proseg_rna router，更新標題 MSseg v1.0.0 |
+| `backend/src/proseg/` | **已刪除**（整個目錄） |
+| `backend/src/api/proseg_rna.py` | **已刪除** |
+| `frontend/src/pages/Stage25_ProsegRNA.tsx` | **已刪除** |
+| `frontend/src/App.tsx` | 移除 Proseg 路由 |
+| `frontend/src/components/layout/TopNav.tsx` | 移除 Proseg stage，品牌更新 MSseg v1 |
+| `frontend/src/components/layout/Sidebar.tsx` | 標題 MSseg / MCseg v2 |
+| `frontend/src/pages/Stage1_Segmentation.tsx` | MCseg v2 參數 UI（三直徑 + Voronoi + ROI override） |
+| `config/pipeline.yaml` | segmentation 改為 mcseg_v2 子段 |
+| `pyproject.toml` | name=msseg, version=1.0.0 |
+
+**效能驗證**（LUAD n=6 ROI）：MCseg v2 PQ@0.5 = 0.554 vs cellpose_dilate 0.432（+28%）
+
+---
+
+### [2026-03-19 20:45:00] 🤖 Code Review 紀錄 (v3.0)
+- **路由模型**: Codex
+- **複雜度評分**: 7 / 10
+- **判定理由**: 重大生信架構變遷，牽涉到 `scanpy`/`anndata`（Tissue Profile / TME panel 聯動）、大規模重構與參數調整（Cellpose `expand_labels` / Proseg Hungarian 回填邏輯）、以及前端 SVG 動態繪製與浮點數精度修復。
+- **狀態**: ✅ 已完成審查與部署
+
+**修復與審查發現（本次 session）**：
+| 等級 | 問題 | 狀態 |
+|:---:|---|:---:|
+| 🔴 H-1 | Proseg `proseg_results.json` GZIP 二進位編碼導致 `UnicodeDecodeError` | ✅ 已透過魔術字節自動解壓縮修復 |
+| 🔴 H-2 | Proseg GeoJSON 絕對微米座標直接繪製於像素導致座標坍縮 | ✅ 已實作空間除以 `pixel_size_um` 縮放 |
+| 🟡 M-1 | Cell IDs `cell_X` 前綴無法直接轉換為整數 | ✅ 已實作正則表達式尾綴提取 |
+| 🟡 M-2 | 複雜度分數 (Complexity Score) 極限資料範圍下因 `Math.round` 導致控制桿卡死 | ✅ 動態精度判定修復 |
+| 🟢 L-1 | 預留 Proseg 與 Fallback 遮罩雙色圖例 | ✅ 已分開繪製並正確標示統計 |
+
+---
+🔄 **[點擊恢復至此審查前狀態]**(command:antigravity.restore?{"hash":"cda973fab7ce0df8695018e5a5c7a8bcbdae4e50"})

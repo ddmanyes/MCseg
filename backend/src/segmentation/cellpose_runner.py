@@ -1,482 +1,465 @@
 # ==========================================================
-# Provenance: cell_segmentation/scripts/run_segmentation_v3.py
-# Original Project: cellpose-he-segmentation
-# Extracted: 2026-02-20
-# Note: 提取核心函數為可匯入模組，配置改由 pipeline.yaml 驅動
+# MSseg — MCseg v2 分割引擎
+# 基於 autoresearch_seg/segment_best.py（V12 Voronoi 集成）
+# 改編自 visiumHD_pipeline_3，移除 Proseg，整合 MCseg v2
 # ==========================================================
 """
-Cellpose 全圖分割執行器
+MCseg v2 多模型集成分割器
 
-核心功能：
-- Logic A 雙尺寸合併策略 (Small + Large)
-- Macenko 色彩標準化 → Hematoxylin 提取
-- Eosin Watershed 細胞質擴張
-- 分塊拼接 (Tiling + Stitching)
+核心演算法（V12）：
+  1. 預處理：CLAHE + 組織遮罩 + Ruifrok H&E 色彩分離
+  2. 多模型推論：cyto3 × 3 直徑 + 可選 hematoxylin pass + 可選 cpsam × 3
+  3. 非重疊合併（merge_masks_fast）
+  4. 轉錄本密度補救（可選，需 vhd_csv）
+  5. Voronoi 擴張（防止重疊）
+  6. 清理 + 重新編號
+
+保留 pipeline_3 的架構：
+  - per-ROI 分割（run_segmentation_rois）
+  - ROI 個別參數覆寫（roi_overrides）
+  - 單 ROI 重做模式（target_roi）
 """
 
-import logging
-import os
-import sys
-import numpy as np
-import cv2
-import tifffile
-import torch
-from tqdm import tqdm
-from cellpose import models, core
-from pathlib import Path
-from scipy.ndimage import binary_dilation
+from __future__ import annotations
 
-from .macenko import MacenkoNormalizer, apply_clahe
+import gc
+import logging
+import time
+from pathlib import Path
+
+import cv2
+import numpy as np
+import tifffile
+from scipy import ndimage
 
 logger = logging.getLogger("pipeline.segmentation")
 
 
-def get_best_tissue_patch(page_obj, step=50, grid_n=8):
+# ─────────────────────────────────────────────────────────
+# 預處理工具
+# ─────────────────────────────────────────────────────────
+
+def apply_clahe(img: np.ndarray, clip_limit: float = 3.0,
+                tile_size: int = 8) -> np.ndarray:
+    """對 RGB 或灰階影像套用 CLAHE。"""
+    if img.ndim == 3 and img.shape[-1] >= 3:
+        lab = cv2.cvtColor(img[..., :3], cv2.COLOR_RGB2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=clip_limit,
+                                tileGridSize=(tile_size, tile_size))
+        return cv2.cvtColor(cv2.merge((clahe.apply(l_ch), a_ch, b_ch)),
+                            cv2.COLOR_LAB2RGB)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit,
+                            tileGridSize=(tile_size, tile_size))
+    return clahe.apply(img.astype(np.uint8))
+
+
+def create_tissue_mask(img: np.ndarray) -> np.ndarray:
+    """從 H&E 影像建立組織遮罩（排除白色背景）。"""
+    gray = (cv2.cvtColor(img[..., :3], cv2.COLOR_RGB2GRAY)
+            if img.ndim == 3 else img)
+    tissue = (gray < 220).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+    tissue = cv2.morphologyEx(tissue, cv2.MORPH_CLOSE, kernel)
+    kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    tissue = cv2.dilate(tissue, kernel2, iterations=2)
+    return tissue.astype(bool)
+
+
+def color_deconvolution_he(img: np.ndarray) -> np.ndarray:
+    """Ruifrok & Johnston H&E 色彩分離，提取 Hematoxylin 通道（uint8）。"""
+    img_f = img[..., :3].astype(np.float64) + 1.0
+    od = -np.log(img_f / 256.0)
+
+    he_matrix = np.array([
+        [0.6500286, 0.7041680, 0.2860126],   # Hematoxylin
+        [0.0728940, 0.9904310, 0.1155140],   # Eosin
+        [0.2688350, 0.5706770, 0.7768750],   # DAB (residual)
+    ], dtype=np.float64)
+    for i in range(3):
+        norm = np.linalg.norm(he_matrix[i])
+        if norm > 0:
+            he_matrix[i] /= norm
+
+    stains = (od.reshape(-1, 3) @ np.linalg.inv(he_matrix).T
+              ).reshape(img.shape[:2] + (3,))
+    hema = np.clip(stains[:, :, 0], 0, None)
+    h_max = np.percentile(hema, 99.5)
+    if h_max > 0:
+        hema = np.clip(hema / h_max, 0, 1)
+
+    hema_u8 = (hema * 255).astype(np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    return clahe.apply(hema_u8)
+
+
+# ─────────────────────────────────────────────────────────
+# 後處理工具
+# ─────────────────────────────────────────────────────────
+
+def voronoi_expand(mask: np.ndarray, max_distance: int,
+                   tissue_mask: np.ndarray | None = None) -> np.ndarray:
     """
-    Finds the densest tissue crop using a low-res thumbnail.
-    Used for auto-calibrating Macenko normalization.
+    Voronoi 約束擴張：每個背景像素分配給最近細胞，距離上限 max_distance px。
+    優於 expand_labels：不產生重疊，細胞自然填滿可用空間。
     """
-    thumb_level = len(page_obj.pages) - 1
-    thumb = page_obj.pages[thumb_level].asarray()
+    binary = mask > 0
+    if not binary.any():
+        return mask.copy()
 
-    # Handle multi-channel images (RGB, RGBA)
-    if thumb.ndim == 3:
-        if thumb.shape[-1] == 4:
-            thumb = thumb[..., :3]
-        if thumb.shape[-1] == 3:
-            gray = cv2.cvtColor(thumb, cv2.COLOR_RGB2GRAY)
-        else:
-            # Fallback for unexpected number of channels
-            gray = thumb[..., 0]
-    else:
-        # Already grayscale
-        gray = thumb
-
-    tissue = (gray < 220).astype(np.float32)
-
-    h_t, w_t = tissue.shape
-    best_score = -1
-    best_rc = (0, 0)
-
-    ph = h_t // grid_n
-    pw = w_t // grid_n
-
-    for r in range(0, h_t - ph, step):
-        for c in range(0, w_t - pw, step):
-            score = tissue[r:r+ph, c:c+pw].sum()
-            if score > best_score:
-                best_score = score
-                best_rc = (r, c)
-
-    scale = page_obj.pages[0].shape[0] / h_t
-    ry, rx = best_rc
-    full_y = int(ry * scale)
-    full_x = int(rx * scale)
-    full_h = int(ph * scale)
-    full_w = int(pw * scale)
-
-    return full_y, full_x, full_h, full_w
+    dist, nearest_idx = ndimage.distance_transform_edt(~binary,
+                                                        return_indices=True)
+    expanded = mask[nearest_idx[0], nearest_idx[1]]
+    expanded[dist > max_distance] = 0
+    if tissue_mask is not None:
+        expanded[~tissue_mask] = 0
+    return expanded.astype(np.int32)
 
 
-
-def _merge_masks_logic_a(masks_small, masks_large, fragment_threshold=50):
+def merge_masks_fast(base_mask: np.ndarray, new_mask: np.ndarray,
+                     max_overlap_ratio: float = 0.15,
+                     min_size: int = 15) -> tuple[np.ndarray, int]:
     """
-    Strategy LOGIC_A:
-    1. If large cell covers > 1 small cell -> Keep small cells (Under-segmentation)
-    2. If large cell covers <= 1 small cell -> Keep large cell (Over-segmentation)
+    將 new_mask 中不重疊的細胞併入 base_mask（原地修改）。
+    回傳 (base_mask, n_added)。
     """
-    merged = masks_small.copy()
+    next_id = int(base_mask.max()) + 1
+    added = 0
+    base_occupied = base_mask > 0
 
-    large_ids = np.unique(masks_large)
-    large_ids = large_ids[large_ids > 0]
-
-    next_id = masks_small.max() + 1
-
-    for lid in large_ids:
-        region = (masks_large == lid)
-        small_ids_in_region = np.unique(masks_small[region])
-        small_ids_in_region = small_ids_in_region[small_ids_in_region > 0]
-
-        significant_small = []
-        for sid in small_ids_in_region:
-            if np.sum(masks_small == sid) >= fragment_threshold:
-                significant_small.append(sid)
-
-        if len(significant_small) <= 1:
-            # 清除所有含入的小細胞像素（包含延伸到大細胞外的殘留像素）
-            for sid in small_ids_in_region:
-                merged[merged == sid] = 0
-            merged[region] = next_id
-            next_id += 1
-
-    return merged
-
-
-def reconcile_stitched_labels(masks: np.ndarray, min_flat_length: int = 4) -> np.ndarray:
-    """
-    偵測並修補 Cellpose 拼縫偽影（直線邊界）。
-    如果兩個相鄰細胞在拼接線上共享一段水平或垂直的直線邊界，則將其合併。
-    """
-    from collections import defaultdict
-    result = masks.copy()
-    
-    # 統計所有在相鄰像素點但 ID 不同的對
-    # (pair, depth) -> [indices along the boundary]
-    h_adj = defaultdict(list) # ((l1, l2), row) -> [cols...]
-    v_adj = defaultdict(list) # ((l1, l2), col) -> [rows...]
-    
-    # 1. 水平邊界掃描 (標記物件 L1 在 L2 上方且接觸)
-    diff_h = (result[:-1, :] != result[1:, :]) & (result[:-1, :] > 0) & (result[1:, :] > 0)
-    rows_h, cols_h = np.where(diff_h)
-    for r, c in zip(rows_h, cols_h):
-        l1, l2 = result[r, c], result[r+1, c]
-        pair = tuple(sorted((l1, l2)))
-        h_adj[(pair, r)].append(c)
-            
-    # 2. 垂直邊界掃描
-    diff_v = (result[:, :-1] != result[:, 1:]) & (result[:, :-1] > 0) & (result[:, 1:] > 0)
-    rows_v, cols_v = np.where(diff_v)
-    for r, c in zip(rows_v, cols_v):
-        l1, l2 = result[r, c], result[r, c+1]
-        pair = tuple(sorted((l1, l2)))
-        v_adj[(pair, c)].append(r)
-
-    merge_map = {}
-    def find_root(i):
-        root = i
-        while root in merge_map:
-            root = merge_map[root]
-        # Path compression
-        curr = i
-        while curr in merge_map:
-            next_p = merge_map[curr]
-            merge_map[curr] = root
-            curr = next_p
-        return root
-
-    # 3. 判定與合併：如果某對 label 在同一條像素線上連續接觸超過閾值
-    # 這代表它們是被 Tiling Grid 硬生生切斷的
-    for (pair, r), cols in h_adj.items():
-        if len(cols) >= min_flat_length:
-            cols.sort()
-            # 檢查是否為連續直線段
-            if cols[-1] - cols[0] + 1 == len(cols):
-                u, v = find_root(pair[0]), find_root(pair[1])
-                if u != v: merge_map[u] = v
-
-    for (pair, c), rows in v_adj.items():
-        if len(rows) >= min_flat_length:
-            rows.sort()
-            if rows[-1] - rows[0] + 1 == len(rows):
-                u, v = find_root(pair[0]), find_root(pair[1])
-                if u != v: merge_map[u] = v
-
-    if not merge_map:
-        return result
-        
-    logger.info(f"Detected tiling artifacts: reconciling {len(merge_map)} cell fragments...")
-    
-    # 4. 套用合併映射 (優化：使用 lookup table 避免效能瓶頸)
-    id_map = {cid: find_root(cid) for cid in np.unique(result) if cid > 0}
-    max_id = int(result.max())
-    lookup = np.arange(max_id + 1, dtype=result.dtype)
-    for src, dst in id_map.items():
-        lookup[src] = dst
-        
-    result = lookup[result]
-    return result
-
-
-def merge_enclosed_cells(masks: np.ndarray,
-                         dilation_px: int = 6,
-                         coverage_threshold: float = 0.55) -> np.ndarray:
-    """
-    將被單一較大細胞大面積包圍的細胞合併到該細胞。
-
-    判斷方法（覆蓋率 + 四象限）：
-    1. 對每個細胞做 dilation_px px dilation ring
-    2. 若 ring 中同一個較大細胞佔比 >= coverage_threshold → 可能被包圍
-    3. 再確認該較大細胞出現在 ring 的所有 4 個象限（排除「只在一側的鄰居」）
-    4. 通過後合併
-
-    此方法容許 Cellpose 在細胞間留下的背景間隙（通常 < 40% ring 面積），
-    同時透過四象限檢查避免將相鄰而非包圍的細胞錯誤合併。
-    """
-    result = masks.copy()
-    struct = np.ones((3, 3), dtype=bool)  # 8-connectivity
-
-    cell_ids = np.unique(result)
-    cell_ids = cell_ids[cell_ids > 0]
-    sizes = {cid: int(np.sum(result == cid)) for cid in cell_ids}
-    cell_ids_sorted = sorted(cell_ids, key=lambda cid: sizes[cid])
-
-    n_merged = 0
-    for cid in cell_ids_sorted:
-        cell_mask = (result == cid)
-        if not cell_mask.any():
-            continue  # 已被前一輪合併
-
-        # ── dilation ring ──────────────────────────────────────────────────
-        dilated = binary_dilation(cell_mask, structure=struct, iterations=dilation_px)
-        ring = dilated & ~cell_mask
-        ring_vals = result[ring]
-        if ring_vals.size == 0:
+    for nid in np.unique(new_mask)[1:]:   # skip 0
+        new_pixels = new_mask == nid
+        pixel_count = int(new_pixels.sum())
+        if pixel_count < min_size:
             continue
+        overlap = int((base_occupied & new_pixels).sum())
+        if overlap / pixel_count < max_overlap_ratio:
+            empty = new_pixels & (~base_occupied)
+            if int(empty.sum()) >= min_size:
+                base_mask[empty] = next_id
+                base_occupied[empty] = True
+                next_id += 1
+                added += 1
 
-        # ── 找出 ring 中佔比最高的細胞（可含背景）──────────────────────────
-        unique_all, counts_all = np.unique(ring_vals, return_counts=True)
-        id_to_count = dict(zip(unique_all.tolist(), counts_all.tolist()))
-
-        # 只考慮比自己大的細胞
-        cell_counts = {u: c for u, c in id_to_count.items()
-                       if u != 0 and sizes.get(int(u), 0) > sizes.get(cid, 0)}
-        if not cell_counts:
-            continue
-
-        parent = int(max(cell_counts, key=cell_counts.get))
-        coverage = cell_counts[parent] / ring_vals.size  # 含背景的覆蓋率
-        if coverage < coverage_threshold:
-            continue
-
-        # ── 四象限檢查：parent 必須出現在細胞質心的四個象限 ─────────────────
-        ys, xs = np.where(cell_mask)
-        cy, cx = float(ys.mean()), float(xs.mean())
-        parent_ring = np.zeros_like(ring, dtype=bool)
-        parent_ring[ring] = (ring_vals == parent)
-        py, px = np.where(parent_ring)
-        if py.size == 0:
-            continue
-        q1 = bool(np.any((py < cy) & (px < cx)))   # top-left
-        q2 = bool(np.any((py < cy) & (px >= cx)))  # top-right
-        q3 = bool(np.any((py >= cy) & (px < cx)))  # bottom-left
-        q4 = bool(np.any((py >= cy) & (px >= cx))) # bottom-right
-        if not (q1 and q2 and q3 and q4):
-            continue  # parent 未出現在所有象限 → 只是鄰居，非包圍
-
-        result[cell_mask] = parent
-        n_merged += 1
-        logger.debug(f"Enclosed cell {cid}({sizes[cid]}px) → {parent}({sizes[parent]}px) cov={coverage:.2f}")
-
-    if n_merged:
-        logger.info(f"merge_enclosed_cells: {n_merged} cells merged")
-    return result
+    return base_mask, added
 
 
-def run_segmentation(config: dict):
+def clean_mask(mask: np.ndarray, min_size: int = 20,
+               max_size: int = 6000) -> np.ndarray:
+    """移除面積過小或過大的細胞（原地修改）。"""
+    labels_arr, counts_arr = np.unique(mask, return_counts=True)
+    remove = labels_arr[
+        ((counts_arr < min_size) | (counts_arr > max_size)) & (labels_arr > 0)
+    ]
+    if len(remove) > 0:
+        mask[np.isin(mask, remove)] = 0
+    return mask
+
+
+def relabel_sequential(mask: np.ndarray) -> np.ndarray:
+    """重新編號為從 1 開始的連續 ID（LUT 向量化，O(max_id)）。"""
+    unique_labels = np.unique(mask)
+    unique_labels = unique_labels[unique_labels > 0]
+    if len(unique_labels) == 0:
+        return mask
+    lut = np.zeros(int(mask.max()) + 1, dtype=mask.dtype)
+    lut[unique_labels] = np.arange(1, len(unique_labels) + 1, dtype=mask.dtype)
+    return lut[mask]
+
+
+# ─────────────────────────────────────────────────────────
+# 轉錄本密度補救（可選）
+# ─────────────────────────────────────────────────────────
+
+def find_transcript_seeds(
+    vhd_csv: str,
+    img_shape: tuple[int, int, int],
+    existing_mask: np.ndarray,
+    tissue_mask: np.ndarray,
+) -> tuple[np.ndarray, int]:
     """
-    執行全圖分割的主函數。
+    從 Visium HD 轉錄本密度尋找 Cellpose 遺漏的細胞位置。
+    vhd_csv 需含 'x', 'y' 欄位（影像像素座標）。
+    回傳 (seed_mask, n_added)。
     """
-    # 支援傳入完整配置或僅傳入 segmentation 區塊
-    if "segmentation" in config and "paths" in config:
-        # 傳入的是完整配置
-        paths = config["paths"]
-        input_path = paths.get("he_image")
-        output_dir = paths.get("masks_dir", "results/masks")
-        config = config["segmentation"].copy()
-    else:
-        # 傳入的是 segmentation 區塊
-        input_path = config.get("input_path")
-        output_dir = config.get("output_dir", "results/masks")
+    import pandas as pd
 
-    if input_path is None:
-        raise ValueError("未指定輸入影像路徑 (he_image or input_path is None)")
+    try:
+        df = pd.read_csv(vhd_csv)
+    except Exception:
+        return np.zeros(img_shape[:2], dtype=np.int32), 0
 
-    model_config = config.get("cellpose_model", {})
-    strategy = config.get("strategy", {})
-    pp_config = config.get("postprocessing", {})
-    tile_config = config.get("tiling", {})
-    prep_config = config.get("preprocessing", {})
-    out_config = config.get("output", {})
+    h, w = img_shape[:2]
+    density = np.zeros((h, w), dtype=np.float32)
+    x_c = np.clip(df["x"].values.astype(int), 0, w - 1)
+    y_c = np.clip(df["y"].values.astype(int), 0, h - 1)
+    np.add.at(density, (y_c, x_c), 1)
 
-    model_type = model_config.get("model_type", "nuclei")
-    use_gpu = model_config.get("use_gpu", True) and core.use_gpu()
-    batch_size = model_config.get("batch_size", 16)
+    density_smooth = cv2.GaussianBlur(density, (0, 0), sigmaX=5.0)
+    density_max = ndimage.maximum_filter(density_smooth, size=15)
+    local_max = (density_smooth == density_max) & (density_smooth > 2.0)
 
-    dia_small = strategy.get("dia_small", 30.0)
-    dia_large = strategy.get("dia_large", 60.0)
-    flow_thresh = strategy.get("flow_threshold", 0.4)
-    cellprob_thresh = strategy.get("cellprob_threshold", -1.0)
-    frag_thresh = strategy.get("fragment_threshold", 200)
+    exist_dil = cv2.dilate(
+        (existing_mask > 0).astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+    )
+    local_max = local_max & (exist_dil == 0) & tissue_mask
 
-    block_size = tile_config.get("block_size", 2048)
-    overlap = tile_config.get("overlap", 256)
+    peak_labels, n_peaks = ndimage.label(local_max)
+    seed_mask = np.zeros((h, w), dtype=np.int32)
+    next_id = int(existing_mask.max()) + 1
+    added = 0
 
-    normalize_stains = prep_config.get("normalize_stains", True)
+    if n_peaks > 0:
+        centroids = ndimage.center_of_mass(
+            local_max, peak_labels, range(1, n_peaks + 1)
+        )
+        for cy, cx in centroids:
+            cy_i, cx_i = int(round(cy)), int(round(cx))
+            if 0 <= cy_i < h and 0 <= cx_i < w:
+                region = existing_mask[
+                    max(0, cy_i - 5) : min(h, cy_i + 6),
+                    max(0, cx_i - 5) : min(w, cx_i + 6),
+                ]
+                if (region > 0).sum() / max(region.size, 1) < 0.1:
+                    cv2.circle(seed_mask, (cx_i, cy_i), 5, int(next_id), -1)
+                    next_id += 1
+                    added += 1
 
-    save_flows = out_config.get("save_flows", True)
-    mask_filename = out_config.get("mask_filename", "segmentation_masks.npy")
-    mask_tif_filename = out_config.get("mask_tif_filename", "segmentation_masks.tif")
+    seed_mask[~tissue_mask] = 0
+    return seed_mask, added
 
-    os.makedirs(output_dir, exist_ok=True)
 
-    logger.info(f"Loading image: {input_path}")
-    tif = tifffile.TiffFile(input_path)
-    page0 = tif.pages[0]
-    img_full = page0.asarray()
+# ─────────────────────────────────────────────────────────
+# MCseg v2 核心：多模型集成
+# ─────────────────────────────────────────────────────────
 
-    # Standardize image shape/channels
-    is_grayscale = False
-    if img_full.ndim == 2:
-        is_grayscale = True
-        logger.info("Input image is grayscale")
-    elif img_full.ndim == 3:
-        if img_full.shape[-1] == 4:
-            img_full = img_full[..., :3]
-        if img_full.shape[-1] == 1:
-            img_full = img_full[..., 0]
-            is_grayscale = True
-            logger.info("Input image is grayscale (1-channel)")
+def run_mcseg_v2(
+    img: np.ndarray,
+    cfg: dict,
+    vhd_csv: str | None = None,
+) -> np.ndarray:
+    """
+    MCseg v2 主分割函數（V12 Voronoi 集成）。
 
-    if is_grayscale:
-        normalize_stains = False
-        logger.info("Skipping stain normalization for grayscale image")
+    Args:
+        img:     RGB H&E 影像 (H, W, 3)
+        cfg:     mcseg_v2 設定 dict（來自 config segmentation.mcseg_v2）
+        vhd_csv: 轉錄本密度 CSV 路徑（可選；不存在時靜默跳過）
 
-    h_full, w_full = img_full.shape[:2]
-    logger.info(f"Image size: {w_full} x {h_full}")
+    Returns:
+        int32 細胞分割遮罩 (H, W)
+    """
+    from cellpose import core, models
 
-    # Macenko 校正
-    normalizer = MacenkoNormalizer()
-    if normalize_stains:
-        calib_roi = prep_config.get("calibration_roi")
-        if calib_roi:
-            cy, cx, ch, cw = calib_roi
-            calib_patch = img_full[cy:cy+ch, cx:cx+cw]
-        else:
-            fy, fx, fh, fw = get_best_tissue_patch(tif)
-            calib_patch = img_full[fy:fy+fh, fx:fx+fw]
+    t0 = time.time()
 
-        success = normalizer.fit(calib_patch)
-        if success:
-            logger.info("Macenko calibration successful")
-        else:
-            logger.warning("Macenko calibration failed (possible lack of tissue or poor contrast), falling back to grayscale.")
+    # ── 參數 ────────────────────────────────────────────────
+    use_gpu          = bool(cfg.get("use_gpu", True)) and core.use_gpu()
+    batch_size       = int(cfg.get("batch_size", 4))
+    dia_small        = float(cfg.get("dia_small", 13.0))
+    dia_mid          = float(cfg.get("dia_mid", 17.0))
+    dia_large        = float(cfg.get("dia_large", 22.0))
+    use_hematoxylin  = bool(cfg.get("use_hematoxylin", True))
+    use_cpsam        = bool(cfg.get("use_cpsam", False))
+    voronoi_dist     = int(cfg.get("voronoi_distance", 9))
+    flow_thresh      = float(cfg.get("flow_threshold", 0.4))
+    cellprob_thresh  = float(cfg.get("cellprob_threshold", -2.0))
+    min_size         = int(cfg.get("min_size", 20))
+    max_size         = int(cfg.get("max_size", 6000))
+    use_rescue       = bool(cfg.get("use_transcript_rescue", True))
+    clahe_clip       = float(cfg.get("clahe_clip_limit", 3.0))
 
-    tif.close()
+    logger.info("[MCseg v2] === V12 Voronoi 集成分割 ===")
+    logger.info(
+        f"  dia: {dia_small}/{dia_mid}/{dia_large} | "
+        f"cpsam={use_cpsam} | voronoi_d={voronoi_dist}"
+    )
 
-    # Cellpose Model
-    model = models.CellposeModel(gpu=use_gpu, pretrained_model=model_type)
-    logger.info(f"Cellpose model: {model_type}, GPU: {use_gpu}")
+    # ── 1. 預處理 ────────────────────────────────────────────
+    enhanced = apply_clahe(img, clip_limit=clahe_clip, tile_size=8)
+    tissue_mask = create_tissue_mask(img)
 
-    # ==========================
-    # 執行分割 (內建分塊拼接 Tiling)
-    # ==========================
-    # 優點：Cellpose 內建 Tiling 會在 Flow/Probability 階段進行平均融合，徹底消除拼縫直線
-    
-    # 1. 全域預處理
-    if normalize_stains and normalizer.stain_matrix is not None:
-        logger.info("Applying Macenko Color Deconvolution (Hematoxylin)...")
-        gray_full = normalizer.extract_hematoxylin(img_full)
-    elif img_full.ndim == 3 and img_full.shape[-1] >= 3:
-        gray_full = cv2.cvtColor(img_full[..., :3], cv2.COLOR_RGB2GRAY)
-    else:
-        gray_full = img_full.squeeze()
-        
-    gray_full = apply_clahe(gray_full)
-    input_full = np.stack([gray_full, gray_full, gray_full], axis=-1)
-    
-    # 2. 雙直徑評估 (Dual Inference)
-    # 智能決定是否需要分塊：若 ROI 尺寸小於 block_size，則強制不切圖以避免接縫
-    # [優化] 預設 block_size 提高到 3072，處理中型 ROI 更穩健
-    effective_block_size = max(block_size, 3072)
-    do_tile = (h_full > effective_block_size) or (w_full > effective_block_size)
-    tile_overlap_ratio = 0.25 if do_tile else 0.1 # 調高重疊率以利縫合
-    
-    eval_kwargs = {
-        "channels":           [0, 0], # 強制 Cellpose 識別為 2D 影像
-        "do_3D":              False,
-        "flow_threshold":     flow_thresh,
-        "cellprob_threshold": cellprob_thresh,
-        "batch_size":         batch_size,
-        "bsize":              256, # 恢復為 Cellpose 4.0 預設的 256 (Transformer 模型硬性要求)
-        "tile_overlap":       tile_overlap_ratio,
-        "resample":           True,
-        "stitch_threshold":   0.0, # 設為 0 以避免誤啟動 3D 縫合邏輯導致 z_axis 報錯
-    }
+    hema: np.ndarray | None = None
+    if use_hematoxylin:
+        hema = color_deconvolution_he(img)
 
-    if do_tile:
-        logger.info(f"Running Cellpose Tiling (overlap={tile_overlap_ratio:.2f}, stitch_thresh=0.5)...")
-    else:
-        logger.info("ROI is small enough, running without tiling to ensure no artifacts.")
+    # ── 2. 多模型推論 ────────────────────────────────────────
+    results: dict[str, np.ndarray] = {}
 
-    logger.info(f"Step 1/2: Evaluating small diameter ({dia_small})...")
-    masks_s, _, _ = model.eval(input_full, diameter=dia_small, **eval_kwargs)
-    
-    logger.info(f"Step 2/2: Evaluating large diameter ({dia_large})...")
-    masks_l, _, _ = model.eval(input_full, diameter=dia_large, **eval_kwargs)
-    
-    # 資源釋放：input_full 為 3-通道疊加，佔用大量記憶體。
-    # 既然預測已完成，主動將其清空以利後續合併運算。
-    input_full = None
-    import gc
+    eval_base = dict(
+        channels=[0, 0],
+        flow_threshold=flow_thresh,
+        cellprob_threshold=cellprob_thresh,
+        min_size=10,
+        batch_size=batch_size,
+    )
+
+    logger.info(f"  [{time.time()-t0:.0f}s] 載入 cyto3...")
+    cyto3 = models.CellposeModel(model_type="cyto3", gpu=use_gpu)
+
+    logger.info(f"  [{time.time()-t0:.0f}s] cyto3 dia={dia_mid} (RGB)...")
+    m, _, _ = cyto3.eval(enhanced, diameter=dia_mid,
+                         augment=True, resample=True, **eval_base)
+    results["cyto3_mid"] = m
+    logger.info(f"    → {m.max()} cells")
+
+    logger.info(f"  [{time.time()-t0:.0f}s] cyto3 dia={dia_small} (small)...")
+    m, _, _ = cyto3.eval(
+        enhanced, diameter=dia_small, augment=False, resample=True,
+        **{**eval_base, "cellprob_threshold": cellprob_thresh - 1.0},
+    )
+    results["cyto3_small"] = m
+    logger.info(f"    → {m.max()} cells")
+
+    logger.info(f"  [{time.time()-t0:.0f}s] cyto3 dia={dia_large} (large)...")
+    m, _, _ = cyto3.eval(
+        enhanced, diameter=dia_large, augment=False, resample=True,
+        **{**eval_base, "cellprob_threshold": cellprob_thresh + 1.0},
+    )
+    results["cyto3_large"] = m
+    logger.info(f"    → {m.max()} cells")
+
+    if use_hematoxylin and hema is not None:
+        hema_rgb = np.stack([hema, hema, hema], axis=-1)
+        logger.info(f"  [{time.time()-t0:.0f}s] cyto3 dia={dia_mid} (hematoxylin)...")
+        m, _, _ = cyto3.eval(hema_rgb, diameter=dia_mid,
+                             augment=True, resample=True, **eval_base)
+        results["cyto3_hema"] = m
+        logger.info(f"    → {m.max()} cells")
+        del hema_rgb
+
+    del cyto3
     gc.collect()
 
-    # 3. 合併雙尺寸結果
-    logger.info("Merging small and large diameter masks...")
-    final_masks = _merge_masks_logic_a(masks_s, masks_l, frag_thresh)
-    
-    # [新增] 拼縫修補：將被 Tiling 切斷的細胞片段重新融合
-    logger.info("Running reconcile_stitched_labels to fix tiling artifacts...")
-    final_masks = reconcile_stitched_labels(final_masks)
-    
-    global_id = int(final_masks.max())
-    logger.info(f"Stitching finished. Total cells: {global_id}")
+    if use_cpsam:
+        logger.info(f"  [{time.time()-t0:.0f}s] 載入 cpsam...")
+        try:
+            cpsam = models.CellposeModel(model_type="cpsam", gpu=use_gpu)
+            cpsam_base = dict(
+                channels=[0, 0],
+                flow_threshold=flow_thresh,
+                cellprob_threshold=cellprob_thresh,
+                min_size=10,
+                batch_size=batch_size,
+                augment=False,
+                resample=False,
+            )
 
-    # 合併被完全封閉在其他細胞內的子細胞
-    if pp_config.get("enable_merge_enclosed", True):
-        logger.info("Running merge_enclosed_cells...")
-        final_masks = merge_enclosed_cells(final_masks)
+            logger.info(f"  [{time.time()-t0:.0f}s] cpsam auto...")
+            m, _, _ = cpsam.eval(enhanced, diameter=0, **cpsam_base)
+            results["cpsam_auto"] = m
+            logger.info(f"    → {m.max()} cells")
+
+            logger.info(f"  [{time.time()-t0:.0f}s] cpsam dia=16...")
+            m, _, _ = cpsam.eval(
+                enhanced, diameter=16,
+                **{**cpsam_base, "cellprob_threshold": cellprob_thresh - 1.0},
+            )
+            results["cpsam_16"] = m
+            logger.info(f"    → {m.max()} cells")
+
+            if use_hematoxylin and hema is not None:
+                hema_rgb2 = np.stack([hema, hema, hema], axis=-1)
+                logger.info(f"  [{time.time()-t0:.0f}s] cpsam (hematoxylin)...")
+                m, _, _ = cpsam.eval(hema_rgb2, diameter=0, **cpsam_base)
+                results["cpsam_hema"] = m
+                logger.info(f"    → {m.max()} cells")
+                del hema_rgb2
+
+            del cpsam
+            gc.collect()
+        except Exception as e:
+            logger.warning(f"  cpsam 失敗（跳過）：{e}")
+
+    del hema
+    gc.collect()
+
+    logger.info(f"  [{time.time()-t0:.0f}s] 所有模型完成，開始合併...")
+
+    # ── 3. 集成合併（以 cyto3_mid 為基底）────────────────────
+    base_mask = results["cyto3_mid"].copy().astype(np.int32)
+    for key, mask in results.items():
+        if key == "cyto3_mid":
+            continue
+        base_mask, n_added = merge_masks_fast(base_mask, mask.astype(np.int32))
+        logger.info(f"    合併 {key}: +{n_added} cells")
+    logger.info(f"  合併後：{base_mask.max()} cells")
+
+    # ── 4. 轉錄本密度補救（可選）────────────────────────────
+    if use_rescue and vhd_csv and Path(vhd_csv).exists():
+        logger.info(f"  [{time.time()-t0:.0f}s] 轉錄本密度補救...")
+        rescue_mask, n_rescued = find_transcript_seeds(
+            vhd_csv, img.shape, base_mask, tissue_mask
+        )
+        if n_rescued > 0:
+            next_rescue_id = int(base_mask.max()) + 1
+            for rid in np.unique(rescue_mask)[1:]:
+                rpix = rescue_mask == rid
+                if (base_mask[rpix] > 0).sum() == 0:
+                    base_mask[rpix] = next_rescue_id
+                    next_rescue_id += 1
+            logger.info(f"  補救 {n_rescued} cells")
+    elif use_rescue and vhd_csv:
+        logger.info(f"  vhd_csv 不存在，跳過轉錄本補救：{vhd_csv}")
+
+    # ── 5. 清理 + Voronoi 擴張 ───────────────────────────────
+    base_mask[~tissue_mask] = 0
+    base_mask = clean_mask(base_mask, min_size=min_size, max_size=max_size)
+    base_mask = relabel_sequential(base_mask)
+    logger.info(f"  擴張前：{base_mask.max()} cells")
+
+    final_mask = voronoi_expand(base_mask, max_distance=voronoi_dist,
+                                tissue_mask=tissue_mask)
+    final_mask = clean_mask(final_mask, min_size=min_size, max_size=max_size)
+
+    n_final = int(len(np.unique(final_mask)) - 1)
+    logger.info(f"  [{time.time()-t0:.0f}s] 最終：{n_final} cells")
+    return final_mask.astype(np.int32)
 
 
-    # Save
-    npy_path = os.path.join(output_dir, mask_filename)
-    tif_path = os.path.join(output_dir, mask_tif_filename)
+# ─────────────────────────────────────────────────────────
+# ROI 分割（維持 pipeline_3 架構）
+# ─────────────────────────────────────────────────────────
 
-    np.save(npy_path, final_masks)
-    logger.info(f"Saved: {npy_path}")
-
-    tifffile.imwrite(tif_path, final_masks.astype(np.uint16), compression='zlib')
-    logger.info(f"Saved: {tif_path}")
-
-    if save_flows:
-        logger.info("Flow saving skipped in pipeline mode (available in original script)")
-
-    return final_masks
-
-
-# ── Per-ROI segmentation (Stage 1 主要執行路徑) ──────────────────────────────
-
-# 可被 ROI 覆寫的欄位 → (seg_cfg section, key)
-_ROI_OVERRIDE_FIELD_MAP: dict[str, tuple[str, str]] = {
-    "model_type":         ("cellpose_model", "model_type"),
-    "dia_small":          ("strategy",       "dia_small"),
-    "dia_large":          ("strategy",       "dia_large"),
-    "flow_threshold":     ("strategy",       "flow_threshold"),
-    "cellprob_threshold": ("strategy",       "cellprob_threshold"),
-    "fragment_threshold": ("strategy",       "fragment_threshold"),
-    "block_size":         ("tiling",         "block_size"),
-    "overlap":            ("tiling",         "overlap"),
-}
+# 可被 ROI 覆寫的欄位（均屬 mcseg_v2 section）
+_ROI_OVERRIDE_FIELDS: frozenset[str] = frozenset({
+    "use_gpu", "batch_size",
+    "dia_small", "dia_mid", "dia_large",
+    "use_hematoxylin", "use_cpsam",
+    "voronoi_distance",
+    "flow_threshold", "cellprob_threshold",
+    "min_size", "max_size",
+    "use_transcript_rescue",
+    "clahe_clip_limit",
+})
 
 
 def _merge_roi_params(global_seg_cfg: dict, roi_overrides: dict) -> dict:
-    """將 ROI 特定覆寫合併進全域分割設定（深複製，不修改原始設定）。"""
+    """將 ROI 個別覆寫合併進全域分割設定（深複製，不改原始 dict）。"""
     import copy
     cfg = copy.deepcopy(global_seg_cfg)
-    for key, (section, field) in _ROI_OVERRIDE_FIELD_MAP.items():
-        if key in roi_overrides and roi_overrides[key] is not None:
-            cfg.setdefault(section, {})[field] = roi_overrides[key]
+    mcseg = cfg.setdefault("mcseg_v2", {})
+    for key, val in roi_overrides.items():
+        if key in _ROI_OVERRIDE_FIELDS and val is not None:
+            mcseg[key] = val
     return cfg
 
 
-def run_segmentation_rois(config: dict, progress_callback=None,
-                          roi_overrides: dict | None = None,
-                          target_roi: str | None = None):
-    """對所有（或指定）ROI 的 he_crop.tif 執行分割，結果分別存至各 ROI 目錄。
+def run_segmentation_rois(
+    config: dict,
+    progress_callback=None,
+    roi_overrides: dict | None = None,
+    target_roi: str | None = None,
+) -> None:
+    """
+    對所有（或指定）ROI 的 he_crop.tif 執行 MCseg v2 分割。
 
     Args:
-        roi_overrides: {roi_name: {field: value}} 形式的 ROI 個別參數覆寫。
-                       未指定的欄位沿用全域 config 設定。
-        target_roi: 若指定，只重跑此 ROI（單 ROI 重做模式）。
+        config:            完整 pipeline config dict
+        progress_callback: fn(progress: float, message: str)
+        roi_overrides:     {roi_name: {field: value}}
+        target_roi:        若指定，只重跑此 ROI
     """
     paths      = config.get("paths", {})
     output_dir = paths.get("output_dir", "results/analysis")
@@ -485,7 +468,7 @@ def run_segmentation_rois(config: dict, progress_callback=None,
     roi_base   = Path(output_dir) / "roi"
     overrides  = roi_overrides or {}
 
-    # 按 config rois 順序收集
+    # 收集 ROI 路徑（先依 config 順序，再補掃描目錄）
     roi_paths: list[tuple[str, Path]] = []
     for roi in rois:
         roi_name = roi.get("name", "")
@@ -493,7 +476,6 @@ def run_segmentation_rois(config: dict, progress_callback=None,
         if he_crop.exists():
             roi_paths.append((roi_name, he_crop))
 
-    # 掃描目錄補充未在 config 的 ROI
     known = {r[0] for r in roi_paths}
     if roi_base.exists():
         for d in sorted(roi_base.iterdir()):
@@ -505,9 +487,8 @@ def run_segmentation_rois(config: dict, progress_callback=None,
     if not roi_paths:
         raise ValueError("找不到 he_crop.tif，請先在 Stage 0 執行 ROI 裁切")
 
-    # 單 ROI 重做模式：過濾只留指定的 ROI
     if target_roi:
-        filtered = [(name, path) for name, path in roi_paths if name == target_roi]
+        filtered = [(n, p) for n, p in roi_paths if n == target_roi]
         if not filtered:
             raise ValueError(f"找不到 ROI '{target_roi}' 的 he_crop.tif")
         roi_paths = filtered
@@ -523,182 +504,70 @@ def run_segmentation_rois(config: dict, progress_callback=None,
         logger.info(f"處理 ROI: {roi_name} ({i+1}/{n})")
 
         roi_specific = overrides.get(roi_name, {})
-        effective_seg_cfg = _merge_roi_params(seg_cfg, roi_specific) if roi_specific else seg_cfg
+        effective_cfg = (
+            _merge_roi_params(seg_cfg, roi_specific) if roi_specific else seg_cfg
+        )
         if roi_specific:
             logger.info(f"  套用個別參數覆寫：{roi_specific}")
 
-        _run_single_roi_segmentation(he_crop_path, roi_name, effective_seg_cfg)
+        _run_single_roi(he_crop_path, roi_name, effective_cfg)
 
+    if progress_callback:
+        progress_callback(1.0, f"全部 {n} 個 ROI 分割完成")
     logger.info(f"所有 {n} 個 ROI 分割完成")
 
 
-def _run_single_roi_segmentation(he_crop_path: Path, roi_name: str, seg_cfg: dict):
-    """對單一 he_crop.tif 執行 Cellpose 分割，結果存至同目錄。"""
-    model_config      = seg_cfg.get("cellpose_model", {})
-    strategy          = seg_cfg.get("strategy", {})
-    pp_config         = seg_cfg.get("postprocessing", {})
-    tile_config       = seg_cfg.get("tiling", {})
-    prep_config       = seg_cfg.get("preprocessing", {})
-    out_config        = seg_cfg.get("output", {})
+def _run_single_roi(he_crop_path: Path, _roi_name: str,
+                    seg_cfg: dict) -> None:
+    """對單一 he_crop.tif 執行 MCseg v2，結果存至同目錄。"""
+    mcseg_cfg = seg_cfg.get("mcseg_v2", {})
+    out_cfg   = seg_cfg.get("output", {})
 
-    model_type        = model_config.get("model_type", "cyto2")
-    use_gpu           = model_config.get("use_gpu", True) and core.use_gpu()
-    batch_size        = model_config.get("batch_size", 4)
-    dia_small         = strategy.get("dia_small", 30.0)
-    dia_large         = strategy.get("dia_large", 60.0)
-    flow_thresh       = strategy.get("flow_threshold", 0.4)
-    cellprob_thresh   = strategy.get("cellprob_threshold", -1.0)
-    frag_thresh       = strategy.get("fragment_threshold", 200)
-    block_size        = tile_config.get("block_size", 2048)
-    overlap           = tile_config.get("overlap", 256)
-    normalize_stains  = prep_config.get("normalize_stains", True)
-    clahe_clip_limit  = float(prep_config.get("clahe_clip_limit", 2.0))
-    mask_filename     = out_config.get("mask_filename", "masks.npy")
-    mask_tif_filename = out_config.get("mask_tif_filename", "masks.tif")
+    mask_filename     = out_cfg.get("mask_filename",     "segmentation_masks.npy")
+    mask_tif_filename = out_cfg.get("mask_tif_filename", "segmentation_masks.tif")
+    output_dir        = he_crop_path.parent
 
-    output_dir = he_crop_path.parent
+    logger.info(f"讀取：{he_crop_path}")
+    img = tifffile.imread(str(he_crop_path))
+    if img.ndim == 3 and img.shape[-1] == 4:
+        img = img[..., :3]
+    if img.ndim == 2:
+        img = np.stack([img, img, img], axis=-1)
 
-    logger.info(f"Loading: {he_crop_path}")
-    img_full = tifffile.imread(str(he_crop_path))
-    if img_full.ndim == 3 and img_full.shape[-1] == 4:
-        img_full = img_full[..., :3]
+    logger.info(f"影像尺寸：{img.shape[1]} × {img.shape[0]}")
 
-    is_grayscale = img_full.ndim == 2 or (img_full.ndim == 3 and img_full.shape[-1] == 1)
-    if is_grayscale:
-        normalize_stains = False
-        if img_full.ndim == 3:
-            img_full = img_full[..., 0]
+    # 轉錄本密度 CSV（若存在則啟用補救）
+    vhd_csv = str(output_dir / "vhd_pseudo_transcripts.csv")
 
-    h_full, w_full = img_full.shape[:2]
-    logger.info(f"Image size: {w_full} x {h_full}")
-
-    normalizer = MacenkoNormalizer()
-    if normalize_stains:
-        success = normalizer.fit(img_full)
-        if success:
-            logger.info("Macenko calibration successful")
-        else:
-            logger.warning("Macenko fallback to grayscale")
-
-    model = models.CellposeModel(gpu=use_gpu, pretrained_model=model_type)
-    logger.info(f"Model: {model_type}, GPU: {use_gpu}")
-
-    # ==========================
-    # 執行分割 (原生 Tiling + 雙尺寸合併)
-    # ==========================
-    # 1. 影像預處理 (全圖)
-    if normalize_stains and normalizer.stain_matrix is not None:
-        H, E = normalizer.extract_he_channels(img_full)
-    elif img_full.ndim == 3 and img_full.shape[-1] >= 3:
-        H = cv2.cvtColor(img_full[..., :3], cv2.COLOR_RGB2GRAY)
-        E = H
-    else:
-        H = img_full.squeeze()
-        E = H
-
-    H = apply_clahe(H, clip_limit=clahe_clip_limit)
-    E = apply_clahe(E, clip_limit=clahe_clip_limit)
-
-    # 選擇通道策略
-    if model_type in ("cyto", "cyto2", "cyto3"):
-        zeros = np.zeros_like(H)
-        input_img = np.stack([E, H, zeros], axis=-1)
-    else:
-        input_img = np.stack([H, H, H], axis=-1)
-
-    # 2. 評估參數
-    effective_block_size = max(block_size, 3072)
-    do_tile = (h_full > effective_block_size) or (w_full > effective_block_size)
-    tile_overlap_ratio = 0.25 if do_tile else 0.1
-    
-    eval_kwargs = {
-        "channels":           [0, 0],
-        "do_3D":              False,
-        "flow_threshold":     flow_thresh,
-        "cellprob_threshold": cellprob_thresh,
-        "batch_size":         batch_size,
-        "bsize":              256,
-        "tile_overlap":       tile_overlap_ratio,
-        "resample":           True,
-        "stitch_threshold":   0.0,
-    }
-
-    logger.info(f"Evaluating small diameter ({dia_small})...")
-    masks_s, flows_s, _ = model.eval(input_img, diameter=dia_small, **eval_kwargs)
-    
-    logger.info(f"Evaluating large diameter ({dia_large})...")
-    masks_l, _, _ = model.eval(input_img, diameter=dia_large, **eval_kwargs)
-
-    # 用於儲存 Flow 預覽
-    flow_canvas = None
-    if flows_s and len(flows_s) > 0:
-        dp = flows_s[0]
-        if dp.ndim == 3 and dp.shape[-1] == 3:
-            flow_canvas = np.clip(dp, 0, 255).astype(np.uint8)
-
-    # 資源中途清理
-    input_img = None
-    import gc; gc.collect()
-
-    # 3. 合併與修正
-    logger.info("Merging masks and reconciling tiling artifacts...")
-    final_masks = _merge_masks_logic_a(masks_s, masks_l, frag_thresh)
-    final_masks = reconcile_stitched_labels(final_masks)
-
-    global_id = int(final_masks.max())
-    logger.info(f"Segmentation finished. Total cells: {global_id}")
-
-    # 合併被完全封閉在其他細胞內的子細胞
-    if pp_config.get("enable_merge_enclosed", True):
-        logger.info("Running merge_enclosed_cells...")
-        final_masks = merge_enclosed_cells(final_masks)
-
-    # ── Flow 視覺化（小尺寸 dP），用於分割品質檢查 ----------------------------------
-    if flow_canvas is not None:
-        try:
-            from PIL import Image as _Image
-            import io as _io
-            flow_rgb = flow_canvas
-            flow_u8 = _Image.fromarray(flow_rgb)
-            flow_buf = _io.BytesIO()
-            flow_u8.save(flow_buf, "JPEG", quality=85)
-            flows_preview_path = output_dir / "flows_preview.jpg"
-            flows_preview_path.write_bytes(flow_buf.getvalue())
-            logger.info(f"Saved Flow Preview: {flows_preview_path}")
-        except Exception as e:
-            logger.warning(f"Flow visualization failed: {e}")
-
-    if pp_config.get("enable_eosin_watershed", True) and not is_grayscale:
-        # 使用多尺度判斷：高亮度 為背景
-        bg_thresh = pp_config.get("eosin_bg_threshold", 50)
-        brightness = img_full[:, :, :3].astype(np.float32).max(axis=2)
-        is_background = (brightness > (255 - bg_thresh))
-        
-        # 產生組織遮罩 (Cyto Mask)
-        cyto_mask_raw = (~is_background).astype(np.uint8)
-        
-        # [極度放寬] 暫停形態學操作，避免削減邊緣
-        cyto_mask = (~is_background).astype(np.int32)
-        cyto_npy_path = output_dir / "segmentation_masks_cyto.npy"
-        np.save(str(cyto_npy_path), cyto_mask)
-        logger.info(f"Saved Cleaned Cyto Mask for Proseg: {cyto_npy_path}")
-        # [優化] 釋放組織遮罩記憶體
-        cyto_mask = None
-        is_background = None
-        brightness = None
+    final_masks = run_mcseg_v2(img, mcseg_cfg, vhd_csv=vhd_csv)
 
     npy_path = output_dir / mask_filename
     tif_path = output_dir / mask_tif_filename
 
     np.save(str(npy_path), final_masks)
-    logger.info(f"Saved: {npy_path}")
+    logger.info(f"儲存：{npy_path}")
 
-    tifffile.imwrite(str(tif_path), final_masks.astype(np.uint16), compression='zlib')
-    logger.info(f"Saved: {tif_path}")
+    tif_dtype = np.uint16 if final_masks.max() <= 65535 else np.uint32
+    if tif_dtype == np.uint32:
+        logger.warning(f"Cell count {final_masks.max()} exceeds uint16 range — saving TIF as uint32")
+    tifffile.imwrite(str(tif_path), final_masks.astype(tif_dtype),
+                     compression="zlib")
+    logger.info(f"儲存：{tif_path}")
 
-    # [優化] 在回傳前徹底清理大型 Array
-    import gc
-    final_masks = None
+    del final_masks, img
     gc.collect()
 
-    return None # 改為回傳 None，因為呼叫端通常直接讀磁碟，減少記憶體對象傳遞
+
+# ─────────────────────────────────────────────────────────
+# Preview 用：單 patch 快速分割
+# ─────────────────────────────────────────────────────────
+
+def run_preview_patch(img_patch: np.ndarray, mcseg_cfg: dict) -> np.ndarray:
+    """
+    對小 patch 執行 MCseg v2 快速預覽。
+    自動停用 cpsam 與 transcript rescue 以加快速度。
+    """
+    cfg = dict(mcseg_cfg)
+    cfg["use_transcript_rescue"] = False
+    cfg["use_cpsam"] = False
+    return run_mcseg_v2(img_patch, cfg, vhd_csv=None)

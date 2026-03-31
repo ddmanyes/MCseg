@@ -1,7 +1,7 @@
 [project]
-name = "visiumhd-pipeline-2"
-version = "2.0.0"
-description = "VisiumHD Pipeline 2：ROI 裁切 + 條件測試 + Browser 匯出 + React UI"
+name = "msseg"
+version = "1.0.0"
+description = "MSseg：MCseg v2 多模型 Voronoi 集成 Visium HD 分析流水線"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

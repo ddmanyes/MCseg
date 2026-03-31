@@ -1,0 +1,100 @@
+# ============================================================
+# Tissue Profile: Colorectal Cancer (CRC)
+# ============================================================
+# 合併順序：本 profile（基底）← pipeline.yaml（覆寫）← state.json（執行期覆寫）
+# 若 pipeline.yaml 中有相同 key 會覆蓋 profile 的預設值。
+
+profile_name: CRC
+description: "Colorectal Cancer — epithelial, immune, stromal compartments"
+
+# ── Stage 1: MCseg v2 覆寫值（CRC 腸上皮，cyto3 適中直徑）────
+segmentation:
+  mcseg_v2:
+    dia_small: 13.0           # px — 淋巴細胞、小核
+    dia_mid: 17.0             # px — 主要推論基底
+    dia_large: 22.0           # px — 腸上皮、巨噬細胞
+    use_hematoxylin: true     # 腺體結構清晰，Hema pass 有效
+    voronoi_distance: 9       # px，約 2.5µm（VISIUM_UM_PX=0.2737）
+    flow_threshold: 0.4
+    cellprob_threshold: -2.0
+    min_size: 20              # px²
+    max_size: 6000            # px²（腸上皮較大，保留較高上限）
+    clahe_clip_limit: 3.0
+
+# ── Stage 2: RNA 計數 ──────────────────────────────────────────
+rna_counting:
+  dilation_px: 6              # 1.64 µm — 來自 xenium_he_seg benchmark 最佳參數
+
+# ── Stage 3: QC 閾值 ───────────────────────────────────────────
+analysis:
+  preprocessing:
+    cellular:
+      min_genes: 20
+      max_genes: 8000
+      min_counts: 5
+      max_pct_mito: 80.0      # CRC 大腸上皮 mito 比例較高，寬鬆
+
+# ── Marker Genes ───────────────────────────────────────────────
+marker_genes:
+  CRC_tumor_luminal:
+    genes: [MUC2, MUC5AC, TFF3, KRT20]
+    description: "CRC 腔面（luminal）細胞"
+  CRC_tumor_basal:
+    genes: [CDH1, EPCAM, KRT8, KRT18]
+    description: "CRC 基底（basal）/上皮標記"
+  CRC_endothelial:
+    genes: [PECAM1, CD34, VWF]
+    description: "內皮細胞"
+  CRC_smooth_muscle:
+    genes: [ACTA2, MYH11, TAGLN]
+    description: "平滑肌細胞"
+  CRC_fibroblast:
+    genes: [FAP, PDGFRA, COL1A1, COL1A2]
+    description: "癌相關纖維母細胞"
+  CRC_immune_T:
+    genes: [CD3E, CD8A, CD4, FOXP3]
+    description: "T 細胞（CD8+ cytotoxic / CD4+ helper / Treg）"
+  CRC_immune_myeloid:
+    genes: [CD68, CD163, LYZ, S100A8]
+    description: "骨髓來源免疫（巨噬細胞、單核球）"
+
+# ── TME Panels（用於免疫細胞功能狀態精細化）──────────────────
+# 每個 panel：genes（評分基因）+ state_label（顯示標籤）
+tme_panels:
+  T_exhausted:
+    genes: [PDCD1, LAG3, TIGIT, HAVCR2, TOX, CTLA4]
+    state_label: "exhausted"
+  T_effector:
+    genes: [GZMB, PRF1, IFNG, TNF, NKG7, GNLY]
+    state_label: "effector"
+  Treg:
+    genes: [FOXP3, IL2RA, CTLA4, IKZF2, TNFRSF9]
+    state_label: "Treg"
+  Macro_M2_TAM:
+    genes: [CD163, MRC1, FOLR2, TREM2, C1QA, C1QB]
+    state_label: "M2/TAM"
+  Macro_M1:
+    genes: [CD80, CD86, IL1B, CXCL10, CXCL9, TNF]
+    state_label: "M1"
+  cDC_mature:
+    genes: [CCR7, LAMP3, FSCN1, MARCKSL1]
+    state_label: "mature DC"
+  Plasma:
+    genes: [MZB1, JCHAIN, XBP1, IGHG1, IGKC]
+    state_label: "plasma"
+  NK_cytotox:
+    genes: [GNLY, NKG7, KLRB1, KLRD1, NCR1]
+    state_label: "cytotoxic"
+
+# ── CellTypist 免疫 Panel 對應（keyword → panel 名稱列表）────
+immune_panel_map:
+  cd8:        [T_exhausted, T_effector]
+  cd4:        [Treg, T_effector]
+  regulatory: [Treg]
+  t cell:     [T_exhausted, T_effector, Treg]
+  macrophage: [Macro_M2_TAM, Macro_M1]
+  monocyte:   [Macro_M2_TAM, Macro_M1]
+  cdc:        [cDC_mature]
+  dendritic:  [cDC_mature]
+  plasma:     [Plasma]
+  nk:         [NK_cytotox]

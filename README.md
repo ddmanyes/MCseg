@@ -1,131 +1,284 @@
-# VisiumHD Pipeline 3
+# MSseg
 
-VisiumHD Pipeline 3 是一個為處理 10x Genomics **Visium HD** 空間轉錄體學資料而設計的架構優化版。相較於前代，本版本將核心路徑精簡為 **Cellpose 原生分配模式**，大幅縮短分析流程；同時**保留了 Proseg 作為選配 (Stage 2.5)**，提供分子層級的高精度重分配能力。
+MSseg 是專為 10x Genomics **Visium HD**（2µm 解析度）空間轉錄體學資料設計的全流程分析平台。核心分割引擎採用 **MCseg v2**——以 cyto3 多直徑集成（13/17/22px）搭配可選 Hematoxylin 通道 pass 與 Voronoi 擴張，取代傳統單模型雙尺寸策略，大幅提升複雜腫瘤微環境的細胞邊界精度（LUAD PQ=0.554 vs cellpose_dilate 0.432，+28%）。
 
-架構同樣採用 **FastAPI 後端** 搭配 **React + Vite 前端**，支援瀏覽器中的視覺化操作與即時日誌追蹤。
+架構採用 **FastAPI 後端**（port 8001）搭配 **React + Vite 前端**（port 3000），支援瀏覽器內視覺化操作與 WebSocket 即時日誌追蹤。
 
 ---
 
-## 🚀 快速啟動
+## 快速啟動
 
 ### 系統需求
 
-- **uv**：極速的 Python 套件管理器 (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-- **Node.js**：供前端使用 (建議 v18 以上)
+- **uv**：Python 套件管理器（`curl -LsSf https://astral.sh/uv/install.sh | sh`）
+- **Node.js**：v18 以上（供前端使用）
+- **GPU**（選配）：CUDA 12.4 相容 GPU 可加速 MCseg v2 推論
 
-### 一鍵執行
-
-```bash
-cd visiumHD_pipeline_3
-bash start.sh
-```
-
-啟動後，請開啟瀏覽器並前往：**<http://localhost:3000>**
-
-> **注意**：後端預設使用 **port 8001**（避免與 Pipeline 2 的 port 8000 衝突）。
-
-### 分開啟動 (開發模式)
-
-**終端機 1 (後端)：**
+### 分開啟動（開發模式）
 
 ```bash
+# 終端機 1：後端
+cd /path/to/MSseg
 uv run uvicorn backend.main:app --reload --port 8001
+
+# 終端機 2：前端
+cd frontend && npm install && npm run dev
 ```
 
-**終端機 2 (前端)：**
+啟動後前往：<http://localhost:3000>
 
-```bash
-cd frontend
-npm install
-npm run dev
+---
+
+## 設定系統
+
+所有分析參數集中於 `config/pipeline.yaml`，**禁止在程式碼中硬編碼任何參數**。支援**組織 Profile 系統**，換組織只需修改一行。
+
+### Tissue Profile（多組織支援）
+
+```yaml
+# pipeline.yaml
+global:
+  tissue_profile: crc    # 切換至 luad 只需改這一行
+```
+
+| Profile | MCseg v2 dia 範圍 | TME panels | 適用組織 |
+| --- | --- | --- | --- |
+| `crc.yaml` | 13 / 17 / 22 px | 8 panels | 大腸直腸癌 |
+| `luad.yaml` | 13 / 17 / 22 px | 4 panels | 肺腺癌 |
+
+三層合併順序（後者覆寫前者）：
+
+```text
+config/profiles/{tissue_profile}.yaml  ← 組織基底
+        ↓
+config/pipeline.yaml                   ← 專案覆寫
+        ↓
+results/state.json                     ← 執行期覆寫（UI 互動）
+```
+
+### MCseg v2 關鍵參數
+
+```yaml
+segmentation:
+  mcseg_v2:
+    # GPU / 批次
+    use_gpu: true
+    batch_size: 4
+    # cyto3 多直徑集成
+    dia_small: 13.0          # small cells（淋巴細胞等）
+    dia_mid: 17.0            # 主要 pass（集成基底）
+    dia_large: 22.0          # 大型細胞（上皮、巨噬細胞）
+    # 可選 pass
+    use_hematoxylin: true    # cyto3 on Ruifrok Hematoxylin 通道
+    use_cpsam: false         # cpsam 集成（可選，顯著增加時間）
+    # Voronoi 擴張
+    voronoi_distance: 9      # px，約 2.5µm
+    # 細胞過濾
+    min_size: 20             # px²
+    max_size: 6000           # px²
+    # Cellpose 品質控制
+    flow_threshold: 0.4
+    cellprob_threshold: -2.0
+    clahe_clip_limit: 3.0
+    # 轉錄本密度補救（選配）
+    use_transcript_rescue: true
 ```
 
 ---
 
-## 🖥 網頁介面與操作說明
+## 流程說明
 
-Pipeline 3 共 6 個步驟，透過左側選單（或頂部進度條）在頁面間導航。前一步驟完成前，後續步驟會鎖定。
-
-### 📂 資料設定 (Data Setup)
-
-- **用途**：自動掃描並載入所需的原始數據。
-- **操作說明**：點擊「掃描」按鈕並選擇組織樣本根目錄，後端自動尋找 H&E BTF、`square_002um`、`square_008um` 資料夾，完全免去手動輸入路徑的麻煩。
-
-### ✂️ Stage 0: ROI 裁切 (ROI Extract)
-
-- **用途**：從 gigapixel 等級的大型組織影像中裁切感興趣區域（ROI），避免全圖載入耗盡記憶體。
-- **操作說明**：頁面內嵌 **OpenSeadragon** 多解析度瀏覽器，直接從原始 BTF 動態載入 DZI tile，支援即時縮放與平移。拖曳框選即可自動填入 fullres pixel 座標，系統精準裁切 H&E 影像與 Visium HD `h5ad` 矩陣。
-- **輸出**：`he_crop.tif`、`adata_002um.h5ad`（ROI 範圍內的 2µm bins）
-
-- **用途**：利用高解析度 H&E 影像標定細胞核與細胞質範圍。
-- **操作說明**：調用 **Cellpose**（ViT Transformer 架構）對影像進行分割。本版本新增了 **「無縫拼接技術 (Label Reconciliation)」** 與 **「原生 Tiling 融合」**，徹底解決了大圖分塊運算時產生的邊界接縫與綠色線條問題。
-- **輸出**：`segmentation_masks.npy`（H×W 整數陣列，像素值 = cell ID）
-
-### 🧬 Stage 2: RNA 計數 (RNA Count)
-
-- **用途**：將 Visium HD 2µm bins 的 RNA 計數依 Cellpose 分割遮罩分配至細胞層級。
-- **操作說明**：後端讀取 `adata_002um.h5ad` 的 bin 空間座標，對應至 `segmentation_masks.npy` 的像素位置，以稀疏矩陣法高效彙總。此為預設路徑，具有極高的運算速度。
-- **輸出**：`cellpose_cells.h5ad`（或 `proseg_cells.h5ad`，若後續執行 Stage 2.5）
-
-### 🧪 Stage 2.5: Proseg 重分配 (Proseg - Optional)
-
-- **用途**：進階功能。使用概率模型將單個 RNA 分子重新指派給最可能的細胞。
-- **操作說明**：若 Cellpose 分割結果在某些緻密區域不夠理想，可執行此步驟。系統會自動建立 Zarr 數據立方體並調用 Proseg 進行 MCMC 抽樣分配。
-- **輸出**：`proseg_cells.h5ad`、`proseg_results.json`
-
-### 📊 Stage 3: 下游分析 (Analysis)
-
-- **用途**：執行單細胞層級的品質控制（QC）、降維與聚類（Clustering）。
-- **操作說明**：基於 Scanpy 引擎，濾除低基因表現細胞與高粒線體比例細胞，進行 Normalize → HVG → PCA → UMAP → Leiden 聚類，並繪製分析圖（存於 `figures/`）。
-- **輸入**：`cellpose_cells.h5ad`（Stage 2 輸出）
-
-### 📤 Stage 4: Browser 匯出 (Export)
-
-- **用途**：將分析與聚類結果轉換為可視化軟體相容格式。
-- **操作說明**：使用 `skimage.measure.find_contours` 從 Cellpose 遮罩提取細胞輪廓多邊形，轉換為 GeoJSON 格式。支援一鍵匯出至 **10x Genomics Xenium Explorer** 與 **Loupe Browser**。
+MSseg 共 6 個步驟。左側選單顯示進度，前一步驟完成前後續步驟鎖定。
 
 ---
 
-## 🛠 技術亮點
+### 資料設定 (Data Setup)
 
-1. **混合多路徑架構**：提供「極速 Cellpose 直接計數」與「高精度 Proseg 分子分配」雙重路徑，適配不同研究需求。
-2. **無縫拼接優化**：首創 `reconcile_stitched_labels` 演算法，在 GPU 分塊運算後自動偵測並修補斷裂的細胞核，徹底消除切割線。
-3. **完全非同步 (Fully Async)**：後端耗時任務採用 FastAPI `BackgroundTasks` 與 WebSocket 即時回報 log，保證大型 ROI 運算時 UI 流暢。
-4. **xterm.js Terminal**：前端使用高效能 canvas 渲染終端機日誌，支援即時彩色視圖與異常標記。
-5. **OpenSeadragon DZI Tile Server**：Stage 0 直接對 BTF 進行分層串流，支援瀏覽器內流暢操作 Gigapixel 大型圖檔。
-6. **macOS 外接硬碟友好 (`._` 防護)**：自動過濾 ExFAT / APFS 混用產生的 metadata 檔案，確保 Pipeline 穩健運行。
+**目的**：自動掃描並驗證原始資料完整性。
+
+後端 `discovery.py` 掃描指定的組織樣本根目錄，自動識別：
+- H&E 影像：OME-TIFF BTF（BigTIFF 格式，多解析度金字塔）
+- Visium HD bins：`square_002um/filtered_feature_bc_matrix.h5` + `tissue_positions.parquet`
+- 空間資訊：`square_002um/spatial/scalefactors_json.json`
+
+結果寫入 `results/state.json`，後續所有步驟從此讀取路徑。
 
 ---
 
-## 📁 輸出檔案結構
+### Stage 0: ROI 裁切 (ROI Extract)
 
+**目的**：從 Gigapixel BTF 中精準裁切感興趣區域，避免全圖載入耗盡記憶體。
+
+頁面內嵌 **OpenSeadragon** 多解析度瀏覽器，直接從 BTF 動態載入 DZI tile，支援流暢縮放與平移。
+
+**後端原理**（`extractor.py`）：
+1. tile-by-tile 讀取 BTF，記憶體峰值 < 2 GB
+2. 篩選 ROI 框內 `in_tissue == 1` 的 bins
+3. 稀疏矩陣 slice 輸出 `adata_002um.h5ad`
+
+**輸出**：
+- `results/roi/{ROI_NAME}/he_crop.tif`
+- `results/roi/{ROI_NAME}/adata_002um.h5ad`
+
+---
+
+### Stage 1: 細胞分割 (MCseg v2)
+
+**目的**：以 MCseg v2 多模型 Voronoi 集成，在 H&E 影像上標定每個細胞的像素邊界。
+
+#### MCseg v2 演算法
+
+```text
+1. CLAHE 前處理（LAB 色彩空間局部對比增強）
+2. 多 pass Cellpose cyto3 推論：
+   ・pass 1：dia_small=13px（淋巴細胞、小細胞核）
+   ・pass 2：dia_mid=17px（主要推論，集成基底）
+   ・pass 3：dia_large=22px（腸上皮、巨噬細胞）
+   ・pass 4（選配）：cyto3 on Ruifrok Hematoxylin 通道
+   ・pass 5-7（選配）：cpsam×3 補充偵測
+3. merge_masks_fast 集成（IoU 閾值去重）
+4. Voronoi 擴張（max_distance=voronoi_distance px）
+   ─ 每個背景像素指派至最近細胞
+   ─ 無重疊保證（vs expand_labels 可能重疊）
+5. 轉錄本密度補救（選配）
+   ─ 從 vhd_pseudo_transcripts.csv 高密度區域植入補漏細胞
+6. 尺寸過濾（min_size / max_size px²）
 ```
+
+**效能**（LUAD，n=6 ROI）：
+
+| 指標 | cellpose_dilate | MCseg v2 | 提升 |
+| --- | :---: | :---: | :---: |
+| PQ@0.5（mean） | 0.432 | **0.554** | **+28%** |
+| SQ | — | 0.777 | — |
+| RQ | — | 0.711 | — |
+
+**每 ROI 獨立參數覆寫**：Stage 1 UI 提供 ROI 級別的 `dia_mid`、`voronoi_distance` 等欄位覆寫，無需修改全域設定。
+
+**輸出**：
+- `results/roi/{ROI_NAME}/segmentation_masks.npy`（H×W int32，0=背景）
+- `results/roi/{ROI_NAME}/segmentation_masks.tif`
+
+---
+
+### Stage 2: RNA 計數 (RNA Count)
+
+**目的**：將 Visium HD 2µm bins 的 RNA 計數依細胞遮罩分配至細胞層級。
+
+**稀疏矩陣法**（`counter.py`）：
+
+```text
+1. Dilation（expand_labels，dilation_px=6 = 1.64 µm）
+   ─ 填補 Voronoi 擴張後的細胞間隙 bins
+2. Bin 座標映射至遮罩像素
+3. 稀疏矩陣聚合：A @ adata_002um.X（純矩陣乘法，無迴圈）
+```
+
+速度：LUAD 837,530 bins < 30 秒。
+
+**輸出**：
+- `results/roi/{ROI_NAME}/cellpose_cells.h5ad`（cells × 18K genes）
+
+---
+
+### Stage 3: 下游分析 (Analysis)
+
+**Scanpy 流程**：
+
+```text
+原始計數矩陣
+→ QC 過濾（min_genes / max_genes / max_pct_mito / min_complexity）
+→ Normalize（target_sum=10,000）+ log1p
+→ HVG 篩選（top 2,000，seurat_v3）
+→ PCA（n_components=20）
+→ kNN Graph（n_neighbors=15）
+→ UMAP（min_dist=0.3）
+→ Leiden 聚類（resolution=0.5）
+→ Marker Gene 計算
+→ TME Panel 分析（由 tissue profile YAML 定義）
+```
+
+**輸出**：
+- `results/roi/{ROI_NAME}/qc_preprocessed.h5ad`
+- `results/roi/{ROI_NAME}/umap_computed.h5ad`
+- `figures/{ROI_NAME}/`：UMAP、Violin、Dotplot（300 DPI PNG）
+
+---
+
+### Stage 4: Browser 匯出 (Export)
+
+**Xenium Explorer**：
+- `skimage.measure.find_contours` 從遮罩提取細胞邊界多邊形（GeoJSON）
+- 含 Leiden cluster 標籤、UMAP 座標、gene expression
+
+**Loupe Browser**：
+- 輸出 barcode whitelist 與 cluster assignment
+
+---
+
+## 技術亮點
+
+1. **MCseg v2 多模型 Voronoi 集成**：cyto3 三直徑 + 可選 Hematoxylin pass，以 merge_masks_fast IoU 去重後套用 Voronoi 擴張（無重疊保證），LUAD PQ 從 0.432 提升至 0.554（+28%）。
+
+2. **Voronoi 擴張取代 expand_labels**：背景像素以 Voronoi tessellation 指派至最近細胞，距離上限 `voronoi_distance` px，根本消除邊界重疊問題。
+
+3. **轉錄本密度補救（選配）**：利用 `vhd_pseudo_transcripts.csv` 高密度區域植入漏偵測細胞，改善 RNA 稀疏組織的細胞召回率。
+
+4. **Tissue Profile 系統**：三層 YAML 合併，換組織只需改一行，TME panels、分割參數全自動切換。
+
+5. **全向量化稀疏運算**：RNA 計數（A @ X）以 scipy 稀疏矩陣實現，萬級細胞 × 萬級基因 < 30 秒。
+
+6. **完全非同步**：所有耗時後端任務以 FastAPI `BackgroundTasks` 執行，WebSocket 即時串流 log 至前端 xterm.js Terminal。
+
+7. **OpenSeadragon DZI Tile Server**：Stage 0 直接對 BTF 分層串流，瀏覽器內流暢操作 Gigapixel 影像。
+
+8. **macOS 外接硬碟防護**：自動過濾 `._*` metadata 檔案，確保在外接硬碟上穩健運行。
+
+---
+
+## 輸出檔案結構
+
+```text
 results/
   roi/{ROI_NAME}/
-    he_crop.tif                 # Stage 0：H&E 裁切圖
-    adata_002um.h5ad            # Stage 0：ROI 範圍內的 2µm bins
-    segmentation_masks.npy      # Stage 1：Cellpose 遮罩（H×W int，0=背景）
-    cellpose_cells.h5ad         # Stage 2：細胞級計數矩陣（cells × genes）
-  analysis/{ROI_NAME}/
-    adata_processed.h5ad        # Stage 3：Scanpy 分析結果
-    figures/                    # UMAP、Violin plot 等
-  export/{ROI_NAME}/
-    cellpose_polygons.json      # Stage 4：GeoJSON 細胞輪廓（Xenium Explorer）
+    he_crop.tif                   # Stage 0：H&E 裁切影像
+    adata_002um.h5ad              # Stage 0：ROI 2µm bins
+    segmentation_masks.npy        # Stage 1：MCseg v2 遮罩（H×W int32）
+    segmentation_masks.tif        # Stage 1：同上，TIF 格式
+    cellpose_cells.h5ad           # Stage 2：RNA 計數（cells × 18K genes）
+    qc_preprocessed.h5ad          # Stage 3：QC 後矩陣
+    umap_computed.h5ad            # Stage 3：含 UMAP + Leiden 標籤
+
+figures/
+  {ROI_NAME}/
+    umap_leiden.png
+    violin_qc.png
+    dotplot_markers.png
+
+results/export/{ROI_NAME}/
+  cellpose_polygons.json          # Xenium Explorer 格式（GeoJSON）
+  visiumhd_transcripts.csv        # Visium HD 轉錄點（x, y, gene）
+  loupe_clusters.csv              # Loupe Browser 格式
 ```
 
-## 🔬 與 Pipeline 2 的差異
+---
 
-| 功能 | Pipeline 2 | Pipeline 3 |
-|------|-----------|-----------|
-| 核心路徑 | Proseg Only | **Cellpose 優先 (Proseg 選配)** |
-| 處理速度 | 較慢 (需 Zarr/MCMC) | **極速 (直接計數) / 靈活 (可選 MCMC)** |
-| 拼接問題 | 存在邊界接縫 | **已修復 (Seamless Stitching)** |
-| RNA 計數方式 | Proseg 機率分配 | **直接 mask 查詢 或 Proseg 重分配** |
-| 後端 Port | 8000 | **8001** |
-| 環境管理 | Pip/Conda | **uv (推薦)** |
-
-## 🛠 測試與除錯
+## 測試與除錯
 
 ```bash
+# 後端單元測試
 uv run pytest backend/tests/ -v
+
+# API 文件（啟動後前往）
+# http://localhost:8001/docs
 ```
+
+### 常見問題
+
+| 問題 | 原因 | 解法 |
+| --- | --- | --- |
+| MCseg v2 速度慢 | CPU 模式 | 設定 `use_gpu: true`，確認 CUDA 可用 |
+| 細胞數偏少 | cellprob_threshold 過高 | 降低至 -2.0 或 -3.0 |
+| 細胞過小/碎片化 | min_size 過低 | 提高 `min_size`（如 50 px²） |
+| bins 指派率低 | dilation_px=0 | 設定 `rna_counting.dilation_px: 6` |
+| macOS `._*` 污染 | ExFAT 外接硬碟 | Pipeline 已內建自動過濾 |

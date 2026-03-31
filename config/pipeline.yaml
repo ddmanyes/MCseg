@@ -1,7 +1,8 @@
 global:
-  project_name: VisiumHD Pipeline 2
+  project_name: MSseg
   log_level: INFO
   tissue: CRC
+  tissue_profile: crc       # 參照 config/profiles/crc.yaml（換組織只需改此行）
 paths:
   data_root: /Volumes/SSD/plan_a/tissue sample/CRC
   he_image: /Volumes/SSD/plan_a/tissue sample/CRC/visium/official_v4/Visium_HD_Human_Colon_Cancer_tissue_image.btf
@@ -9,13 +10,9 @@ paths:
   binned_008: /Volumes/SSD/plan_a/tissue sample/CRC/visium/official_v4/binned_outputs/binned_outputs/square_008um
   xenium_outs: /Volumes/SSD/plan_a/tissue sample/CRC/xenium/official_v1_addon/outs
   masks_dir: results/masks
-  zarr_dir: results/zarr
-  proseg_dir: results/proseg
-  conditions_dir: results/02b_conditions
   output_dir: results/analysis
   export_dir: results/export
   figure_dir: figures
-  proseg_bin: ~/.cargo/bin/proseg
 rois:
 - name: test
   tissue: CRC
@@ -25,103 +22,34 @@ rois:
   height_px: 1210
   pixel_size_um: 0.2737
 segmentation:
-  cellpose_model:
-    model_type: nuclei
+  mcseg_v2:
+    # GPU / 批次
     use_gpu: true
     batch_size: 4
-  strategy:
-    name: LOGIC_A
-    dia_small: 5.0
-    dia_large: 60.0
-    flow_threshold: 0.8
+    # cyto3 多直徑集成
+    dia_small: 13.0          # small cells（淋巴細胞等）
+    dia_mid: 17.0            # 主要 pass（集成基底）
+    dia_large: 22.0          # 大型細胞（上皮、巨噬細胞）
+    # 可選 pass
+    use_hematoxylin: true    # cyto3 on Ruifrok Hematoxylin 通道
+    use_cpsam: false         # cpsam 集成（可選，顯著增加時間）
+    # Voronoi 擴張
+    voronoi_distance: 9      # px，約 2.5µm（VISIUM_UM_PX=0.2737）
+    # 細胞過濾
+    min_size: 20             # px²
+    max_size: 6000           # px²
+    # Cellpose 品質控制
+    flow_threshold: 0.4
     cellprob_threshold: -2.0
-    fragment_threshold: 20
-  postprocessing:
-    enable_merge_enclosed: true
-    enable_eosin_watershed: true
-    eosin_bg_threshold: 20        # 極度放寬：幾乎不裁剪，除非是純白背景
-  tiling:
-    block_size: 2048
-    overlap: 256
-  preprocessing:
-    normalize_stains: false
-    calibration_roi: null
-    clahe_clip_limit: 1.0
+    clahe_clip_limit: 3.0
+    # 轉錄本密度補救（需 vhd_pseudo_transcripts.csv）
+    use_transcript_rescue: true
   output:
-    save_flows: false
     mask_filename: segmentation_masks.npy
     mask_tif_filename: segmentation_masks.tif
-zarr_builder:
-  files:
-    h5_matrix: filtered_feature_bc_matrix.h5
-    spatial_dir: spatial
-    tissue_positions: tissue_positions.parquet
-  parameters:
-    pixel_size_um: 0.2737
-    gene_scale_factor: 1.0
-    output_filename: proseg_integrated.zarr
-condition_test:
-  test_roi_um: 1000
-  max_parallel: 4
-  grid:
-    max_dist:
-    - 20
-    - 30
-    - 40
-    compactness:
-    - 0.03
-    - 0.06
-    - 0.1
-    dilation:
-    - 0
-    - 10
-    - 20
-    - 30
-  quick_grid:
-    max_dist:
-    - 20
-    - 40
-    compactness:
-    - 0.03
-    - 0.06
-    dilation:
-    - 0
-    - 10
-    - 20
-  samples: 200
-  recorded_samples: 50
-proseg:
-  # Stage 2.5：Proseg RNA 重分配（固定參數，不做條件測試）
-  stage25:
-    max_dist: 35.0          # µm，大幅度放寬生長範圍
-    compactness: 0.01       # 極度降低緊實度，讓形狀隨意擴張
-    dilation: 10            # px，擴大初始領地預熱
-    samples: 500            # MCMC 採樣數
-    burnin_samples: 150     # burnin 採樣數
-    recorded_samples: 150   # 記錄採樣數
-    use_watershed: true     # 啟用 Watershed 隔離（防止邊界碰撞合併）
-    cyto_protection: true   # 啟用 Cyto 空間防護
-    nuclear_reassignment_prob: 0.05  # 細胞核區域重新分配機率 (0: 嚴格保護核區域)
-    prior_reassignment_prob: 0.05    # 初始分割區域重新分配機率
-  golden_params:
-    dilation: 0
-    max_dist: 20.0
-    compactness: 0.03
-    samples: 500
-    burnin_samples: 150
-    recorded_samples: 150
-    use_watershed: true
-    enforce_connectivity: true
-  tiling:
-    grid_nx: 4
-    grid_ny: 3
-    padding: 200
-  qc:
-    background_threshold: 210
-    min_transcripts_per_cell: 5
-  constants:
-    scale_nm_px: 264.5833
-    scale_um_px: 0.2645833
+rna_counting:
+  dilation_px: 6            # 1.64 µm — xenium_he_seg PQ=0.432 最佳參數
+
 analysis:
   merge_rois: false
   preprocessing:
@@ -158,30 +86,5 @@ export:
   loupe:
     whitelist_path: backend/src/export/10x_whitelist.txt
     max_categories: 32000
-marker_genes:
-  CRC_tumor_luminal:
-    genes:
-    - MUC2
-    - MUC5AC
-    - TFF3
-    - KRT20
-    description: CRC 腔面（luminal）細胞
-  CRC_tumor_basal:
-    genes:
-    - CDH1
-    - EPCAM
-    - KRT8
-    - KRT18
-    description: CRC 基底（basal）/上皮標記
-  CRC_endothelial:
-    genes:
-    - PECAM1
-    - CD34
-    - VWF
-    description: 內皮細胞
-  CRC_smooth_muscle:
-    genes:
-    - ACTA2
-    - MYH11
-    - TAGLN
-    description: 平滑肌細胞
+# marker_genes 已移至 config/profiles/crc.yaml（由 tissue_profile 自動載入）
+# 若需要 project 專屬覆寫，可在此處加入同名 key

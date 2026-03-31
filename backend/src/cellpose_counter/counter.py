@@ -40,6 +40,7 @@ def count_rna_per_cell(
     roi_x_px: int,
     roi_y_px: int,
     pixel_size_um: float = VISIUM_UM_PX,
+    dilation_px: int = 0,
 ) -> "anndata.AnnData":
     """
     將 Visium HD 2µm bins 分配給 Cellpose 細胞，回傳 cells × genes AnnData。
@@ -51,6 +52,9 @@ def count_rna_per_cell(
     roi_x_px     : ROI 左上角 X（fullres px，來自 pipeline.yaml）
     roi_y_px     : ROI 左上角 Y（fullres px）
     pixel_size_um: fullres 像素尺寸（µm/px）
+    dilation_px  : Cellpose 遮罩擴張像素數（0 = 不擴張）。
+                   xenium_he_seg benchmark 顯示 6px（1.64 µm）可提升
+                   bins 指派率 +5~8 pp，PQ 從 0.397 → 0.432（+9%）。
     """
     import anndata as ad
     import scanpy as sc
@@ -65,6 +69,13 @@ def count_rna_per_cell(
     seg_mask = np.load(str(mask_path))
     H, W = seg_mask.shape
     logger.info(f"  遮罩大小：{W}×{H}，最大 cell ID：{seg_mask.max()}")
+
+    # ── Dilation（expand_labels）──────────────────────────────────
+    if dilation_px > 0:
+        from skimage.segmentation import expand_labels
+        logger.info(f"  Apply expand_labels dilation = {dilation_px} px ({dilation_px * pixel_size_um:.2f} µm)...")
+        seg_mask = expand_labels(seg_mask, distance=dilation_px)
+        logger.info(f"  Dilation 完成，最大 cell ID：{seg_mask.max()}")
 
     # ── 1. 取得 bin 中心座標（全域 fullres px）─────────────────────────────
     if "spatial" in adata.obsm:
@@ -235,14 +246,16 @@ def run_counting_pipeline(config: dict, roi_name: Optional[str] = None):
         roi_x_px = int(roi.get("x", 0))
         roi_y_px = int(roi.get("y", 0))
         pixel_size_um = float(roi.get("pixel_size_um", VISIUM_UM_PX))
+        dilation_px = int(config.get("rna_counting", {}).get("dilation_px", 0))
 
-        logger.info(f"[{rn}] 開始計數（ROI 偏移 x={roi_x_px}, y={roi_y_px}）...")
+        logger.info(f"[{rn}] 開始計數（ROI 偏移 x={roi_x_px}, y={roi_y_px}, dilation={dilation_px}px）...")
         adata_cells = count_rna_per_cell(
             adata_path=adata_path,
             mask_path=mask_path,
             roi_x_px=roi_x_px,
             roi_y_px=roi_y_px,
             pixel_size_um=pixel_size_um,
+            dilation_px=dilation_px,
         )
 
         roi_dir.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,91 @@
+# ============================================================
+# Tissue Profile: Lung Adenocarcinoma (LUAD)
+# ============================================================
+# 已驗證資料來源：xenium_he_seg benchmark（2026-03）
+#   - Cellpose + 6px dilation：PQ=0.432（n=9 ROI，最佳方法）
+#   - VHD 18K gene panel：AT2 SFTPC 偵測率 29.3%
+#   - TME gene sets：tumor_boundary 7,932 cells 驗證
+
+profile_name: LUAD
+description: "Lung Adenocarcinoma — validated with xenium_he_seg benchmark (2026-03)"
+
+# ── Stage 1: MCseg v2 覆寫值（LUAD 肺泡，較小直徑）────────────
+# 來源：xenium_he_seg + autoresearch_seg 6 階段最佳化（2026-03）
+segmentation:
+  mcseg_v2:
+    dia_small: 10.0           # px — 肺泡細胞較小（約 cyto3 優化後）
+    dia_mid: 14.0             # px — 主要推論基底（LUAD 細胞平均較小）
+    dia_large: 18.0           # px — 較大型肺泡/巨噬細胞
+    use_hematoxylin: true     # 肺泡核清晰，Hema pass 有效
+    voronoi_distance: 8       # px，約 2.2µm（肺泡間距較小）
+    flow_threshold: 0.415     # xenium_he_seg 最佳參數
+    cellprob_threshold: -1.5  # 肺泡 RNA 稀疏，略寬鬆
+    min_size: 20              # px²
+    max_size: 4000            # px²（肺泡細胞較小，降低上限）
+    clahe_clip_limit: 2.02    # xenium_he_seg 最佳參數（原 2.02）
+
+# ── Stage 2: RNA 計數 ──────────────────────────────────────────
+rna_counting:
+  dilation_px: 6              # 1.64 µm — xenium_he_seg PQ=0.432 最佳參數
+
+# ── Stage 3: QC 閾值 ───────────────────────────────────────────
+analysis:
+  preprocessing:
+    cellular:
+      min_genes: 15           # 肺泡組織 RNA 稀疏，略低於 CRC
+      max_genes: 8000
+      min_counts: 5
+      max_pct_mito: 50.0      # 肺組織 mito 比例較低，較嚴格
+
+# ── Marker Genes ───────────────────────────────────────────────
+marker_genes:
+  AT2_pneumocyte:
+    genes: [SFTPC, SFTPB, SFTPA1]
+    description: "Type II alveolar epithelial (cuboid, ~10µm, rich surfactant protein)"
+  AT1_pneumocyte:
+    genes: [AGER, RTKN2, PDPN]
+    description: "Type I alveolar (flat 0.1-0.5µm, RNA very sparse — detection limited by 2µm bins)"
+  Alveolar_macrophage:
+    genes: [CD68, SPP1, MARCO, PPARG]
+    description: "Alveolar macrophage incl. carbon-laden dust cells"
+  Endothelial:
+    genes: [PECAM1, VWF, CD34, CLDN5]
+    description: "Vascular endothelial"
+  Well_diff_tumor:
+    genes: [NAPSA, NKX2-1, SFTPC, SFTPB, SLC34A2]
+    description: "Well-differentiated LUAD tumor cells (lung lineage markers)"
+  Invasive_tumor:
+    genes: [MMP7, MMP11, CXCL14, ACTA2, SPARC]
+    description: "Invasive / EMT phenotype"
+  Fibroblast:
+    genes: [COL1A1, COL1A2, FAP, PDGFRA]
+    description: "Cancer-associated fibroblast"
+
+# ── TME Panels（來自 xenium_he_seg script 10 驗證）────────────
+# tumor_boundary ROI 7,932 cells：
+#   Well-diff 28.4% / SPP1+ Mac 20.1% / Invasive 13.6% / Cytotoxic 1.9%
+tme_panels:
+  well_diff_tumor:
+    genes: [NAPSA, SFTPB, NKX2-1, SFTPC, SLC34A2]
+    state_label: "Well-diff"
+    color: "#2166AC"
+  spp1_macrophage:
+    genes: [SPP1, APOE, MMP9, CD68, TREM2, C1QA]
+    state_label: "SPP1+ Mac"
+    color: "#D4841A"
+  invasive_emt:
+    genes: [MMP7, MMP11, CXCL14, ACTA2, MMP9, SPARC]
+    state_label: "Invasive/EMT"
+    color: "#B2182B"
+  cytotoxic_immune:
+    genes: [CD8A, CD3E, GZMB, PRF1, TIGIT]
+    state_label: "Cytotoxic T"
+    color: "#1A7340"
+
+# ── CellTypist 免疫 Panel 對應 ────────────────────────────────
+immune_panel_map:
+  cd8:        [cytotoxic_immune]
+  t cell:     [cytotoxic_immune]
+  macrophage: [spp1_macrophage]
+  monocyte:   [spp1_macrophage]
+  nk:         [cytotoxic_immune]
