@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
 import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
-import { runSegmentation, getSegmentationStatus, getSegmentationPreview, runSegmentationPreview, previewPreproc, getRoiSegOverrides, saveRoiSegOverrides, listRois } from '../api/client'
+import { runSegmentation, getSegmentationStatus, getSegmentationPreview, runSegmentationPreview, previewPreproc, getRoiSegOverrides, saveRoiSegOverrides, listRois, runFullSegmentation, getFullSegStatus } from '../api/client'
+import { useT } from '../i18n'
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
 
@@ -210,6 +211,7 @@ export default function Stage1_Segmentation() {
   const { stages, updateStage, rois, setRois } = usePipelineStore()
   const stage = stages['segmentation']
   const { refetch: refetchStatus } = useStageStatus('segmentation', getSegmentationStatus, 3000)
+  const t = useT()
   const [params, setParams] = useState<SegParams>(DEFAULT_PARAMS)
   const [showParams, setShowParams] = useState(false)
   const [previewSrc, setPreviewSrc] = useState<string | null>(null)
@@ -240,6 +242,44 @@ export default function Stage1_Segmentation() {
   const [preprocSrc, setPreprocSrc] = useState<string | null>(null)
   const [preprocInfo, setPreprocInfo] = useState<string | null>(null)
   const [preprocLoading, setPreprocLoading] = useState(false)
+
+  // ── 全圖分割狀態 ──────────────────────────────────────────────────────────
+  const [fullSegStatus, setFullSegStatus] = useState<{ status: string; progress?: number; message?: string } | null>(null)
+  const fullSegPollRef = useRef<ReturnType<typeof setInterval>>()
+
+  const startFullSegPoll = () => {
+    clearInterval(fullSegPollRef.current)
+    fullSegPollRef.current = setInterval(async () => {
+      try {
+        const res = await getFullSegStatus()
+        const d = res.data?.data ?? res.data
+        setFullSegStatus(d)
+        if (d?.status !== 'running') clearInterval(fullSegPollRef.current)
+      } catch { clearInterval(fullSegPollRef.current) }
+    }, 2000)
+  }
+
+  const handleRunFullSeg = async () => {
+    setFullSegStatus({ status: 'running', progress: 0, message: '啟動全圖分割...' })
+    try {
+      await runFullSegmentation()
+      startFullSegPoll()
+    } catch (e: any) {
+      setFullSegStatus({ status: 'error', message: e?.response?.data?.message ?? '啟動失敗' })
+    }
+  }
+
+  useEffect(() => {
+    // 載入時查一次目前狀態
+    getFullSegStatus().then(res => {
+      const d = res.data?.data ?? res.data
+      if (d) {
+        setFullSegStatus(d)
+        if (d.status === 'running') startFullSegPoll()
+      }
+    }).catch(() => { })
+    return () => clearInterval(fullSegPollRef.current)
+  }, [])
 
   // ── ROI 個別參數覆寫 ────────────────────────────────────────────────────
   const [roiOverrides, setRoiOverrides] = useState<Record<string, RoiOverride>>({})
@@ -440,7 +480,7 @@ export default function Stage1_Segmentation() {
   return (
     <div className="space-y-4">
       <StageCard
-        title="細胞分割（MCseg v2 — 多模型 Voronoi 集成）"
+        title={t('stage1.title')}
         status={stage.status}
         progress={stage.progress}
         message={stage.message}
@@ -452,7 +492,7 @@ export default function Stage1_Segmentation() {
             className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors select-none"
           >
             <span className={`transition-transform duration-200 ${showParams ? 'rotate-90' : ''}`}>▶</span>
-            <span>{showParams ? '收起參數' : '展開參數設定'}</span>
+            <span>{showParams ? t('stage1.hide_params') : t('stage1.show_params')}</span>
           </button>
           {/* 折疊時顯示關鍵參數摘要 */}
           {!showParams && (
@@ -470,28 +510,28 @@ export default function Stage1_Segmentation() {
 
           {/* 左欄 */}
           <div className="space-y-5">
-            <Section title="模型設定">
-              <Toggle label="GPU 加速" value={params.use_gpu} onChange={v => set('use_gpu', v)}
+            <Section title={t('stage1.sec.model')}>
+              <Toggle label={t('stage1.param.gpu')} value={params.use_gpu} onChange={v => set('use_gpu', v)}
                 tooltip="啟用 CUDA GPU 加速推論。建議開啟；無 GPU 時可關閉改用 CPU（速度約慢 10-20 倍）。" />
               <NumberInput label="Batch Size" value={params.batch_size}
                 onChange={v => set('batch_size', v)} min={1} max={16}
                 tooltip="GPU 批次大小。GPU 記憶體越大可設越高（建議 4-8）。記憶體不足請降低。" />
             </Section>
 
-            <Section title="cyto3 多直徑集成">
-              <NumberInput label="小細胞直徑" value={params.dia_small}
+            <Section title={t('stage1.sec.diameters')}>
+              <NumberInput label={t('stage1.param.dia_small')} value={params.dia_small}
                 onChange={v => set('dia_small', v)} step={0.5} min={4} max={40} hint="px"
                 tooltip="cyto3 小細胞 pass 的預期直徑。用來補救主 pass 漏掉的小細胞（如淋巴細胞）。預設 13px。" />
-              <NumberInput label="主要直徑" value={params.dia_mid}
+              <NumberInput label={t('stage1.param.dia_mid')} value={params.dia_mid}
                 onChange={v => set('dia_mid', v)} step={0.5} min={8} max={50} hint="px"
                 tooltip="cyto3 主要 pass 的預期細胞直徑（此 pass 結果作為集成基底）。H&E 細胞核通常 15-20px。預設 17px。" />
-              <NumberInput label="大細胞直徑" value={params.dia_large}
+              <NumberInput label={t('stage1.param.dia_large')} value={params.dia_large}
                 onChange={v => set('dia_large', v)} step={0.5} min={12} max={80} hint="px"
                 tooltip="cyto3 大細胞 pass，補救大型細胞（如上皮細胞、巨噬細胞）。預設 22px。" />
-              <Toggle label="Hematoxylin Pass" value={params.use_hematoxylin}
+              <Toggle label={t('stage1.param.hematoxylin')} value={params.use_hematoxylin}
                 onChange={v => set('use_hematoxylin', v)}
                 tooltip="額外對 Ruifrok H&E 分離的 Hematoxylin 通道跑一次 cyto3（dia=主要直徑）。可補充 H 通道清晰但 RGB 不佳的細胞核。建議開啟。" />
-              <Toggle label="cpsam（可選，較慢）" value={params.use_cpsam}
+              <Toggle label={t('stage1.param.cpsam')} value={params.use_cpsam}
                 onChange={v => set('use_cpsam', v)}
                 tooltip="額外加入 Cellpose SAM 模型（cpsam）的 3 個 pass。可提升小型/不規則細胞的召回率，但會顯著增加運算時間（約 2-3 倍）。預設關閉。" />
             </Section>
@@ -499,54 +539,54 @@ export default function Stage1_Segmentation() {
 
           {/* 右欄 */}
           <div className="space-y-5">
-            <Section title="後處理 / Voronoi 擴張">
-              <NumberInput label="Voronoi 擴張距離" value={params.voronoi_distance}
+            <Section title={t('stage1.sec.voronoi')}>
+              <NumberInput label={t('stage1.param.voronoi_dist')} value={params.voronoi_distance}
                 onChange={v => set('voronoi_distance', v)} min={3} max={25} hint="px"
                 tooltip="Voronoi 擴張的最大距離（像素）。每個細胞向外擴張至多此距離，填補細胞間隙中的 RNA bins。擴張不重疊（Voronoi 性質）。預設 9px ≈ 2.5µm。" />
-              <NumberInput label="最小細胞面積" value={params.min_size}
+              <NumberInput label={t('stage1.param.min_size')} value={params.min_size}
                 onChange={v => set('min_size', v)} min={5} max={100} hint="px²"
                 tooltip="小於此面積的細胞視為雜訊並移除。" />
-              <NumberInput label="最大細胞面積" value={params.max_size}
+              <NumberInput label={t('stage1.param.max_size')} value={params.max_size}
                 onChange={v => set('max_size', v)} step={500} min={500} max={20000} hint="px²"
                 tooltip="大於此面積的細胞（如組織碎片）視為雜訊並移除。" />
-              <Toggle label="轉錄本密度補救" value={params.use_transcript_rescue}
+              <Toggle label={t('stage1.param.transcript_rescue')} value={params.use_transcript_rescue}
                 onChange={v => set('use_transcript_rescue', v)}
                 tooltip="從 vhd_pseudo_transcripts.csv 尋找 Cellpose 遺漏的細胞位置（高轉錄本密度但無遮罩的區域）。需要對應的 CSV 檔案存在，若不存在則自動跳過。" />
             </Section>
 
-            <Section title="Cellpose 品質控制">
-              <NumberInput label="Flow Threshold" value={params.flow_threshold}
+            <Section title={t('stage1.sec.cellpose_qc')}>
+              <NumberInput label={t('stage1.param.flow')} value={params.flow_threshold}
                 onChange={v => set('flow_threshold', v)} step={0.05} min={0} max={2}
                 tooltip="dP 光流誤差容忍閾值。值越大 → 召回率高但邊界品質低；值越小 → 精確度高。預設 0.4。" />
-              <NumberInput label="Cell Prob Threshold" value={params.cellprob_threshold}
+              <NumberInput label={t('stage1.param.cellprob')} value={params.cellprob_threshold}
                 onChange={v => set('cellprob_threshold', v)} step={0.5} min={-6} max={4}
                 tooltip="細胞存在機率閾值。值越低（如 -3）→ 更容易偵測細胞（高召回率）；值越高 → 只接受確定的細胞。預設 -2。" />
-              <NumberInput label="CLAHE Clip Limit" value={params.clahe_clip_limit}
+              <NumberInput label={t('stage1.param.clahe')} value={params.clahe_clip_limit}
                 onChange={v => set('clahe_clip_limit', v)} step={0.5} min={0.5} max={8}
                 hint="一般組織建議 3.0"
                 tooltip="CLAHE 對比度增強強度。值越高 → 邊界更清晰，但雜訊也放大。預設 3.0 適合多數 H&E 場景。" />
             </Section>
 
-            {/* 快速預設 */}
-            <Section title="快速預設">
+            {/* Quick presets */}
+            <Section title={t('stage1.sec.presets')}>
               <div className="flex gap-2 flex-wrap">
                 <button
                   onClick={() => setParams({ ...DEFAULT_PARAMS })}
                   className="px-3 py-1 text-xs bg-blue-800 hover:bg-blue-700 rounded text-gray-200"
                 >
-                  預設（CRC/LUAD）
+                  {t('stage1.preset.crc')}
                 </button>
                 <button
                   onClick={() => setParams({ ...DEFAULT_PARAMS, dia_small: 10, dia_mid: 14, dia_large: 18, voronoi_distance: 7 })}
                   className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
                 >
-                  小細胞（淋巴）
+                  {t('stage1.preset.sparse')}
                 </button>
                 <button
                   onClick={() => setParams({ ...DEFAULT_PARAMS, dia_small: 16, dia_mid: 22, dia_large: 30, voronoi_distance: 11, cellprob_threshold: -1.0 })}
                   className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-gray-200"
                 >
-                  大細胞（上皮）
+                  {t('stage1.preset.dense')}
                 </button>
               </div>
             </Section>
@@ -559,17 +599,14 @@ export default function Stage1_Segmentation() {
         <div className="rounded-xl bg-surface border border-surface-border p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-sm font-semibold text-gray-200">ROI 個別參數覆寫 &amp; 執行分割</h3>
-              <p className="text-xs text-gray-500 mt-0.5">
-                針對特定 ROI 覆寫參數後單獨重跑，或全部一起執行
-              </p>
+              <h3 className="text-sm font-semibold text-gray-200">{t('stage1.roi_override')}</h3>
             </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={resetAllOverrides}
                 className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
               >
-                全部重置
+                {t('stage1.roi_override.reset_all')}
               </button>
               <button
                 onClick={handleRunAll}
@@ -578,7 +615,7 @@ export default function Stage1_Segmentation() {
                            bg-brand-primary text-white hover:bg-brand-primary/90
                            disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {stage.status === 'running' && runningRoi === null ? '執行中...' : '全部執行分割'}
+                {stage.status === 'running' && runningRoi === null ? t('common.running') : t('stage1.run_all')}
               </button>
             </div>
           </div>
@@ -657,7 +694,7 @@ export default function Stage1_Segmentation() {
                                 : 'bg-blue-700/40 border border-blue-600 text-blue-300 hover:bg-blue-600/60'
                             }`}
                         >
-                          {stage.status === 'running' && runningRoi === roi.name ? '執行中...' : '執行分割'}
+                          {stage.status === 'running' && runningRoi === roi.name ? t('common.running') : t('stage1.run_single')}
                         </button>
                       </td>
 
@@ -690,10 +727,7 @@ export default function Stage1_Segmentation() {
       <div className="rounded-xl bg-surface border border-surface-border p-4 space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-gray-200">快速 Patch 預覽</h3>
-            <p className="text-xs text-gray-500 mt-0.5">
-              從 he_crop.tif 取一小塊跑 Cellpose，不需先執行完整分割 · 使用上方當前參數
-            </p>
+            <h3 className="text-sm font-semibold text-gray-200">{t('stage1.quick_preview')}</h3>
           </div>
           <div className="flex gap-2">
             <button
@@ -702,7 +736,7 @@ export default function Stage1_Segmentation() {
               className="px-4 py-1.5 text-sm rounded bg-gray-600 text-gray-200 font-medium
                          hover:bg-gray-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {preprocLoading ? '處理中...' : '⚡ 前處理預覽'}
+              {preprocLoading ? t('common.loading') : `⚡ ${t('stage1.quick_preview.preproc')}`}
             </button>
             <button
               onClick={handleQuickPreview}
@@ -710,7 +744,7 @@ export default function Stage1_Segmentation() {
               className="px-4 py-1.5 text-sm rounded bg-primary text-black font-medium
                          hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {prevLoading ? '執行中...' : '🔬 分割預覽'}
+              {prevLoading ? t('common.running') : `🔬 ${t('stage1.quick_preview.run')}`}
             </button>
           </div>
         </div>
@@ -733,7 +767,7 @@ export default function Stage1_Segmentation() {
           </div>
 
           <div>
-            <label className="text-xs text-gray-400 mb-1 block">X 起點（px）</label>
+            <label className="text-xs text-gray-400 mb-1 block">{t('stage1.quick_preview.x')}</label>
             <input
               type="number" value={prevX} min={0}
               onChange={e => setPrevX(Math.max(0, parseInt(e.target.value) || 0))}
@@ -743,7 +777,7 @@ export default function Stage1_Segmentation() {
           </div>
 
           <div>
-            <label className="text-xs text-gray-400 mb-1 block">Y 起點（px）</label>
+            <label className="text-xs text-gray-400 mb-1 block">{t('stage1.quick_preview.y')}</label>
             <input
               type="number" value={prevY} min={0}
               onChange={e => setPrevY(Math.max(0, parseInt(e.target.value) || 0))}
@@ -779,7 +813,7 @@ export default function Stage1_Segmentation() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4 text-xs text-gray-400">
                   {quickInfo.n_cells > 0 && (
-                    <span className="text-green-400 font-medium">✓ {quickInfo.n_cells} 個細胞</span>
+                    <span className="text-green-400 font-medium">✓ {quickInfo.n_cells} {t('stage1.preview.cells')}</span>
                   )}
                   <span>ROI: {quickInfo.roi_name}</span>
                   <span>{quickInfo.patch_info}</span>
@@ -837,8 +871,7 @@ export default function Stage1_Segmentation() {
         <div className="rounded-xl bg-surface border border-surface-border p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-sm font-semibold text-gray-200">完整分割結果預覽</h3>
-              <p className="text-xs text-gray-500 mt-0.5">H&E + 綠色細胞邊界疊圖（來自已存遮罩）</p>
+              <h3 className="text-sm font-semibold text-gray-200">{t('stage1.preview.title')}</h3>
             </div>
             <div className="flex items-center gap-2">
               {previewAvail.length > 0 && (
@@ -855,7 +888,7 @@ export default function Stage1_Segmentation() {
                 onClick={() => handlePreview(previewRoi || undefined)}
                 className="px-4 py-1.5 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
               >
-                {previewSrc ? '重新載入' : '載入預覽'}
+                {previewSrc ? t('stage1.preview.reload') : t('stage1.preview.load')}
               </button>
             </div>
           </div>
@@ -863,19 +896,19 @@ export default function Stage1_Segmentation() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-green-400 font-medium">
-                  {previewNCells != null && `✓ ${previewNCells.toLocaleString()} 個細胞 · ROI: ${previewRoi}`}
+                  {previewNCells != null && `✓ ${previewNCells.toLocaleString()} ${t('stage1.preview.cells')} · ROI: ${previewRoi}`}
                 </span>
                 {/* Tab 切換 */}
                 <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
                   <button
                     onClick={() => setPreviewTab('overlay')}
                     className={`px-3 py-1 transition-colors ${previewTab === 'overlay' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
-                  >H&E + 邊界</button>
+                  >{t('stage1.preview.overlay')}</button>
                   <button
                     disabled={!previewFlows}
                     onClick={() => setPreviewTab('flows')}
                     className={`px-3 py-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${previewTab === 'flows' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
-                  >光流方向 (Flows)</button>
+                  >{t('stage1.preview.flows')}</button>
                 </div>
               </div>
               <p className="text-xs text-gray-500">
@@ -932,6 +965,55 @@ export default function Stage1_Segmentation() {
           )}
         </div>
       )}
+
+      {/* ── 全圖分割區塊 ─────────────────────────────────────────────────── */}
+      <div className="rounded-xl border border-surface-border bg-surface-card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-200">{t('stage1.full_seg.title')}</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {t('stage1.full_seg.description')}
+              <code className="mx-1 text-yellow-400">full_image_segmentation_masks.npy</code>
+            </p>
+          </div>
+          <button
+            onClick={handleRunFullSeg}
+            disabled={fullSegStatus?.status === 'running'}
+            className="shrink-0 px-4 py-2 text-sm rounded-lg font-medium transition-colors
+                       bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+          >
+            {fullSegStatus?.status === 'running' ? t('stage1.full_seg.running') : t('stage1.full_seg.run')}
+          </button>
+        </div>
+
+        {fullSegStatus && (
+          <div className={`rounded-lg px-3 py-2 text-xs font-mono space-y-1
+            ${fullSegStatus.status === 'error' ? 'bg-red-900/30 text-red-300 border border-red-800'
+              : fullSegStatus.status === 'done' ? 'bg-green-900/30 text-green-300 border border-green-800'
+              : 'bg-gray-800 text-gray-300 border border-gray-700'}`}
+          >
+            <div className="flex items-center justify-between">
+              <span>
+                {fullSegStatus.status === 'running' && '⏳ '}
+                {fullSegStatus.status === 'done' && '✓ '}
+                {fullSegStatus.status === 'error' && '✗ '}
+                {fullSegStatus.message ?? fullSegStatus.status}
+              </span>
+              {fullSegStatus.progress != null && fullSegStatus.status === 'running' && (
+                <span className="text-gray-400">{Math.round(fullSegStatus.progress * 100)}%</span>
+              )}
+            </div>
+            {fullSegStatus.status === 'running' && fullSegStatus.progress != null && (
+              <div className="w-full bg-gray-700 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className="bg-indigo-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.round(fullSegStatus.progress * 100)}%` }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       <Terminal stage="segmentation" />
     </div>

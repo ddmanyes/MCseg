@@ -18,10 +18,10 @@ export default function App() {
     getDiskStatus().then(res => {
       const d = res.data?.data
       if (!d) return
-      if (d.roi?.done)          updateStage('roi',          { status: 'done', message: `已完成（${d.roi.roi_names?.length ?? 0} 個 ROI）` })
-      if (d.segmentation?.done) updateStage('segmentation', { status: 'done', message: '分割遮罩已存在' })
-      if (d.count?.done)        updateStage('count',        { status: 'done', message: 'RNA 計數已完成' })
-      if (d.analysis?.done)     updateStage('analysis',     { status: 'done', message: '分析已完成' })
+      if (d.roi?.done)          updateStage('roi',          { status: 'done', message: `Done (${d.roi.roi_names?.length ?? 0} ROIs)` })
+      if (d.segmentation?.done) updateStage('segmentation', { status: 'done', message: 'Segmentation masks found' })
+      if (d.count?.done)        updateStage('count',        { status: 'done', message: 'RNA counting complete' })
+      if (d.analysis?.done)     updateStage('analysis',     { status: 'done', message: 'Analysis complete' })
     }).catch(() => {/* 靜默失敗 */})
   }, [])
 

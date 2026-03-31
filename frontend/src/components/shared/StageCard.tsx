@@ -1,5 +1,6 @@
 import { clsx } from 'clsx'
 import type { StageStatus } from '../../types/pipeline'
+import { useT } from '../../i18n'
 
 interface StageCardProps {
   title: string
@@ -14,9 +15,11 @@ interface StageCardProps {
 
 export default function StageCard({
   title, status, progress = 0, message = '', onRun, children,
-  runLabel = '執行', disabled = false,
+  runLabel, disabled = false,
 }: StageCardProps) {
+  const t = useT()
   const isRunning = status === 'running'
+  const label = runLabel ?? t('common.run')
 
   return (
     <div className="bg-surface-card rounded-xl border border-surface-border p-5 space-y-4">
@@ -33,7 +36,7 @@ export default function StageCard({
                 : 'bg-primary text-white hover:bg-primary-dark'
             )}
           >
-            {isRunning ? '執行中...' : runLabel}
+            {isRunning ? t('common.running') : label}
           </button>
         )}
       </div>
@@ -60,7 +63,9 @@ export default function StageCard({
           'bg-green-900/40 text-green-400': status === 'done',
           'bg-red-900/40 text-red-400': status === 'error',
         })}>
-          {status === 'done' ? `完成 — ${message}` : `錯誤：${message}`}
+          {status === 'done'
+            ? `${t('common.done')} — ${message}`
+            : `${t('common.error')}：${message}`}
         </div>
       )}
 

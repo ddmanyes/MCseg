@@ -21,6 +21,9 @@ logger = logging.getLogger("pipeline.api.segmentation")
 _task_status: dict = {"status": "idle", "progress": 0.0, "message": ""}
 _task_lock = asyncio.Lock()
 
+_full_status: dict = {"status": "idle", "progress": 0.0, "message": ""}
+_full_lock   = asyncio.Lock()
+
 _PREVIEW_JPEG_QUALITY = 85
 
 
@@ -188,6 +191,92 @@ async def run_segmentation(
         _task_status["message"] = "初始化..."
         background_tasks.add_task(_run_segmentation, config)
     return {"status": "ok", "message": "MCseg v2 分割已啟動"}
+
+
+@router.get("/full_seg_status")
+async def get_full_seg_status():
+    return _full_status
+
+
+@router.post("/run_full")
+async def run_full_segmentation(background_tasks: BackgroundTasks):
+    """對 BTF 全圖執行 tiled MCseg v2 分割（MPS 安全模式）。"""
+    async with _full_lock:
+        if _full_status["status"] == "running":
+            return {"status": "error", "message": "全圖分割任務執行中"}
+        config = load_config()
+        _full_status["status"]   = "running"
+        _full_status["progress"] = 0.0
+        _full_status["message"]  = "初始化..."
+        background_tasks.add_task(_run_full_segmentation, config)
+    return {"status": "ok", "message": "全圖分割已啟動"}
+
+
+async def _run_full_segmentation(config: dict) -> None:
+    global _full_status
+    set_current_stage("segmentation")
+    _full_status = {"status": "running", "progress": 0.0, "message": "讀取全圖影像..."}
+
+    def _progress(p: float, msg: str) -> None:
+        _full_status.update({"progress": p, "message": msg})
+
+    try:
+        import gc
+        import numpy as np
+        import tifffile
+        import zarr as _zarr
+        from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
+
+        paths      = config.get("paths", {})
+        output_dir = resolve_path(paths["output_dir"])
+        btf_path   = paths.get("he_image", "")
+        seg_cfg    = config.get("segmentation", {}).get("mcseg_v2", {})
+
+        if not btf_path or not Path(btf_path).exists():
+            raise FileNotFoundError(f"找不到 BTF/TIFF：{btf_path}  請在 config paths.he_image 指定")
+
+        _progress(0.02, "讀取 BTF 全圖（tile-based）...")
+        with tifffile.TiffFile(str(btf_path)) as tif:
+            store = tif.aszarr()
+            z = _zarr.open(store, mode="r")
+            arr = z if not isinstance(z, _zarr.Group) else z[0]
+            img = np.array(arr)
+        if img.ndim == 3 and img.shape[-1] == 4:
+            img = img[..., :3]
+
+        _progress(0.05, f"全圖尺寸 {img.shape[1]}×{img.shape[0]}px，開始 tiled 分割...")
+
+        # MPS 安全設定：tile_size=1024, batch_size≤2
+        tile_size = int(config.get("full_seg", {}).get("tile_size", 1024))
+        overlap   = int(config.get("full_seg", {}).get("overlap", 128))
+        seg_cfg_safe = dict(seg_cfg)
+        seg_cfg_safe["batch_size"] = min(int(seg_cfg_safe.get("batch_size", 2)), 2)
+        seg_cfg_safe["use_cpsam"] = False   # cpsam 在全圖模式太耗記憶體
+
+        loop = asyncio.get_running_loop()
+        import functools
+        final_mask = await loop.run_in_executor(
+            None,
+            functools.partial(run_tiled_mcseg_v2, img, seg_cfg_safe,
+                              tile_size, overlap, _progress),
+        )
+        del img
+        gc.collect()
+
+        out_path = output_dir / "full_image_segmentation_masks.npy"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        np.save(str(out_path), final_mask)
+        n_cells = int(len(np.unique(final_mask)) - 1)
+
+        _full_status = {
+            "status": "done", "progress": 1.0,
+            "message": f"全圖分割完成：{n_cells:,} 個細胞  →  {out_path.name}",
+            "n_cells": n_cells,
+            "output": str(out_path),
+        }
+    except Exception as e:
+        logger.error(f"全圖分割失敗：{e}", exc_info=True)
+        _full_status = {"status": "error", "progress": 0.0, "message": str(e)}
 
 
 @router.get("/roi_overrides")

@@ -34,6 +34,8 @@ export const previewPreproc = (body: object) => api.post('/segmentation/preview_
 export const getRoiSegOverrides = () => api.get('/segmentation/roi_overrides')
 export const saveRoiSegOverrides = (overrides: Record<string, Record<string, unknown>>) =>
   api.put('/segmentation/roi_overrides', overrides)
+export const runFullSegmentation = () => api.post('/segmentation/run_full')
+export const getFullSegStatus = () => api.get('/segmentation/full_seg_status')
 
 // Stage 2: Cellpose RNA 計數
 export const runCellposeCount = (roiName: string | null) =>
@@ -71,6 +73,25 @@ export const runAnnotate = (params: object) => api.post('/analysis/annotate', pa
 export const getAnnotateStatus = () => api.get('/analysis/annotate_status')
 export const getAnnotateSuggestions = () => api.get('/analysis/annotate_suggestions')
 export const applyLabels = (params: object) => api.post('/analysis/apply_labels', params)
+export const downloadMarkerGenes = async (resolution: number, roiName?: string): Promise<string | null> => {
+  const params = new URLSearchParams({ resolution: String(resolution), n_genes: '20' })
+  if (roiName) params.set('roi_name', roiName)
+  const res = await fetch(`/api/analysis/marker_genes_csv?${params}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    return body.detail ?? 'Download failed'
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `marker_genes_res${resolution}${roiName ? `_${roiName}` : ''}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  return null
+}
 
 // Stage 3: Step 4 — Heatmap
 export const runHeatmap = (params: object) => api.post('/analysis/run_heatmap', params)

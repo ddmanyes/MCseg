@@ -1,16 +1,19 @@
+import { useState, useRef, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { usePipelineStore } from '../../stores/pipelineStore'
+import { useLanguageStore } from '../../stores/languageStore'
+import { useT } from '../../i18n'
 import type { StageStatus } from '../../types/pipeline'
-import { Microscope, Settings, Loader2 } from 'lucide-react'
+import { Microscope, Settings, Loader2, Languages } from 'lucide-react'
 
-const STAGES = [
-  { path: '/data',         idx: '⬡',  title: 'Setup',      stage: 'data',         dep: null },
-  { path: '/roi',          idx: '0',   title: 'ROI',        stage: 'roi',          dep: null },
-  { path: '/segmentation', idx: '1',   title: 'Seg',        stage: 'segmentation', dep: 'roi' },
-  { path: '/count',        idx: '2',   title: 'Count',      stage: 'count',        dep: 'segmentation' },
-  { path: '/analysis',     idx: '3',   title: 'Analysis',   stage: 'analysis',     dep: 'count' },
-  { path: '/export',       idx: '4',   title: 'Export',     stage: 'export',       dep: 'analysis' },
+const STAGE_KEYS = [
+  { path: '/data',         idx: '⬡',  tKey: 'nav.stage.setup',    stage: 'data',         dep: null },
+  { path: '/roi',          idx: '0',   tKey: 'nav.stage.roi',      stage: 'roi',          dep: null },
+  { path: '/segmentation', idx: '1',   tKey: 'nav.stage.seg',      stage: 'segmentation', dep: 'roi' },
+  { path: '/count',        idx: '2',   tKey: 'nav.stage.count',    stage: 'count',        dep: 'segmentation' },
+  { path: '/analysis',     idx: '3',   tKey: 'nav.stage.analysis', stage: 'analysis',     dep: 'count' },
+  { path: '/export',       idx: '4',   tKey: 'nav.stage.export',   stage: 'export',       dep: 'analysis' },
 ] as const
 
 function StageCircle({ status, isActive, idx }: { status: StageStatus; isActive: boolean; idx: string }) {
@@ -34,11 +37,26 @@ function StageCircle({ status, isActive, idx }: { status: StageStatus; isActive:
 
 export default function TopNav() {
   const stages = usePipelineStore(s => s.stages)
+  const { lang, setLang } = useLanguageStore()
+  const t = useT()
+  const [showLangMenu, setShowLangMenu] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowLangMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
 
   const isLocked = (dep: string | null) =>
     dep !== null && stages[dep as keyof typeof stages]?.status !== 'done'
 
-  const runningStage = STAGES.find(s => stages[s.stage]?.status === 'running')
+  const runningStage = STAGE_KEYS.find(s => stages[s.stage]?.status === 'running')
 
   return (
     <header className="h-11 flex items-center flex-shrink-0 border-b border-white/[0.06]"
@@ -49,16 +67,17 @@ export default function TopNav() {
         <Microscope className="w-4 h-4 text-blue-400" strokeWidth={1.5} />
         <span className="text-sm font-semibold tracking-wide text-gray-100">MSseg</span>
         <span className="text-[10px] text-gray-600 font-mono leading-none px-1 py-0.5
-                         bg-white/5 rounded border border-white/10">v1</span>
+                         bg-white/5 rounded border border-white/10">dev</span>
       </div>
 
       {/* ── Stage tabs ─────────────────────────────────────── */}
       <nav className="flex items-center h-full flex-1 px-2 overflow-x-auto
                       [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-        {STAGES.map((s, i) => {
+        {STAGE_KEYS.map((s, i) => {
           const status  = stages[s.stage]?.status ?? 'idle'
           const locked  = isLocked(s.dep)
-          const depLabel = s.dep ? STAGES.find(x => x.stage === s.dep)?.title : null
+          const depLabel = s.dep ? STAGE_KEYS.find(x => x.stage === s.dep)?.tKey : null
+          const title = t(s.tKey)
 
           const inner = (isActive: boolean) => (
             <div className={clsx(
@@ -77,14 +96,14 @@ export default function TopNav() {
                         : 'text-gray-400 hover:text-gray-200 hover:bg-white/[0.04] border border-transparent cursor-pointer',
             )}>
               <StageCircle status={status} isActive={isActive} idx={s.idx} />
-              <span className="tracking-wide">{s.title}</span>
+              <span className="tracking-wide">{title}</span>
             </div>
           )
 
           const divider = i > 0 && (
             <div className="w-3 flex-shrink-0 flex items-center justify-center">
               <div className={clsx('h-px w-full transition-colors',
-                stages[STAGES[i - 1].stage]?.status === 'done' ? 'bg-green-700/50' : 'bg-white/[0.06]'
+                stages[STAGE_KEYS[i - 1].stage]?.status === 'done' ? 'bg-green-700/50' : 'bg-white/[0.06]'
               )} />
             </div>
           )
@@ -93,7 +112,7 @@ export default function TopNav() {
             <div key={s.path} className="flex items-center">
               {divider}
               {locked ? (
-                <div title={`請先完成「${depLabel}」`}>
+                <div title={depLabel ? `${lang === 'zh' ? '請先完成「' : 'Complete '}${t(depLabel)}${lang === 'zh' ? '」' : ' first'}` : ''}>
                   {inner(false)}
                 </div>
               ) : (
@@ -112,20 +131,54 @@ export default function TopNav() {
                         bg-amber-900/25 border border-amber-600/30 flex-shrink-0">
           <Loader2 className="w-3 h-3 text-amber-400 animate-spin flex-shrink-0" />
           <span className="text-[10px] text-amber-300 max-w-[160px] truncate">
-            {stages[runningStage.stage]?.message || runningStage.title}
+            {stages[runningStage.stage]?.message || t(runningStage.tKey)}
           </span>
         </div>
       )}
 
-      {/* ── Settings icon ──────────────────────────────────── */}
-      <button
-        className="p-2 mx-1 mr-2 rounded-lg text-gray-600 hover:text-gray-300
-                   hover:bg-white/[0.05] transition-colors flex-shrink-0"
-        title="設定"
-        onClick={() => {/* future: open settings panel */}}
-      >
-        <Settings className="w-4 h-4" strokeWidth={1.5} />
-      </button>
+      {/* ── Language + Settings ─────────────────────────────── */}
+      <div className="relative flex-shrink-0 mr-1" ref={menuRef}>
+        <button
+          onClick={() => setShowLangMenu(v => !v)}
+          className={clsx(
+            'flex items-center gap-1.5 px-2 py-1.5 mx-1 rounded-lg text-xs transition-colors',
+            showLangMenu
+              ? 'bg-white/[0.08] text-gray-200'
+              : 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.05]'
+          )}
+          title={t('nav.settings')}
+        >
+          <Languages className="w-4 h-4" strokeWidth={1.5} />
+          <span className="font-medium">{lang === 'zh' ? '中' : 'EN'}</span>
+          <Settings className="w-3.5 h-3.5 opacity-60" strokeWidth={1.5} />
+        </button>
+
+        {showLangMenu && (
+          <div className="absolute right-0 top-full mt-1 w-36 rounded-xl border border-white/[0.08]
+                          bg-gray-900 shadow-2xl shadow-black/60 overflow-hidden z-50">
+            <div className="px-3 pt-2.5 pb-1.5">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                {lang === 'zh' ? '介面語言' : 'Interface Language'}
+              </p>
+            </div>
+            {(['zh', 'en'] as const).map(l => (
+              <button
+                key={l}
+                onClick={() => { setLang(l); setShowLangMenu(false) }}
+                className={clsx(
+                  'w-full flex items-center justify-between px-3 py-2 text-sm transition-colors',
+                  lang === l
+                    ? 'bg-blue-600/20 text-blue-300'
+                    : 'text-gray-300 hover:bg-white/[0.05]'
+                )}
+              >
+                <span>{l === 'zh' ? '中文' : 'English'}</span>
+                {lang === l && <span className="text-blue-400 text-xs">✓</span>}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </header>
   )
 }

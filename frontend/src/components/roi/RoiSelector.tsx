@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import OpenSeadragon from 'openseadragon'
 import { clsx } from 'clsx'
+import { useT } from '../../i18n'
 
 interface RoiBox {
   name?: string
@@ -23,6 +24,7 @@ export default function RoiSelector({ onSelect, existingRois = [] }: Props) {
   const [drawBox, setDrawBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const [ready, setReady]     = useState(false)
   const startPt = useRef<{ x: number; y: number } | null>(null)
+  const t = useT()
 
   // ── 初始化 OSD（mount 一次）────────────────────────────────────
   useEffect(() => {
@@ -207,15 +209,13 @@ export default function RoiSelector({ onSelect, existingRois = [] }: Props) {
               : 'bg-surface-border text-gray-300 hover:bg-surface-border/80',
           )}
         >
-          {mode === 'pan' ? '✋ Pan 模式' : '✏️ 畫 ROI 模式'}
+          {mode === 'pan' ? t('roi.pan_mode') : t('roi.draw_mode')}
         </button>
         <span className="text-xs text-gray-500">
-          {mode === 'pan'
-            ? '拖曳平移 · 滾輪縮放 · 雙擊放大'
-            : '按住拖曳框選 ROI 範圍，放開後座標自動填入表單'}
+          {mode === 'pan' ? t('roi.hint.pan') : t('roi.hint.draw')}
         </span>
         {!ready && (
-          <span className="text-xs text-yellow-400 animate-pulse">載入影像中...</span>
+          <span className="text-xs text-yellow-400 animate-pulse">{t('roi.loading')}</span>
         )}
       </div>
 

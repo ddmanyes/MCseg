@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { scanData, applyData, getDataStatus, browseDir, getOutputDir } from '../api/client'
 import { FolderSearch, Check, AlertTriangle, HardDrive, FileSearch, FolderOpen, ChevronRight, ArrowUp, File, X } from 'lucide-react'
+import { useT } from '../i18n'
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -40,12 +41,6 @@ interface BrowseData {
     items: BrowseItem[]
 }
 
-const FILE_LABELS: Record<string, string> = {
-    he_image: 'H&E 影像（BTF/TIFF）',
-    binned_002: 'Visium HD 2µm（square_002um）',
-    binned_008: 'Visium HD 8µm（square_008um）',
-}
-
 // ── Folder Browser Modal ───────────────────────────────────
 
 function FolderBrowser({
@@ -55,6 +50,7 @@ function FolderBrowser({
     onSelect: (path: string) => void
     onClose: () => void
 }) {
+    const t = useT()
     const [browseData, setBrowseData] = useState<BrowseData | null>(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
@@ -99,7 +95,7 @@ function FolderBrowser({
                 <div className="flex items-center justify-between px-5 py-3.5 border-b border-surface-border">
                     <div className="flex items-center gap-2">
                         <FolderOpen className="w-4 h-4 text-primary" />
-                        <h3 className="font-semibold text-gray-200 text-sm">選擇資料目錄</h3>
+                        <h3 className="font-semibold text-gray-200 text-sm">{t('data.browser.title')}</h3>
                     </div>
                     <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition-colors">
                         <X className="w-4 h-4" />
@@ -134,14 +130,14 @@ function FolderBrowser({
                         <button
                             onClick={handlePathSubmit}
                             className="px-3 py-1 bg-primary text-white rounded text-xs hover:bg-primary-dark transition-colors flex-shrink-0"
-                        >跳轉</button>
+                        >{t('data.browser.jump')}</button>
                     </div>
                 </div>
 
                 {/* Content */}
 
                 <div className="flex-1 overflow-y-auto p-2 min-h-[300px]">
-                    {loading && <div className="text-sm text-gray-500 p-4 text-center">載入中...</div>}
+                    {loading && <div className="text-sm text-gray-500 p-4 text-center">{t('common.loading')}</div>}
                     {error && <div className="text-sm text-red-400 p-4 text-center">{error}</div>}
 
                     {browseData && !loading && (
@@ -176,7 +172,7 @@ function FolderBrowser({
                                         {item.name}
                                     </span>
                                     {item.type === 'dir' && item.children != null && (
-                                        <span className="text-xs text-gray-600">{item.children} 項</span>
+                                        <span className="text-xs text-gray-600">{item.children} {t('data.browser.items')}</span>
                                     )}
                                     {item.type === 'file' && item.size_human && (
                                         <span className="text-xs text-gray-600">{item.size_human}</span>
@@ -188,7 +184,7 @@ function FolderBrowser({
                             ))}
 
                             {browseData.items.length === 0 && (
-                                <p className="text-sm text-gray-600 text-center py-6">此目錄為空</p>
+                                <p className="text-sm text-gray-600 text-center py-6">{t('data.browser.empty')}</p>
                             )}
                         </div>
                     )}
@@ -204,7 +200,7 @@ function FolderBrowser({
                         disabled={!browseData}
                         className="px-5 py-1.5 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-dark transition-colors disabled:opacity-40"
                     >
-                        選擇此目錄
+                        {t('data.browser.select')}
                     </button>
                 </div>
             </div>
@@ -215,6 +211,14 @@ function FolderBrowser({
 // ── Main Page ──────────────────────────────────────────────
 
 export default function DataSetup() {
+    const t = useT()
+
+    const FILE_LABELS: Record<string, string> = {
+        he_image: t('data.file.he_image'),
+        binned_002: t('data.file.binned_002'),
+        binned_008: t('data.file.binned_008'),
+    }
+
     const [dataRoot, setDataRoot] = useState('')
     const [scanning, setScanning] = useState(false)
     const [scanResult, setScanResult] = useState<ScanResult | null>(null)
@@ -256,7 +260,7 @@ export default function DataSetup() {
             }
         } catch (e: unknown) {
             setScanError(
-                e instanceof Error ? e.message : '無法連線至後端（port 8001），請確認後端已啟動'
+                e instanceof Error ? e.message : t('data.error.connection')
             )
         } finally {
             setScanning(false)
@@ -337,8 +341,8 @@ export default function DataSetup() {
             <div className="bg-surface-card rounded-xl border border-surface-border p-5 space-y-4">
                 <div className="flex items-center gap-2">
                     <HardDrive className="w-4 h-4 text-primary" />
-                    <h3 className="font-semibold text-gray-200">目前資料配置</h3>
-                    <span className="text-xs text-gray-500 ml-auto">{configuredCount}/4 已設定</span>
+                    <h3 className="font-semibold text-gray-200">{t('data.current.config')}</h3>
+                    <span className="text-xs text-gray-500 ml-auto">{configuredCount}/4 {t('data.configured_count_suffix')}</span>
                 </div>
                 <div className="grid grid-cols-1 gap-2">
                     {Object.entries(FILE_LABELS).map(([key, label]) => {
@@ -352,7 +356,7 @@ export default function DataSetup() {
                                     <p className="text-sm text-gray-300">{label}</p>
                                     {s?.configured
                                         ? <p className="text-xs text-gray-500 truncate">{s.path}</p>
-                                        : <p className="text-xs text-yellow-500/70">尚未設定</p>}
+                                        : <p className="text-xs text-yellow-500/70">{t('data.current.not_configured')}</p>}
                                 </div>
                             </div>
                         )
@@ -364,10 +368,10 @@ export default function DataSetup() {
             <div className="bg-surface-card rounded-xl border border-surface-border p-5 space-y-4">
                 <div className="flex items-center gap-2">
                     <FolderSearch className="w-4 h-4 text-primary" />
-                    <h3 className="font-semibold text-gray-200">自動掃描資料目錄</h3>
+                    <h3 className="font-semibold text-gray-200">{t('data.scan.title')}</h3>
                 </div>
                 <p className="text-xs text-gray-400">
-                    選擇或輸入資料根目錄路徑，系統將自動尋找 SpaceRanger 和 Xenium 輸出檔案。
+                    {t('data.scan.description')}
                 </p>
                 {scanError && (
                     <div className="flex items-center gap-2 px-3 py-2 bg-red-900/20 border border-red-700/40 rounded-lg">
@@ -382,7 +386,7 @@ export default function DataSetup() {
                         title="瀏覽資料夾"
                     >
                         <FolderOpen className="w-4 h-4" />
-                        瀏覽
+                        {t('data.scan.browse')}
                     </button>
                     <input
                         value={dataRoot}
@@ -400,7 +404,7 @@ export default function DataSetup() {
                             }`}
                     >
                         <FileSearch className="w-4 h-4" />
-                        {scanning ? '掃描中...' : '掃描'}
+                        {scanning ? t('data.scan.scanning') : t('data.scan.scan')}
                     </button>
                 </div>
             </div>
@@ -409,10 +413,10 @@ export default function DataSetup() {
             <div className="bg-surface-card rounded-xl border border-surface-border p-5 space-y-4">
                 <div className="flex items-center gap-2">
                     <HardDrive className="w-4 h-4 text-primary" />
-                    <h3 className="font-semibold text-gray-200">輸出目錄設定</h3>
+                    <h3 className="font-semibold text-gray-200">{t('data.output.title')}</h3>
                 </div>
                 <p className="text-xs text-gray-400">
-                    所有分析結果（ROI 裁切、分割遮罩、計數矩陣、圖表）將存放於此目錄下的 <span className="font-mono text-gray-300">roi/</span>、<span className="font-mono text-gray-300">analysis/</span> 子目錄。
+                    {t('data.output.description')} <span className="font-mono text-gray-300">roi/</span>, <span className="font-mono text-gray-300">analysis/</span>.
                 </p>
                 {outputError && (
                     <div className="flex items-center gap-2 px-3 py-2 bg-red-900/20 border border-red-700/40 rounded-lg">
@@ -426,7 +430,7 @@ export default function DataSetup() {
                         className="px-3 py-2 bg-surface border border-surface-border rounded-lg text-sm text-gray-300 hover:bg-surface-border hover:text-gray-100 transition-colors flex items-center gap-1.5 flex-shrink-0"
                     >
                         <FolderOpen className="w-4 h-4" />
-                        瀏覽
+                        {t('data.scan.browse')}
                     </button>
                     <input
                         value={outputDir}
@@ -447,7 +451,7 @@ export default function DataSetup() {
                         }`}
                     >
                         <Check className="w-4 h-4" />
-                        {savedOutput ? '已儲存' : savingOutput ? '儲存中...' : '儲存'}
+                        {savedOutput ? t('common.saved') : savingOutput ? t('common.saving') : t('common.save')}
                     </button>
                 </div>
             </div>
@@ -470,7 +474,7 @@ export default function DataSetup() {
                                         : 'bg-primary text-white hover:bg-primary-dark'
                                     }`}
                             >
-                                {applied ? '✓ 已套用' : applying ? '套用中...' : '套用至 Config'}
+                                {applied ? t('data.results.applied') : applying ? t('data.results.applying') : t('data.results.apply')}
                             </button>
                         )}
                     </div>
@@ -494,7 +498,7 @@ export default function DataSetup() {
                                                 )}
                                             </div>
                                         ) : (
-                                            <p className="text-xs text-gray-600">未找到</p>
+                                            <p className="text-xs text-gray-600">{t('data.results.not_found')}</p>
                                         )}
                                     </div>
                                 </div>

@@ -3,7 +3,7 @@ import asyncio
 import base64
 import logging
 from pathlib import Path
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Any, Optional
@@ -290,7 +290,7 @@ async def get_qc_status():
             from backend.src.analysis.pipeline import _get_analysis_h5ad_dir
             h5ad_dir = _get_analysis_h5ad_dir(config, output_dir)
             if (h5ad_dir / "qc_preprocessed.h5ad").exists():
-                _qc_status = {"status": "done", "progress": 1.0, "message": "QC 完成（從磁碟恢復）"}
+                _qc_status = {"status": "done", "progress": 1.0, "message": "QC complete (restored from disk)"}
         except Exception:
             pass
     return _qc_status
@@ -357,7 +357,7 @@ async def _run_qc(config: dict):
                 combined_images.update(result)
             _qc_images = combined_images
 
-        _qc_status = {"status": "done", "progress": 1.0, "message": f"QC 完成，已產生 {len(_qc_images)} 張圖表"}
+        _qc_status = {"status": "done", "progress": 1.0, "message": f"QC complete — {len(_qc_images)} plots generated"}
     except BaseException as e:
         import traceback
         logger.error(f"QC Step 失敗：{e!r}\n{traceback.format_exc()}")
@@ -430,7 +430,7 @@ async def get_umap_status():
             from backend.src.analysis.pipeline import _get_analysis_h5ad_dir
             h5ad_dir = _get_analysis_h5ad_dir(config, output_dir)
             if (h5ad_dir / "umap_computed.h5ad").exists():
-                _umap_status = {"status": "done", "progress": 1.0, "message": "UMAP 完成（從磁碟恢復）"}
+                _umap_status = {"status": "done", "progress": 1.0, "message": "UMAP complete (restored from disk)"}
         except Exception:
             pass
     return _umap_status
@@ -499,7 +499,7 @@ async def _run_umap(config: dict, p: UMAPExploreParams):
         _umap_status = {
             "status": "done",
             "progress": 1.0,
-            "message": f"UMAP 完成，{len(p.resolutions)} 個解析度",
+            "message": f"UMAP complete — {len(p.resolutions)} resolutions",
             "resolutions": p.resolutions,
         }
     except Exception as e:
@@ -536,7 +536,7 @@ async def get_heatmap_status():
         try:
             fig_dir = _get_fig_dir()
             if (fig_dir / "heatmap.png").exists() or (fig_dir / "dotplot.png").exists():
-                _heat_status = {"status": "done", "progress": 1.0, "message": "圖表完成（從磁碟恢復）"}
+                _heat_status = {"status": "done", "progress": 1.0, "message": "Charts complete (restored from disk)"}
         except Exception:
             pass
     return _heat_status
@@ -595,7 +595,7 @@ async def _run_heatmap(config: dict, p: HeatmapParams):
                 combined_images.update({f"{rn}_{k}": v for k, v in result.items()})
             _heatmap_images = combined_images
 
-        _heat_status = {"status": "done", "progress": 1.0, "message": "熱圖 + 點圖完成"}
+        _heat_status = {"status": "done", "progress": 1.0, "message": "Heatmap + Dotplot complete"}
     except Exception as e:
         logger.error(f"Heatmap Step 失敗：{e}")
         _heat_status = {"status": "error", "progress": 0.0, "message": str(e)}
@@ -745,6 +745,56 @@ async def get_roi_overlays():
     except Exception as e:
         logger.error(f"roi_overlays 失敗：{e}")
         return {"status": "error", "message": str(e)}
+
+
+@router.get("/marker_genes_csv")
+async def get_marker_genes_csv(
+    resolution: float = Query(..., gt=0),
+    n_genes: int = Query(default=20, ge=1, le=200),
+    roi_name: Optional[str] = None,
+):
+    """回傳每個 cluster 的 top marker genes CSV（需先執行 UMAP 步驟）。"""
+    from fastapi.responses import StreamingResponse
+    import io, pandas as pd
+    config = load_config()
+    try:
+        from backend.src.analysis.pipeline import _get_analysis_h5ad_dir, resolve_path
+        output_dir = resolve_path(config["paths"]["output_dir"])
+        umap_h5ad = _get_analysis_h5ad_dir(config, output_dir, roi_name) / "umap_computed.h5ad"
+        if not umap_h5ad.exists():
+            raise HTTPException(status_code=404, detail="UMAP data not found — please run the UMAP step first")
+        import scanpy as sc
+        adata = sc.read_h5ad(umap_h5ad)
+        leiden_key = f"leiden_{resolution}"
+        if leiden_key not in adata.obs.columns:
+            available = [c for c in adata.obs.columns if c.startswith("leiden_")]
+            raise HTTPException(status_code=404, detail=f"Resolution {resolution} not found. Available: {available}")
+        if "rank_genes_groups" not in adata.uns or adata.uns["rank_genes_groups"]["params"].get("groupby") != leiden_key:
+            sc.tl.rank_genes_groups(adata, groupby=leiden_key, method="wilcoxon", n_genes=n_genes)
+        clusters = sorted(
+            adata.obs[leiden_key].astype(str).unique().tolist(),
+            key=lambda x: (int(x) if x.isdigit() else 0, x),
+        )
+        rows = []
+        for cl in clusters:
+            df = sc.get.rank_genes_groups_df(adata, group=cl, n_genes=n_genes)
+            df.insert(0, "cluster", cl)
+            rows.append(df[["cluster", "names", "scores", "logfoldchanges", "pvals_adj"]])
+        result = pd.concat(rows, ignore_index=True)
+        result.columns = ["cluster", "gene", "score", "logFC", "pval_adj"]
+        buf = io.StringIO()
+        result.to_csv(buf, index=False)
+        fname = f"marker_genes_res{resolution}{f'_{roi_name}' if roi_name else ''}.csv"
+        return StreamingResponse(
+            io.BytesIO(buf.getvalue().encode()),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"marker_genes_csv 失敗：{e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/apply_labels")

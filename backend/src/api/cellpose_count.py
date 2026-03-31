@@ -30,7 +30,7 @@ async def get_status():
             out_base = resolve_path(config["paths"]["output_dir"]) / "roi"
             rois = config.get("rois", [])
             if rois and any((out_base / r.get("name", "") / "cellpose_cells.h5ad").exists() for r in rois):
-                _status = {"status": "done", "progress": 1.0, "message": "計數已完成（從磁碟恢復）"}
+                _status = {"status": "done", "progress": 1.0, "message": "Count complete (restored from disk)"}
         except Exception:
             pass
     return _status
@@ -45,7 +45,7 @@ async def _run_count(config: dict, roi_name: Optional[str]):
         await asyncio.get_running_loop().run_in_executor(
             None, run_counting_pipeline, config, roi_name
         )
-        _status = {"status": "done", "progress": 1.0, "message": "RNA 計數完成"}
+        _status = {"status": "done", "progress": 1.0, "message": "RNA counting complete"}
     except Exception as e:
         logger.error(f"Cellpose 計數失敗：{e}")
         _status = {"status": "error", "progress": 0.0, "message": str(e)}

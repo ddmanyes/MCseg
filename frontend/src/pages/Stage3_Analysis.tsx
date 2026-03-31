@@ -9,10 +9,11 @@ import {
   runHeatmap, getHeatmapStatus, getHeatmapImage,
   getConfig, getOverlayHdUrl, getAvailableRois, getRoiOverlays,
   getClusterInfo, getCelltypistModels,
-  runAnnotate, getAnnotateStatus, applyLabels,
+  runAnnotate, getAnnotateStatus, applyLabels, downloadMarkerGenes,
   getRawHistogram,
 } from '../api/client'
 import QcHistogram, { type HistogramMetric } from '../components/shared/QcHistogram'
+import { useT } from '../i18n'
 
 // ── 小工具 ────────────────────────────────────────────────────────
 
@@ -51,6 +52,7 @@ function RunButton({
   label, onClick, status, disabled,
 }: { label: string; onClick: () => void; status: string; disabled?: boolean }) {
   const isRunning = status === 'running'
+  const t = useT()
   return (
     <button
       onClick={onClick}
@@ -61,7 +63,7 @@ function RunButton({
           : 'bg-primary text-white hover:bg-primary-dark'
       }`}
     >
-      {isRunning ? '執行中...' : label}
+      {isRunning ? t('common.running') : label}
     </button>
   )
 }
@@ -134,20 +136,17 @@ function ChartView({
 
 // ── ROI 輪廓比較面板 ─────────────────────────────────────────────
 
-type RoiOverlayData = Record<string, { pre_qc?: string; post_qc?: string }>
+type RoiOverlayData = Record<string, { qc_overlay?: string }>
 
 function RoiContourPanel({ data }: { data: RoiOverlayData }) {
   const roiNames = Object.keys(data)
   const [activeRoi, setActiveRoi] = useState(roiNames[0] ?? '')
   const [open, setOpen] = useState(false)
+  const t = useT()
 
   if (!roiNames.length) return null
 
   const current = data[activeRoi] ?? {}
-  const stages: { key: 'pre_qc' | 'post_qc'; label: string }[] = [
-    { key: 'pre_qc',  label: 'Pre-QC（全部細胞）' },
-    { key: 'post_qc', label: 'Post-QC（保留 / 移除）' },
-  ]
 
   return (
     <div className="mt-4 border border-surface-border rounded-lg overflow-hidden">
@@ -157,9 +156,9 @@ function RoiContourPanel({ data }: { data: RoiOverlayData }) {
         className="w-full flex items-center justify-between px-4 py-2.5 bg-surface-darker hover:bg-surface-highlight transition-colors text-left"
       >
         <span className="text-xs font-medium text-gray-300">
-          細胞輪廓比較（QC 前後）
+          {t('stage3.roi_contour')}
         </span>
-        <span className="text-gray-500 text-xs">{open ? '▲ 收起' : '▼ 展開'}</span>
+        <span className="text-gray-500 text-xs">{open ? t('common.collapse') : t('common.expand')}</span>
       </button>
 
       {open && (
@@ -183,26 +182,20 @@ function RoiContourPanel({ data }: { data: RoiOverlayData }) {
             </div>
           )}
 
-          {/* 2 欄並排：Pre / Post */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {stages.map(({ key, label }) =>
-              current[key] ? (
-                <div key={key}>
-                  <p className="text-xs text-gray-400 mb-1">{label}</p>
-                  <img
-                    src={`data:image/png;base64,${current[key]}`}
-                    className="rounded w-full"
-                    alt={`${activeRoi} ${key}`}
-                  />
-                </div>
-              ) : null
-            )}
-          </div>
+          {current.qc_overlay ? (
+            <img
+              src={`data:image/png;base64,${current.qc_overlay}`}
+              className="rounded w-full"
+              alt={`${activeRoi} qc overlay`}
+            />
+          ) : (
+            <p className="text-xs text-gray-500">{t('stage3.qc.no_overlay')}</p>
+          )}
 
           {/* 跨 ROI 摘要列 */}
           {roiNames.length > 1 && (
             <div className="mt-3 text-xs text-gray-500">
-              共 {roiNames.length} 個 ROI：{roiNames.join('、')}。點擊上方 Tab 切換。
+              {roiNames.length} {t('stage3.qc.roi_switch_hint')}
             </div>
           )}
         </div>
@@ -217,6 +210,7 @@ export default function Stage4_Analysis() {
   useStageLog('analysis')
   const { updateStage } = usePipelineStore()
   const queryClient = useQueryClient()
+  const t = useT()
 
   // ── 分析來源選擇 ──
   const [analysisMode, setAnalysisMode] = useState<'single' | 'merge'>('single')
@@ -284,6 +278,7 @@ export default function Stage4_Analysis() {
   const [histLoading, setHistLoading] = useState(false)
   const [histError, setHistError] = useState('')
   const [applyLabelError, setApplyLabelError] = useState('')
+  const [markerCsvError, setMarkerCsvError] = useState('')
   const [logScales, setLogScales] = useState<Record<string, boolean>>({})
 
   // ── 儲存圖表 ──
@@ -334,25 +329,25 @@ export default function Stage4_Analysis() {
   }, [])
 
   // ── TanStack Query: 四步驟 status 輪詢 ──
-  const { data: qcSt } = useQuery({
+  const { data: qcSt, refetch: refetchQcSt } = useQuery({
     queryKey: ['qc_status'],
     queryFn: async () => (await getQCStatus()).data,
     refetchInterval: (q) => q.state.data?.status === 'running' ? 2000 : false,
   })
 
-  const { data: umapSt } = useQuery({
+  const { data: umapSt, refetch: refetchUmapSt } = useQuery({
     queryKey: ['umap_explore_status'],
     queryFn: async () => (await getUMAPExploreStatus()).data,
     refetchInterval: (q) => q.state.data?.status === 'running' ? 2000 : false,
   })
 
-  const { data: heatSt } = useQuery({
+  const { data: heatSt, refetch: refetchHeatSt } = useQuery({
     queryKey: ['heatmap_status'],
     queryFn: async () => (await getHeatmapStatus()).data,
     refetchInterval: (q) => q.state.data?.status === 'running' ? 2000 : false,
   })
 
-  const { data: annotSt } = useQuery({
+  const { data: annotSt, refetch: refetchAnnotSt } = useQuery({
     queryKey: ['annotate_status'],
     queryFn: async () => (await getAnnotateStatus()).data,
     refetchInterval: (q) => q.state.data?.status === 'running' ? 2000 : false,
@@ -363,6 +358,9 @@ export default function Stage4_Analysis() {
     if (qcSt?.status === 'done') {
       getQCImages().then(r => { if (r.data.data) setQcImages(r.data.data) })
       getRoiOverlays().then(r => { if (r.data?.data) setRoiOverlays(r.data.data) })
+      updateStage('analysis', { status: 'done', progress: 1, message: t('stage3.status.qc_done') })
+    } else if (qcSt?.status === 'error') {
+      updateStage('analysis', { status: 'error', progress: 0, message: qcSt.message ?? t('stage3.status.qc_failed') })
     }
   }, [qcSt?.status])
 
@@ -375,13 +373,16 @@ export default function Stage4_Analysis() {
           if (keys.length) setSelectedRes(keys[0])
         }
       })
+      updateStage('analysis', { status: 'done', progress: 1, message: t('stage3.status.umap_done') })
+    } else if (umapSt?.status === 'error') {
+      updateStage('analysis', { status: 'error', progress: 0, message: umapSt.message ?? t('stage3.status.umap_failed') })
     }
   }, [umapSt?.status])
 
   useEffect(() => {
     if (heatSt?.status === 'done') {
       getHeatmapImage().then(r => { if (r.data.data) setHeatmapImages(r.data.data) })
-      updateStage('analysis', { status: 'done', progress: 1, message: '分析完成' })
+      updateStage('analysis', { status: 'done', progress: 1, message: t('stage3.status.analysis_done') })
     }
   }, [heatSt?.status])
 
@@ -505,22 +506,25 @@ export default function Stage4_Analysis() {
       roi_name: mergeFlag ? undefined : (selectedRoi || undefined),
       input_source: inputSource,
     })
+    refetchQcSt()
   }
 
   const handleRunUMAP = async () => {
     const resolutions = parseResolutions()
     if (!resolutions.length) return
-    setUmapImages({})        // 清空舊圖
+    setUmapImages({})
     setHeatmapImages({})
     updateStage('analysis', { status: 'running', progress: 0, message: 'UMAP 計算中...' })
     await runUMAPExplore({ ...umapParams, resolutions })
+    refetchUmapSt()
   }
 
   const handleRunHeatmap = async () => {
     if (!selectedRes) return
-    setHeatmapImages({})     // 清空舊圖
+    setHeatmapImages({})
     updateStage('analysis', { status: 'running', progress: 0, message: '熱圖產生中...' })
     await runHeatmap({ resolution: parseFloat(selectedRes), n_top_genes: nTopGenes, n_heatmap_genes: nHeatmapGenes })
+    refetchHeatSt()
   }
 
   const handleRunAnnotate = async () => {
@@ -537,8 +541,7 @@ export default function Stage4_Analysis() {
       enable_tier3: enableTier3,
       tier3_conf_threshold: tier3ConfThreshold,
     })
-    // 強制 refetch：解決第二次點擊時 refetchInterval 因 status='done' 停止 poll 的問題
-    queryClient.invalidateQueries({ queryKey: ['annotate_status'] })
+    refetchAnnotSt()
   }
 
   const handleApplyLabels = async () => {
@@ -588,8 +591,8 @@ export default function Stage4_Analysis() {
         <div className="flex items-center justify-between mb-1">
           <SectionHeader
             step={1}
-            title="QC 前處理"
-            subtitle="QC → normalize → HVG → PCA"
+            title={t('stage3.title.qc')}
+            subtitle={t('stage3.qc.subtitle')}
           />
           <StatusBadge
             status={qcSt?.status ?? 'idle'}
@@ -599,7 +602,7 @@ export default function Stage4_Analysis() {
 
         {/* 分析來源選擇 */}
         <div className="bg-surface-darker rounded-lg border border-surface-border p-4 mt-4">
-          <p className="text-xs text-gray-400 mb-3 font-medium">分析來源</p>
+          <p className="text-xs text-gray-400 mb-3 font-medium">{t('stage3.qc.source')}</p>
           <div className="flex flex-col gap-2">
             <label className="flex items-center gap-3 cursor-pointer">
               <input
@@ -610,7 +613,7 @@ export default function Stage4_Analysis() {
                 onChange={() => setAnalysisMode('single')}
                 className="accent-brand-primary"
               />
-              <span className="text-sm text-gray-200">單一 ROI</span>
+              <span className="text-sm text-gray-200">{t('stage3.qc.single_roi')}</span>
               {analysisMode === 'single' && availableRois.length > 0 && (
                 <select
                   value={selectedRoi}
@@ -636,10 +639,10 @@ export default function Stage4_Analysis() {
                 className="accent-brand-primary"
               />
               <span className="text-sm text-gray-200">
-                合併所有 ROI
+                {t('stage3.qc.merge')}
                 {hasMultipleRois
-                  ? <span className="text-xs text-gray-400 ml-2">（{availableRois.filter(r => r.available).length} 個可用，同一 H&E + Visium，無需 batch correction）</span>
-                  : <span className="text-xs text-gray-500 ml-2">（需 ≥ 2 個 ROI）</span>
+                  ? <span className="text-xs text-gray-400 ml-2">({availableRois.filter(r => r.available).length} available)</span>
+                  : <span className="text-xs text-gray-500 ml-2">{t('stage3.qc.merge_unavailable')}</span>
                 }
               </span>
             </label>
@@ -648,7 +651,7 @@ export default function Stage4_Analysis() {
 
         {/* RNA 計數來源：MCseg v2（固定） */}
         <div className="bg-surface-darker rounded-lg border border-surface-border px-4 py-2 mt-3 flex items-center gap-2">
-          <span className="text-xs text-gray-400">輸入來源：</span>
+          <span className="text-xs text-gray-400">{t('stage3.qc.input_source')}</span>
           <span className="text-xs font-medium text-green-400">MCseg v2</span>
           <span className="text-[11px] text-gray-500">cellpose_cells.h5ad</span>
         </div>
@@ -657,12 +660,12 @@ export default function Stage4_Analysis() {
         <div className="bg-surface-darker rounded-lg border border-surface-border p-4 mt-4">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <p className="text-xs font-medium text-gray-300">原始分布預覽</p>
+              <p className="text-xs font-medium text-gray-300">{t('stage3.qc.raw_preview')}</p>
               <p className="text-xs text-gray-500 mt-0.5">
-                觀察細胞數量分布後再設定 QC 閾值｜
-                <span className="text-red-400">紅線</span> = min，
-                <span className="text-orange-400">橙線</span> = max，
-                <span className="text-green-500">綠虛線</span> = MAD建議
+                {t('stage3.qc.hint_prefix')}
+                <span className="text-red-400">{t('stage3.qc.hint_red')}</span> = min，
+                <span className="text-orange-400">{t('stage3.qc.hint_orange')}</span> = max，
+                <span className="text-green-500">{t('stage3.qc.hint_green')}</span>{t('stage3.qc.hint_mad')}
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -671,7 +674,7 @@ export default function Stage4_Analysis() {
                   onClick={handleApplyMad}
                   className="px-3 py-1 rounded text-xs font-medium bg-green-800/40 border border-green-700 text-green-300 hover:bg-green-700/50 transition-colors"
                 >
-                  套用 MAD 建議值
+                  {t('stage3.qc.apply_mad')}
                 </button>
               )}
               <button
@@ -679,7 +682,7 @@ export default function Stage4_Analysis() {
                 disabled={histLoading}
                 className="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-card border border-gray-600 text-gray-300 hover:border-brand-primary hover:text-brand-primary disabled:opacity-50 transition-colors"
               >
-                {histLoading ? '載入中...' : histData ? '重新載入' : '載入原始分布'}
+                {histLoading ? t('stage3.qc.loading') : histData ? t('stage3.qc.reload') : t('stage3.qc.load_dist')}
               </button>
             </div>
           </div>
@@ -778,27 +781,27 @@ export default function Stage4_Analysis() {
 
         {/* QC 參數 */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-surface-darker p-4 rounded-lg border border-surface-border mt-4">
-          <NumberField label="最低基因數 (min_genes)" value={qcParams.min_genes}
+          <NumberField label={t('stage3.qc.min_genes')} value={qcParams.min_genes}
             onChange={v => setQcParams(p => ({ ...p, min_genes: v }))} min={0} />
-          <NumberField label="最高基因數 (max_genes)" value={qcParams.max_genes}
+          <NumberField label={t('stage3.qc.max_genes')} value={qcParams.max_genes}
             onChange={v => setQcParams(p => ({ ...p, max_genes: v }))} min={0} />
-          <NumberField label="最低 UMI 數 (min_counts)" value={qcParams.min_counts}
+          <NumberField label={t('stage3.qc.min_counts')} value={qcParams.min_counts}
             onChange={v => setQcParams(p => ({ ...p, min_counts: v }))} min={0} />
-          <NumberField label="最低細胞數/基因 (min_cells)" value={qcParams.min_cells}
+          <NumberField label={t('stage3.qc.min_cells')} value={qcParams.min_cells}
             onChange={v => setQcParams(p => ({ ...p, min_cells: v }))} min={0} />
-          <NumberField label="粒線體上限 % (max_pct_mito)" value={qcParams.max_pct_mito}
+          <NumberField label={t('stage3.qc.max_pct_mito')} value={qcParams.max_pct_mito}
             onChange={v => setQcParams(p => ({ ...p, max_pct_mito: v }))} step={0.5} min={0} />
-          <NumberField label="最低複雜度 (min_complexity)" value={qcParams.min_complexity}
+          <NumberField label={t('stage3.qc.min_complexity')} value={qcParams.min_complexity}
             onChange={v => setQcParams(p => ({ ...p, min_complexity: v }))} step={0.01} min={0} hint="建議 0.8 以上" />
-          <NumberField label="HVG 數量 (n_top_genes)" value={qcParams.n_top_genes}
+          <NumberField label={t('stage3.qc.n_top_genes')} value={qcParams.n_top_genes}
             onChange={v => setQcParams(p => ({ ...p, n_top_genes: v }))} min={100} />
-          <NumberField label="PCA 維度數 (n_pcs)" value={qcParams.n_pcs}
+          <NumberField label={t('stage3.qc.n_pcs')} value={qcParams.n_pcs}
             onChange={v => setQcParams(p => ({ ...p, n_pcs: v }))} min={10} />
         </div>
 
         {/* 執行 QC 按鈕 */}
         <div className="flex justify-end mt-3">
-          <RunButton label="執行前處理" onClick={handleRunQC} status={qcSt?.status ?? 'idle'} />
+          <RunButton label={t('stage3.qc.run')} onClick={handleRunQC} status={qcSt?.status ?? 'idle'} />
         </div>
 
         {/* QC 圖表 */}
@@ -807,36 +810,24 @@ export default function Stage4_Analysis() {
             <ChartView
               images={qcImages}
               tabs={[
-                { key: 'violin',         label: '小提琴圖 (QC 分布)' },
-                { key: 'scatter',        label: '散佈圖 (UMI vs Genes)' },
+                { key: 'violin',         label: t('stage3.qc.chart.violin') },
+                { key: 'scatter',        label: t('stage3.qc.chart.scatter') },
                 { key: 'elbow',          label: 'PCA Elbow' },
-                { key: 'pre_qc',         label: 'H&E 疊圖 (QC 前)' },
-                { key: 'post_qc',        label: 'H&E 疊圖 (QC 後)' },
-                { key: 'roi_comparison', label: 'ROI 輪廓比較（全部）' },
+                { key: 'qc_overlay',     label: t('stage3.qc.chart.overlay') },
+                { key: 'roi_comparison', label: t('stage3.qc.chart.roi_comparison') },
               ]}
             />
             {/* HD 存檔下載 */}
-            {(qcImages['pre_qc'] || qcImages['post_qc']) && (
+            {qcImages['qc_overlay'] && (
               <div className="mt-2 flex gap-3">
-                <span className="text-xs text-gray-400 self-center">HD 存檔 (300 DPI)：</span>
-                {qcImages['pre_qc'] && (
-                  <a
-                    href={getOverlayHdUrl('pre_qc')}
-                    download="overlay_pre_qc_hd.png"
-                    className="text-xs text-brand-primary hover:underline"
-                  >
-                    下載 Pre-QC HD
-                  </a>
-                )}
-                {qcImages['post_qc'] && (
-                  <a
-                    href={getOverlayHdUrl('post_qc')}
-                    download="overlay_post_qc_hd.png"
-                    className="text-xs text-brand-primary hover:underline"
-                  >
-                    下載 Post-QC HD
-                  </a>
-                )}
+                <span className="text-xs text-gray-400 self-center">{t('stage3.qc.hd_archive')}</span>
+                <a
+                  href={getOverlayHdUrl()}
+                  download="overlay_qc_hd.png"
+                  className="text-xs text-brand-primary hover:underline"
+                >
+                  {t('stage3.qc.hd_download')}
+                </a>
               </div>
             )}
           </>
@@ -855,8 +846,8 @@ export default function Stage4_Analysis() {
         <div className="flex items-center justify-between mb-1">
           <SectionHeader
             step={2}
-            title="UMAP 解析"
-            subtitle="建立 KNN 圖 → UMAP → Leiden（支援多組解析度同時比較）"
+            title={t('stage3.title.umap')}
+            subtitle={t('stage3.umap.subtitle')}
           />
           <div className="flex items-center gap-4">
             <StatusBadge
@@ -864,7 +855,7 @@ export default function Stage4_Analysis() {
               message={umapSt?.message ?? '尚未執行'}
             />
             <RunButton
-              label="執行 UMAP"
+              label={t('stage3.umap.run')}
               onClick={handleRunUMAP}
               status={umapSt?.status ?? 'idle'}
               disabled={!qcDone}
@@ -874,17 +865,17 @@ export default function Stage4_Analysis() {
 
         {/* UMAP 參數 */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-surface-darker p-4 rounded-lg border border-surface-border mt-4">
-          <NumberField label="KNN 鄰居數 (n_neighbors)" value={umapParams.n_neighbors}
+          <NumberField label={t('stage3.umap.n_neighbors')} value={umapParams.n_neighbors}
             onChange={v => setUmapParams(p => ({ ...p, n_neighbors: v }))} min={2}
-            hint="建議：15–30；細胞多可調至 30–50" />
-          <NumberField label="使用 PC 數 (n_pcs)" value={umapParams.n_pcs}
+            hint={t('stage3.umap.hint.neighbors')} />
+          <NumberField label={t('stage3.umap.n_pcs')} value={umapParams.n_pcs}
             onChange={v => setUmapParams(p => ({ ...p, n_pcs: v }))} min={5}
-            hint="建議：20–30；參考 Elbow 圖選擇" />
-          <NumberField label="最小距離 (min_dist)" value={umapParams.min_dist}
+            hint={t('stage3.umap.hint.pcs')} />
+          <NumberField label={t('stage3.umap.min_dist')} value={umapParams.min_dist}
             onChange={v => setUmapParams(p => ({ ...p, min_dist: v }))} step={0.05} min={0.01}
-            hint="建議：0.1–0.3；越小叢集越緊密" />
+            hint={t('stage3.umap.hint.min_dist')} />
           <div>
-            <label className="block text-xs text-gray-400 mb-1">解析度列表（逗號分隔）</label>
+            <label className="block text-xs text-gray-400 mb-1">{t('stage3.umap.resolutions')}</label>
             <input
               type="text"
               className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
@@ -898,7 +889,7 @@ export default function Stage4_Analysis() {
         {/* UMAP 圖表:個別 + Grid */}
         {Object.keys(umapImages).length > 0 && (() => {
           const resTabs = availableResolutions.map(r => ({ key: r, label: `Res = ${r}` }))
-          const allTabs = [...resTabs, { key: 'grid', label: '全覽 Grid' }]
+          const allTabs = [...resTabs, { key: 'grid', label: t('stage3.umap.grid_view') }]
           return (
             <ChartView images={umapImages} tabs={allTabs} fullWidthKeys={['grid']} />
           )
@@ -912,8 +903,8 @@ export default function Stage4_Analysis() {
         <div className="flex items-center justify-between mb-1">
           <SectionHeader
             step={3}
-            title="熱圖輸出"
-            subtitle="觀察 Heatmap + Dotplot 了解各 cluster 的 marker gene，再進行細胞類型標註"
+            title={t('stage3.title.heatmap')}
+            subtitle={t('stage3.heatmap.subtitle')}
           />
           <div className="flex items-center gap-4">
             <StatusBadge
@@ -921,7 +912,7 @@ export default function Stage4_Analysis() {
               message={heatSt?.message ?? '尚未執行'}
             />
             <RunButton
-              label="產生熱圖"
+              label={t('stage3.heatmap.run')}
               onClick={handleRunHeatmap}
               status={heatSt?.status ?? 'idle'}
               disabled={!umapDone || !selectedRes}
@@ -932,7 +923,7 @@ export default function Stage4_Analysis() {
         {/* 熱圖參數 */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 bg-surface-darker p-4 rounded-lg border border-surface-border mt-4">
           <div>
-            <label className="block text-xs text-gray-400 mb-1">解析度選擇</label>
+            <label className="block text-xs text-gray-400 mb-1">{t('stage3.heatmap.resolution')}</label>
             <select
               className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
               value={selectedRes}
@@ -940,7 +931,7 @@ export default function Stage4_Analysis() {
               disabled={!availableResolutions.length}
             >
               {availableResolutions.length === 0 && (
-                <option value="">（請先執行 UMAP）</option>
+                <option value="">{t('stage3.annotation.run_umap_first_option')}</option>
               )}
               {availableResolutions.map(r => (
                 <option key={r} value={r}>Resolution = {r}</option>
@@ -948,13 +939,13 @@ export default function Stage4_Analysis() {
             </select>
           </div>
           <NumberField
-            label="熱圖基因數 (n_heatmap_genes)"
+            label={t('stage3.heatmap.n_genes')}
             value={nHeatmapGenes}
             onChange={setNHeatmapGenes}
             min={10}
           />
           <NumberField
-            label="Dotplot 每群基因數 (n_top_genes)"
+            label={t('stage3.heatmap.n_top')}
             value={nTopGenes}
             onChange={setNTopGenes}
             min={5}
@@ -966,8 +957,8 @@ export default function Stage4_Analysis() {
           <ChartView
             images={heatmapImages}
             tabs={[
-              { key: 'heatmap', label: 'Heatmap（細胞等級分布）' },
-              { key: 'dotplot', label: 'Dotplot（表達比例 + 強度）' },
+              { key: 'heatmap', label: t('stage3.heatmap.heatmap_tab') },
+              { key: 'dotplot', label: t('stage3.heatmap.dotplot_tab') },
             ]}
           />
         )}
@@ -980,12 +971,27 @@ export default function Stage4_Analysis() {
         <div className="flex items-center justify-between mb-1">
           <SectionHeader
             step={4}
-            title="細胞類型標註"
-            subtitle="觀察 Heatmap/Dotplot 後，以 CellTypist 自動建議或手動填寫標籤；套用後可重跑熱圖令 y 軸顯示細胞名稱"
+            title={t('stage3.title.annotation')}
+            subtitle={t('stage3.annotation.subtitle')}
           />
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             {labelApplied && (
-              <span className="text-xs text-green-400 font-medium">✓ 標籤已套用</span>
+              <span className="text-xs text-green-400 font-medium">{t('stage3.annotation.labels_applied')}</span>
+            )}
+            <button
+              onClick={async () => {
+                setMarkerCsvError('')
+                const err = await downloadMarkerGenes(parseFloat(annotateRes), selectedRoi || undefined)
+                if (err) setMarkerCsvError(err)
+              }}
+              disabled={!umapDone || !annotateRes}
+              className="px-3 py-1 rounded text-xs font-medium bg-surface-card border border-gray-600 text-gray-300 hover:border-primary hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              title={t('stage3.annotation.marker_csv_hint')}
+            >
+              {t('stage3.annotation.marker_csv')}
+            </button>
+            {markerCsvError && (
+              <span className="text-xs text-red-400">{markerCsvError}</span>
             )}
           </div>
         </div>
@@ -993,14 +999,14 @@ export default function Stage4_Analysis() {
         {/* 解析度 + 模型 + 模式設定 */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 bg-surface-darker p-4 rounded-lg border border-surface-border mt-4">
           <div>
-            <label className="block text-xs text-gray-400 mb-1">標註解析度</label>
+            <label className="block text-xs text-gray-400 mb-1">{t('stage3.annotation.resolution')}</label>
             <select
               className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
               value={annotateRes}
               onChange={e => handleAnnotateResChange(e.target.value)}
               disabled={!availableResolutions.length}
             >
-              {availableResolutions.length === 0 && <option value="">（請先執行 UMAP）</option>}
+              {availableResolutions.length === 0 && <option value="">{t('stage3.annotation.run_umap_first_option')}</option>}
               {availableResolutions.map(r => (
                 <option key={r} value={r}>Resolution = {r}</option>
               ))}
@@ -1008,7 +1014,7 @@ export default function Stage4_Analysis() {
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">組織模型（CRC / 器官）</label>
+            <label className="block text-xs text-gray-400 mb-1">{t('stage3.annotation.tissue_model')}</label>
             <select
               className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
               value={annotateModel}
@@ -1018,28 +1024,27 @@ export default function Stage4_Analysis() {
                 <option key={filename} value={filename}>{label}</option>
               ))}
               {Object.keys(celltypistModels).length === 0 && (
-                <option value="Human_Colorectal_Cancer.pkl">Human CRC（大腸癌）</option>
+                <option value="Human_Colorectal_Cancer.pkl">{t('stage3.annotation.default_model')}</option>
               )}
             </select>
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">標註模式</label>
+            <label className="block text-xs text-gray-400 mb-1">{t('stage3.annotation.mode')}</label>
             <select
               className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
               value={annotateMode}
               onChange={e => setAnnotateMode(e.target.value as 'dual' | 'single')}
             >
-              <option value="dual">雙模型（免疫 + 組織）— 推薦</option>
-              <option value="single">單模型（僅組織模型）</option>
+              <option value="dual">{t('stage3.annotation.mode_dual')}</option>
+              <option value="single">{t('stage3.annotation.mode_single')}</option>
             </select>
           </div>
 
           {annotateMode === 'dual' && (<>
             <div>
               <label className="block text-xs text-gray-400 mb-1">
-                免疫識別閾值：<span className="text-gray-200">{immuneConfThreshold.toFixed(2)}</span>
-                <span className="ml-1 text-gray-600">（低於此值→組織模型）</span>
+                {t('stage3.annotation.immune_conf')}<span className="text-gray-200">{immuneConfThreshold.toFixed(2)}</span>
               </label>
               <input
                 type="range" min="0.1" max="0.9" step="0.05"
@@ -1048,13 +1053,12 @@ export default function Stage4_Analysis() {
                 className="w-full accent-brand-primary"
               />
               <div className="flex justify-between text-xs text-gray-600 mt-0.5">
-                <span>寬鬆</span><span>嚴格</span>
+                <span>{t('stage3.annotation.loose')}</span><span>{t('stage3.annotation.strict')}</span>
               </div>
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">
-                信心警告閾值：<span className="text-gray-200">{uncertainThreshold.toFixed(2)}</span>
-                <span className="ml-1 text-gray-600">（低於此值→橘色警告）</span>
+                {t('stage3.annotation.uncertain')}<span className="text-gray-200">{uncertainThreshold.toFixed(2)}</span>
               </label>
               <input
                 type="range" min="0.3" max="0.95" step="0.05"
@@ -1065,8 +1069,7 @@ export default function Stage4_Analysis() {
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">
-                基因評分閾值：<span className="text-gray-200">{scoreThreshold.toFixed(2)}</span>
-                <span className="ml-1 text-gray-600">（低於此值→不附加功能狀態）</span>
+                {t('stage3.annotation.score')}<span className="text-gray-200">{scoreThreshold.toFixed(2)}</span>
               </label>
               <input
                 type="range" min="0.1" max="0.8" step="0.05"
@@ -1086,15 +1089,14 @@ export default function Stage4_Analysis() {
                   className="w-4 h-4 accent-indigo-400 cursor-pointer"
                 />
                 <label htmlFor="tier3-toggle" className="text-xs text-gray-300 cursor-pointer">
-                  <span className="font-medium text-indigo-300">Tier 3：啟用精細免疫亞型</span>
-                  <span className="ml-2 text-gray-500">（Immune_All_Low.pkl — 98 種亞型，首次使用需下載）</span>
+                  <span className="font-medium text-indigo-300">{t('stage3.annotation.tier3_toggle')}</span>
+                  <span className="ml-2 text-gray-500">{t('stage3.annotation.tier3_desc')}</span>
                 </label>
               </div>
               {enableTier3 && (
                 <div className="ml-7">
                   <label className="block text-xs text-gray-400 mb-1">
-                    Tier3 替換閾值：<span className="text-gray-200">{tier3ConfThreshold.toFixed(2)}</span>
-                    <span className="ml-1 text-gray-600">（低於此值只顯示不替換標籤）</span>
+                    {t('stage3.annotation.tier3_threshold')}<span className="text-gray-200">{tier3ConfThreshold.toFixed(2)}</span>
                   </label>
                   <input
                     type="range" min="0.3" max="0.9" step="0.05"
@@ -1103,7 +1105,7 @@ export default function Stage4_Analysis() {
                     className="w-full accent-indigo-400"
                   />
                   <p className="text-xs text-yellow-600 mt-1">
-                    ⚠ Tier 3 會對每個免疫 cluster 額外跑一次模型，標註時間約增加 50%
+                    {t('stage3.annotation.tier3_warning')}
                   </p>
                 </div>
               )}
@@ -1112,7 +1114,7 @@ export default function Stage4_Analysis() {
 
           <div className={`flex flex-col justify-end ${annotateMode === 'dual' ? '' : 'col-start-3'}`}>
             <RunButton
-              label="CellTypist 自動標註"
+              label={t('stage3.annotation.celltypist')}
               onClick={handleRunAnnotate}
               status={annotSt?.status ?? 'idle'}
               disabled={!umapDone || !annotateRes}
@@ -1128,8 +1130,8 @@ export default function Stage4_Analysis() {
           <div className="mt-4 bg-surface-darker rounded-lg border border-surface-border p-4">
             <div className="flex items-center justify-between mb-3">
               <p className="text-xs text-gray-400 font-medium">
-                Cluster 標籤（共 {Object.keys(clusterLabels).length} 個）
-                <span className="ml-2 text-gray-500">— 可直接編輯，標註來源以色塊標示</span>
+                {t('stage3.annotation.clusters_count')} {Object.keys(clusterLabels).length} {t('stage3.annotation.clusters_count_suffix')}
+                <span className="ml-2 text-gray-500">{t('stage3.annotation.clusters_hint')}</span>
               </p>
               <div className="flex flex-col items-end gap-1">
                 <button
@@ -1137,7 +1139,7 @@ export default function Stage4_Analysis() {
                   disabled={!umapDone || !annotateRes}
                   className="px-4 py-1.5 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary-dark disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed transition-colors"
                 >
-                  套用標籤
+                  {t('stage3.annotation.apply')}
                 </button>
                 {applyLabelError && (
                   <p className="text-xs text-red-400">{applyLabelError}</p>
@@ -1148,10 +1150,10 @@ export default function Stage4_Analysis() {
             {/* 圖例 */}
             {Object.keys(clusterMeta).length > 0 && (
               <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3 text-xs text-gray-500">
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-400 inline-block"/>免疫（Immune_All_High）</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-sky-400 inline-block"/>組織模型</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-400 inline-block"/>需確認（信心不足）</span>
-                <span className="ml-2">信心：<span className="text-green-400">●</span>≥{uncertainThreshold.toFixed(1)} / <span className="text-yellow-400">●</span>中 / <span className="text-red-400">●</span>低</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-400 inline-block"/>{t('stage3.annotation.legend_immune')}</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-sky-400 inline-block"/>{t('stage3.annotation.legend_tissue')}</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-400 inline-block"/>{t('stage3.annotation.legend_confirm')}</span>
+                <span className="ml-2">{t('stage3.annotation.legend_confidence')}<span className="text-green-400">●</span>≥{uncertainThreshold.toFixed(1)} / <span className="text-yellow-400">●</span> / <span className="text-red-400">●</span></span>
               </div>
             )}
 

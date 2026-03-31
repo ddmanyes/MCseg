@@ -559,6 +559,216 @@ def _run_single_roi(he_crop_path: Path, _roi_name: str,
 
 
 # ─────────────────────────────────────────────────────────
+# 全圖 Tiled 分割（MPS 安全版）
+# ─────────────────────────────────────────────────────────
+
+def run_tiled_mcseg_v2(
+    img: np.ndarray,
+    cfg: dict,
+    tile_size: int = 1024,
+    overlap: int = 128,
+    progress_callback=None,
+) -> np.ndarray:
+    """
+    全圖 tiled MCseg v2 分割。
+
+    兩階段設計（避免 Voronoi 在 tile 邊界產生接縫）：
+      Phase 1（per-tile）：Cellpose 多直徑推論 + merge_masks_fast
+      Phase 2（全圖）：拼接 → Voronoi 擴張 → clean_mask
+
+    MPS 安全設定：
+      - tile_size=1024（預設），比 2048 佔用更少 GPU 記憶體
+      - augment=False 全程停用（augment=True 在 MPS 上易 OOM）
+      - batch_size 限制為 cfg 設定值，建議 ≤ 2
+      - 捕捉 MPS RuntimeError 後自動 fallback 到 CPU
+
+    Args:
+        img:               (H, W, 3) uint8 RGB H&E 影像（全圖或大 ROI）
+        cfg:               mcseg_v2 設定 dict
+        tile_size:         每塊大小（px），MPS 安全建議 1024
+        overlap:           相鄰塊重疊寬度（px）
+        progress_callback: fn(progress: float, message: str)
+
+    Returns:
+        int32 細胞分割遮罩 (H, W)
+    """
+    from cellpose import core, models
+
+    t0 = time.time()
+
+    # ── 參數 ────────────────────────────────────────────────
+    use_gpu         = bool(cfg.get("use_gpu", True)) and core.use_gpu()
+    batch_size      = int(cfg.get("batch_size", 2))   # MPS 建議 ≤ 2
+    dia_small       = float(cfg.get("dia_small", 13.0))
+    dia_mid         = float(cfg.get("dia_mid", 17.0))
+    dia_large       = float(cfg.get("dia_large", 22.0))
+    use_hematoxylin = bool(cfg.get("use_hematoxylin", True))
+    voronoi_dist    = int(cfg.get("voronoi_distance", 9))
+    flow_thresh     = float(cfg.get("flow_threshold", 0.4))
+    cellprob_thresh = float(cfg.get("cellprob_threshold", -2.0))
+    min_size        = int(cfg.get("min_size", 20))
+    max_size        = int(cfg.get("max_size", 6000))
+    clahe_clip      = float(cfg.get("clahe_clip_limit", 3.0))
+
+    H, W = img.shape[:2]
+    y_starts = list(range(0, H, tile_size))
+    x_starts = list(range(0, W, tile_size))
+    total_tiles = len(y_starts) * len(x_starts)
+
+    logger.info(
+        f"[Tiled MCseg v2] 全圖 {W}×{H}px  "
+        f"tile={tile_size}px overlap={overlap}px  "
+        f"tiles={total_tiles}  gpu={use_gpu}"
+    )
+
+    # ── 預處理（全圖一次性，節省重複計算）────────────────────
+    enhanced     = apply_clahe(img, clip_limit=clahe_clip, tile_size=8)
+    tissue_mask  = create_tissue_mask(img)
+    hema_full: np.ndarray | None = None
+    if use_hematoxylin:
+        hema_full = color_deconvolution_he(img)
+
+    # ── Phase 1：per-tile Cellpose ────────────────────────
+    stitched = np.zeros((H, W), dtype=np.int32)
+    current_max = 0
+
+    logger.info(f"  載入 cyto3 模型 (gpu={use_gpu})")
+    cyto3 = models.CellposeModel(model_type="cyto3", gpu=use_gpu)
+
+    eval_base = dict(
+        channels=[0, 0],
+        flow_threshold=flow_thresh,
+        cellprob_threshold=cellprob_thresh,
+        min_size=10,
+        batch_size=batch_size,
+        augment=False,   # MPS 安全：停用 augment
+        resample=True,
+    )
+
+    for ti, y in enumerate(y_starts):
+        y0e = y - overlap if y > 0 else 0
+        y1e = min(y + tile_size + overlap, H)
+
+        for tj, x in enumerate(x_starts):
+            tile_idx = ti * len(x_starts) + tj + 1
+            x0e = x - overlap if x > 0 else 0
+            x1e = min(x + tile_size + overlap, W)
+
+            enh_tile  = enhanced[y0e:y1e, x0e:x1e]
+            hema_tile = hema_full[y0e:y1e, x0e:x1e] if hema_full is not None else None
+
+            msg = f"Tile {tile_idx}/{total_tiles} ({x},{y})"
+            if progress_callback:
+                progress_callback(tile_idx / total_tiles * 0.85, msg)
+            logger.info(f"  [{time.time()-t0:.0f}s] {msg}")
+
+            # per-tile 多直徑推論 + merge（不做 Voronoi）
+            tile_results: dict[str, np.ndarray] = {}
+            try:
+                m, _, _ = cyto3.eval(enh_tile, diameter=dia_mid, **eval_base)
+                tile_results["mid"] = m
+
+                m, _, _ = cyto3.eval(
+                    enh_tile, diameter=dia_small,
+                    **{**eval_base, "cellprob_threshold": cellprob_thresh - 1.0},
+                )
+                tile_results["small"] = m
+
+                m, _, _ = cyto3.eval(
+                    enh_tile, diameter=dia_large,
+                    **{**eval_base, "cellprob_threshold": cellprob_thresh + 1.0},
+                )
+                tile_results["large"] = m
+
+                if hema_tile is not None:
+                    hema_rgb = np.stack([hema_tile] * 3, axis=-1)
+                    m, _, _ = cyto3.eval(hema_rgb, diameter=dia_mid, **eval_base)
+                    tile_results["hema"] = m
+
+            except RuntimeError as e:
+                if "MPS" in str(e) or "out of memory" in str(e).lower():
+                    logger.warning(f"  MPS OOM on tile {tile_idx}，fallback CPU")
+                    gc.collect()
+                    cpu_model = models.CellposeModel(model_type="cyto3", gpu=False)
+                    m, _, _ = cpu_model.eval(enh_tile, diameter=dia_mid,
+                                             **{**eval_base, "batch_size": 1})
+                    tile_results["mid"] = m
+                    del cpu_model
+                else:
+                    raise
+
+            # merge tile results
+            base = tile_results.get("mid", np.zeros_like(enh_tile[:, :, 0])).copy().astype(np.int32)
+            for key, mask in tile_results.items():
+                if key == "mid":
+                    continue
+                base, _ = merge_masks_fast(base, mask.astype(np.int32))
+
+            # 裁掉 overlap，只保留有效區域
+            act_top   = y - y0e
+            act_bot   = y1e - (y + tile_size)
+            act_left  = x - x0e
+            act_right = x1e - (x + tile_size)
+            v0 = act_top
+            v1 = base.shape[0] - act_bot if act_bot > 0 else base.shape[0]
+            u0 = act_left
+            u1 = base.shape[1] - act_right if act_right > 0 else base.shape[1]
+            valid = base[v0:v1, u0:u1].copy()
+
+            # ID offset 避免衝突
+            valid[valid > 0] += current_max
+
+            # 邊界 ID 對齊（上方 + 左方）
+            mappings: dict[int, int] = {}
+            if y > 0:
+                prev_row = stitched[y - 1, x:x + valid.shape[1]]
+                curr_row = valid[0, :len(prev_row)]
+                mm = (prev_row > 0) & (curr_row > 0)
+                for p, c in zip(prev_row[mm], curr_row[mm]):
+                    mappings.setdefault(int(c), int(p))
+            if x > 0:
+                prev_col = stitched[y:y + valid.shape[0], x - 1]
+                curr_col = valid[:len(prev_col), 0]
+                mm = (prev_col > 0) & (curr_col > 0)
+                for p, c in zip(prev_col[mm], curr_col[mm]):
+                    mappings.setdefault(int(c), int(p))
+            for c_lbl, p_lbl in mappings.items():
+                valid[valid == c_lbl] = p_lbl
+
+            current_max = max(current_max, int(valid.max()))
+            tw = min(x + tile_size, W) - x
+            th = min(y + tile_size, H) - y
+            stitched[y:y + th, x:x + tw] = valid[:th, :tw]
+
+            logger.info(f"    cells in tile: {int(np.max(valid))-int(current_max - int(valid.max()))}  total: {current_max}")
+
+    del cyto3, enhanced
+    if hema_full is not None:
+        del hema_full
+    gc.collect()
+
+    # ── Phase 2：全圖 Voronoi + 清理 ─────────────────────
+    if progress_callback:
+        progress_callback(0.90, "Voronoi 擴張（全圖）...")
+    logger.info(f"  [{time.time()-t0:.0f}s] Phase 2：清理 + Voronoi 擴張")
+
+    stitched[~tissue_mask] = 0
+    stitched = clean_mask(stitched, min_size=min_size, max_size=max_size)
+    stitched = relabel_sequential(stitched)
+    logger.info(f"  擴張前：{stitched.max()} cells")
+
+    final = voronoi_expand(stitched, max_distance=voronoi_dist, tissue_mask=tissue_mask)
+    final = clean_mask(final, min_size=min_size, max_size=max_size)
+    n_final = int(len(np.unique(final)) - 1)
+
+    if progress_callback:
+        progress_callback(1.0, f"完成：{n_final:,} 個細胞")
+    logger.info(f"  [{time.time()-t0:.0f}s] 全圖分割完成：{n_final:,} cells")
+
+    return final.astype(np.int32)
+
+
+# ─────────────────────────────────────────────────────────
 # Preview 用：單 patch 快速分割
 # ─────────────────────────────────────────────────────────
 

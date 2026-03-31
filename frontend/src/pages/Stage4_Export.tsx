@@ -10,25 +10,25 @@ import {
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
 import { useQuery } from '@tanstack/react-query'
+import { useT } from '../i18n'
 
 type TabId = 'spatial' | 'umap' | 'dotplot' | 'heatmap'
-
-const TABS: { id: TabId; label: string }[] = [
-  { id: 'spatial',  label: '空間分型圖' },
-  { id: 'umap',     label: 'UMAP' },
-  { id: 'dotplot',  label: 'Dotplot' },
-  { id: 'heatmap',  label: 'Heatmap' },
-]
 
 export default function Stage4_Export() {
   useStageLog('export')
   const { stages, updateStage } = usePipelineStore()
   const xenium = stages['xenium']
   const loupe  = stages['loupe']
-  const [outDir, setOutDir] = useState('')
-  const [inputH5ad, setInputH5ad] = useState('')
   const { refetch: refetchXenium } = useStageStatus('xenium', getXeniumStatus, 3000)
   const { refetch: refetchLoupe }  = useStageStatus('loupe',  getLoupeStatus,  3000)
+  const t = useT()
+
+  const TABS: { id: TabId; label: string }[] = [
+    { id: 'spatial',  label: t('stage4.tab.spatial') },
+    { id: 'umap',     label: 'UMAP' },
+    { id: 'dotplot',  label: 'Dotplot' },
+    { id: 'heatmap',  label: 'Heatmap' },
+  ]
 
   const [activeTab, setActiveTab] = useState<TabId>('spatial')
   const [resultRunning, setResultRunning] = useState(false)
@@ -52,32 +52,32 @@ export default function Stage4_Export() {
     const s = resultStatusData as { status: string; message?: string }
     if (s.status === 'done') {
       setResultRunning(false)
-      setResultMessage('結果圖已生成')
+      setResultMessage(t('stage4.result.done'))
       refetchResultImages()
     } else if (s.status === 'error') {
       setResultRunning(false)
-      setResultMessage(s.message ?? '生成失敗')
+      setResultMessage(s.message ?? t('stage4.result.failed'))
     } else if (s.status === 'running') {
-      setResultMessage(s.message ?? '生成中...')
+      setResultMessage(s.message ?? t('stage4.result.generating'))
     }
   }, [resultStatusData])
 
   const handleGenerateResult = async () => {
     setResultRunning(true)
-    setResultMessage('生成結果圖...')
+    setResultMessage(t('stage4.result.starting'))
     await generateResult()
     refetchResultStatus()
   }
 
   const handleXenium = async () => {
-    updateStage('xenium', { status: 'running', progress: 0, message: '匯出至 Xenium Explorer...' })
-    await exportXenium({ output_dir: outDir || undefined, input_h5ad: inputH5ad || undefined })
+    updateStage('xenium', { status: 'running', progress: 0, message: t('stage4.xenium.starting') })
+    await exportXenium({})
     refetchXenium()
   }
 
   const handleLoupe = async () => {
-    updateStage('loupe', { status: 'running', progress: 0, message: '匯出至 Loupe Browser...' })
-    await exportLoupe({ output_dir: outDir || undefined, input_h5ad: inputH5ad || undefined })
+    updateStage('loupe', { status: 'running', progress: 0, message: t('stage4.loupe.starting') })
+    await exportLoupe({})
     refetchLoupe()
   }
 
@@ -114,13 +114,13 @@ export default function Stage4_Export() {
       {/* Result Visualizations Section */}
       <div className="bg-surface-card rounded-xl border border-surface-border p-4">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-gray-200">結果圖表</h3>
+          <h3 className="text-sm font-semibold text-gray-200">{t('stage4.result.title')}</h3>
           <button
             onClick={handleGenerateResult}
             disabled={resultRunning}
             className="px-3 py-1.5 text-xs rounded bg-primary text-white hover:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {resultRunning ? '生成中...' : '生成結果圖'}
+            {resultRunning ? t('stage4.result.generating') : t('stage4.result.generate')}
           </button>
         </div>
 
@@ -158,14 +158,14 @@ export default function Stage4_Export() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {spatialGroups[roi].outline && (
                         <div>
-                          <p className="text-xs text-gray-400 mb-1">彩色輪廓（H&amp;E 透明）</p>
+                          <p className="text-xs text-gray-400 mb-1">{t('stage4.spatial.outline')}</p>
                           <img src={`data:image/png;base64,${spatialGroups[roi].outline}`}
                                className="w-full rounded border border-surface-border" alt="spatial outline" />
                         </div>
                       )}
                       {spatialGroups[roi].filled && (
                         <div>
-                          <p className="text-xs text-gray-400 mb-1">實心填色 + 輪廓</p>
+                          <p className="text-xs text-gray-400 mb-1">{t('stage4.spatial.filled')}</p>
                           <img src={`data:image/png;base64,${spatialGroups[roi].filled}`}
                                className="w-full rounded border border-surface-border" alt="spatial filled" />
                         </div>
@@ -174,7 +174,7 @@ export default function Stage4_Export() {
                   </div>
                 ))}
                 {roiKeys.length === 0 && (
-                  <p className="text-xs text-gray-500">空間圖尚未生成</p>
+                  <p className="text-xs text-gray-500">{t('common.not_generated')}</p>
                 )}
               </div>
             )}
@@ -197,7 +197,7 @@ export default function Stage4_Export() {
                   return images[uKey]
                     ? <img src={`data:image/png;base64,${images[uKey]}`}
                            className="w-full rounded border border-surface-border" alt="umap annotated" />
-                    : <p className="text-xs text-gray-500">UMAP 尚未生成</p>
+                    : <p className="text-xs text-gray-500">{t('common.not_generated')}</p>
                 })()}
               </div>
             )}
@@ -220,7 +220,7 @@ export default function Stage4_Export() {
                   return images[dKey]
                     ? <img src={`data:image/png;base64,${images[dKey]}`}
                            className="w-full rounded border border-surface-border" alt="dotplot" />
-                    : <p className="text-xs text-gray-500">Dotplot 尚未生成</p>
+                    : <p className="text-xs text-gray-500">{t('common.not_generated')}</p>
                 })()}
               </div>
             )}
@@ -243,50 +243,32 @@ export default function Stage4_Export() {
                   return images[hKey]
                     ? <img src={`data:image/png;base64,${images[hKey]}`}
                            className="w-full rounded border border-surface-border" alt="heatmap" />
-                    : <p className="text-xs text-gray-500">Heatmap 尚未生成</p>
+                    : <p className="text-xs text-gray-500">{t('common.not_generated')}</p>
                 })()}
               </div>
             )}
           </>
         ) : (
-          <p className="text-xs text-gray-500">尚未生成結果圖，請點擊「生成結果圖」</p>
+          <p className="text-xs text-gray-500">{t('stage4.result.no_images')}</p>
         )}
       </div>
 
-      {/* Export Options */}
-      <div className="bg-surface-card rounded-xl border border-surface-border p-4">
-        <h3 className="text-sm font-semibold text-gray-200 mb-3">匯出設定</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="text-xs text-gray-400">來源 h5ad 檔案名稱（選填）</label>
-            <input value={inputH5ad} onChange={e => setInputH5ad(e.target.value)}
-                   placeholder="預設：umap_computed.h5ad"
-                   className="w-full mt-1 px-3 py-1.5 bg-surface border border-surface-border rounded text-sm text-gray-200 focus:border-primary focus:outline-none" />
-          </div>
-          <div>
-            <label className="text-xs text-gray-400">輸出目錄（選填）</label>
-            <input value={outDir} onChange={e => setOutDir(e.target.value)}
-                   placeholder="預設：export_xenium"
-                   className="w-full mt-1 px-3 py-1.5 bg-surface border border-surface-border rounded text-sm text-gray-200 focus:border-primary focus:outline-none" />
-          </div>
-        </div>
-      </div>
 
-      <StageCard title="Xenium Explorer 格式匯出" status={xenium.status}
+      <StageCard title={t('stage4.xenium.title')} status={xenium.status}
                  progress={xenium.progress} message={xenium.message}
-                 onRun={handleXenium} runLabel="匯出 Xenium">
+                 onRun={handleXenium} runLabel={t('stage4.xenium.run')}>
         <div className="text-sm text-gray-400 space-y-1">
-          <p>輸出：morphology.ome.tif + transcripts.zarr + cell_boundaries</p>
-          <p className="text-yellow-400 text-xs">自動修補 experiment.xenium pixel_size Bug</p>
+          <p>{t('stage4.xenium.output_desc')}</p>
+          <p className="text-yellow-400 text-xs">{t('stage4.xenium.note_text')}</p>
         </div>
       </StageCard>
 
-      <StageCard title="Loupe Browser 格式匯出" status={loupe.status}
+      <StageCard title={t('stage4.loupe.title')} status={loupe.status}
                  progress={loupe.progress} message={loupe.message}
-                 onRun={handleLoupe} runLabel="匯出 Loupe">
+                 onRun={handleLoupe} runLabel={t('stage4.loupe.run')}>
         <div className="text-sm text-gray-400 space-y-1">
-          <p>輸出：.cloupe + cell_boundaries.geojson</p>
-          <p className="text-yellow-400 text-xs">自動指派 10X 白名單條碼</p>
+          <p>{t('stage4.loupe.output_desc')}</p>
+          <p className="text-yellow-400 text-xs">{t('stage4.loupe.note_text')}</p>
         </div>
       </StageCard>
 
