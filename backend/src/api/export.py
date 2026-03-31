@@ -15,14 +15,16 @@ logger = logging.getLogger("pipeline.api.export")
 
 _xenium_status = {"status": "idle", "progress": 0.0, "message": ""}
 _loupe_status  = {"status": "idle", "progress": 0.0, "message": ""}
+_result_status: dict = {"status": "idle", "progress": 0.0, "message": ""}
+_result_images: dict = {}
 _xenium_lock   = asyncio.Lock()
 _loupe_lock    = asyncio.Lock()
+_result_lock   = asyncio.Lock()
 
 
 class ExportRequest(BaseModel):
     input_h5ad: str = ""   # 空字串 = 使用 config 預設輸出路徑
     output_dir: str = ""
-    mask_source: str = "auto"  # "auto", "cellpose", "proseg"
 
 
 @router.get("/status/xenium")
@@ -104,17 +106,6 @@ def _mask_to_geojson(
 # Xenium 匯出
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _read_proseg_geojson(path: Path) -> dict:
-    """讀取 proseg_results.json（Proseg 輸出為 gzip 壓縮，副檔名仍是 .json）"""
-    import gzip, json
-    with open(str(path), "rb") as fh:
-        magic = fh.read(2)
-    if magic == b"\x1f\x8b":
-        with gzip.open(str(path), "rt", encoding="utf-8") as fh:
-            return json.load(fh)
-    with open(str(path), "r", encoding="utf-8") as fh:
-        return json.load(fh)
-
 
 async def _run_xenium(config: dict, req: ExportRequest):
     global _xenium_status
@@ -188,26 +179,14 @@ async def _run_xenium(config: dict, req: ExportRequest):
                 if not rn:
                     continue
                 roi_out_dir   = output_dir_base / "roi" / rn
-                # Proseg 資料從 data_root 或 output_dir 查找
-                proseg_json = data_root_dir / "roi" / rn / "_proseg_work" / "proseg_results.json"
-                if not proseg_json.exists():
-                    proseg_json = roi_out_dir / "_proseg_work" / "proseg_results.json"
                 mask_path   = roi_out_dir / "segmentation_masks.npy"
                 pixel_size_um = float(roi.get("pixel_size_um", VISIUM_UM_PX))
 
-                if req.mask_source in ["auto", "proseg"] and proseg_json.exists():
-                    logger.info(f"  [{rn}] 發現 Proseg 結果，使用 Proseg 擴展邊界")
-                    roi_geo = _read_proseg_geojson(proseg_json)
-                    for feat in roi_geo.get("features", []):
-                            cid = feat["properties"].get("cell") or feat["properties"].get("cell_id")
-                            if cid is not None:
-                                # 在合併模式下，這裡的 cid 通常是 proseg 或 cellpose 的原始 ID
-                                feat["properties"]["full_id"] = str(int(cid))
-                elif req.mask_source in ["auto", "cellpose"] and mask_path.exists():
-                    logger.info(f"  [{rn}] 使用 Cellpose 遮罩生成多邊形")
+                if mask_path.exists():
+                    logger.info(f"  [{rn}] 使用 MCseg v2 遮罩生成多邊形")
                     roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
                 else:
-                    logger.warning(f"  [{rn}] 找不到選擇的 {req.mask_source} 遮罩來源，跳過")
+                    logger.warning(f"  [{rn}] 找不到 segmentation_masks.npy，跳過")
                     continue
 
                 # 加入全域座標偏移
@@ -239,28 +218,13 @@ async def _run_xenium(config: dict, req: ExportRequest):
             roi_name    = active_roi or (rois[-1].get("name", "") if rois else "")
             roi_out_dir = output_dir_base / "roi" / roi_name if roi_name else output_dir_base
             mask_path   = roi_out_dir / "segmentation_masks.npy"
-            # Proseg 資料從 data_root 或 output_dir 查找
-            proseg_json = data_root_dir / "roi" / roi_name / "_proseg_work" / "proseg_results.json"
-            if not proseg_json.exists():
-                proseg_json = roi_out_dir / "_proseg_work" / "proseg_results.json"
-            
-            # Find the correct pixel_size_um for this ROI
             roi_cfg = next((r for r in rois if r.get("name") == roi_name), {})
             pixel_size_um = float(roi_cfg.get("pixel_size_um", VISIUM_UM_PX))
 
-            if req.mask_source in ["auto", "proseg"] and proseg_json.exists():
-                logger.info(f"單 ROI 模式（{roi_name}），從 Proseg 結果生成多邊形...")
-                roi_geo = _read_proseg_geojson(proseg_json)
-                for feat in roi_geo.get("features", []):
-                    if "full_id" not in feat["properties"]:
-                        cid = feat["properties"].get("cell") or feat["properties"].get("cell_id")
-                        if cid is not None:
-                            feat["properties"]["full_id"] = str(int(cid))
-            elif req.mask_source in ["auto", "cellpose"] and mask_path.exists():
-                logger.info(f"單 ROI 模式（{roi_name}），從 Cellpose 遮罩生成多邊形...")
-                roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
-            else:
-                raise FileNotFoundError(f"找不到 {roi_name} 的 {req.mask_source} 遮罩來源或檔案不存在")
+            if not mask_path.exists():
+                raise FileNotFoundError(f"找不到 {roi_name} 的 segmentation_masks.npy，請先完成 Stage 1")
+            logger.info(f"單 ROI 模式（{roi_name}），從 MCseg v2 遮罩生成多邊形...")
+            roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
             combined_poly_path = roi_out_dir / "cellpose_polygons.json"
             with open(combined_poly_path, "w", encoding="utf-8") as f:
                 json.dump(roi_geo, f)
@@ -384,23 +348,13 @@ async def _run_loupe(config: dict, req: ExportRequest):
                 if not rn:
                     continue
                 roi_out_dir   = output_dir_base / "roi" / rn
-                # Proseg 資料從 data_root 或 output_dir 查找
-                proseg_json = data_root_dir / "roi" / rn / "_proseg_work" / "proseg_results.json"
-                if not proseg_json.exists():
-                    proseg_json = roi_out_dir / "_proseg_work" / "proseg_results.json"
                 mask_path     = roi_out_dir / "segmentation_masks.npy"
                 pixel_size_um = float(roi.get("pixel_size_um", VISIUM_UM_PX))
 
-                if req.mask_source in ["auto", "proseg"] and proseg_json.exists():
-                    roi_geo = _read_proseg_geojson(proseg_json)
-                    for feat in roi_geo.get("features", []):
-                        if "full_id" not in feat["properties"]:
-                            cid = feat["properties"].get("cell") or feat["properties"].get("cell_id")
-                            if cid is not None:
-                                feat["properties"]["full_id"] = str(int(cid))
-                elif req.mask_source in ["auto", "cellpose"] and mask_path.exists():
+                if mask_path.exists():
                     roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
                 else:
+                    logger.warning(f"  [{rn}] 找不到 segmentation_masks.npy，跳過")
                     continue
 
                 roi_x_um = roi.get("x", 0) * roi.get("pixel_size_um", VISIUM_UM_PX)
@@ -418,33 +372,17 @@ async def _run_loupe(config: dict, req: ExportRequest):
             roi_name    = active_roi or (rois[-1].get("name", "") if rois else "")
             roi_out_dir = output_dir_base / "roi" / roi_name if roi_name else output_dir_base
             mask_path   = roi_out_dir / "segmentation_masks.npy"
-            # Proseg 資料從 data_root 或 output_dir 查找
-            proseg_json = data_root_dir / "roi" / roi_name / "_proseg_work" / "proseg_results.json"
-            if not proseg_json.exists():
-                proseg_json = roi_out_dir / "_proseg_work" / "proseg_results.json"
-            
             roi_cfg = next((r for r in rois if r.get("name") == roi_name), {})
             pixel_size_um = float(roi_cfg.get("pixel_size_um", VISIUM_UM_PX))
 
-            if req.mask_source in ["auto", "proseg"] and proseg_json.exists():
-                logger.info(f"Loupe 匯出：單 ROI 模式（{roi_name}），發現 Proseg 結果")
-                roi_geo = _read_proseg_geojson(proseg_json)
-                for feat in roi_geo.get("features", []):
-                    if "full_id" not in feat["properties"]:
-                        cid = feat["properties"].get("cell") or feat["properties"].get("cell_id")
-                        if cid is not None:
-                            feat["properties"]["full_id"] = str(int(cid))
-                poly_json_path = roi_out_dir / "cellpose_polygons.json"
-                with open(poly_json_path, "w", encoding="utf-8") as f:
-                    json.dump(roi_geo, f)
-            elif req.mask_source in ["auto", "cellpose"] and mask_path.exists():
-                logger.info(f"Loupe 匯出：單 ROI 模式（{roi_name}），從 Cellpose 遮罩生成")
+            if mask_path.exists():
+                logger.info(f"Loupe 匯出：單 ROI 模式（{roi_name}），從 MCseg v2 遮罩生成")
                 roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
                 poly_json_path = roi_out_dir / "cellpose_polygons.json"
                 with open(poly_json_path, "w", encoding="utf-8") as f:
                     json.dump(roi_geo, f)
             else:
-                logger.warning(f"找不到 {roi_name} 的 {req.mask_source} 遮罩來源或 proseg，將不匯出多邊形層")
+                logger.warning(f"找不到 {roi_name} 的 segmentation_masks.npy，將不匯出多邊形層")
 
         if req.output_dir:
             out_dir = Path(req.output_dir)
@@ -559,3 +497,77 @@ def _shift_geojson_coords(feat: dict, dx: float, dy: float):
     geom = feat.get("geometry", {})
     if geom and geom.get("coordinates") is not None:
         geom["coordinates"] = _shift(geom["coordinates"])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Result Visualizations（標註後視覺化）
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/result_status")
+async def get_result_status():
+    return _result_status
+
+
+@router.get("/result_images")
+async def get_result_images():
+    global _result_status, _result_images
+    if not _result_images:
+        try:
+            fig_dir = resolve_path(load_config()["paths"]["figure_dir"])
+            loaded: dict[str, str] = {}
+            import base64
+            # 固定圖
+            for key, fname in [
+                ("result_umap",     "result_umap.png"),
+                ("result_dotplot",  "result_dotplot.png"),
+                ("result_heatmap",  "result_heatmap.png"),
+            ]:
+                p = fig_dir / fname
+                if p.exists():
+                    loaded[key] = base64.b64encode(p.read_bytes()).decode()
+            # 空間圖（支援單/多 ROI）
+            import re as _re
+            for p in sorted(fig_dir.glob("result_spatial*.png")):
+                m = _re.match(r"(result_spatial(?:_filled)?(?:_.+)?)\.png$", p.name)
+                if m:
+                    loaded[m.group(1)] = base64.b64encode(p.read_bytes()).decode()
+            if loaded:
+                _result_images = loaded
+                _result_status = {"status": "done", "progress": 1.0, "message": "已從磁碟載入結果圖"}
+        except Exception:
+            pass
+    if not _result_images:
+        return {"status": "error", "message": "結果圖尚未產生，請先執行「生成結果圖」"}
+    return {"status": "ok", "data": _result_images}
+
+
+@router.post("/generate_result")
+async def generate_result(background_tasks: BackgroundTasks):
+    global _result_status
+    if _result_status.get("status") == "running":
+        return {"status": "running", "message": "已在執行中"}
+    _result_status = {"status": "running", "progress": 0.0, "message": "生成結果視覺化中..."}
+    config = load_config()
+    background_tasks.add_task(_run_generate_result, config)
+    return {"status": "started"}
+
+
+async def _run_generate_result(config: dict):
+    global _result_status, _result_images
+    async with _result_lock:
+        set_current_stage("export")
+        try:
+            from backend.src.analysis.pipeline import run_result_visualizations
+            result = await asyncio.get_running_loop().run_in_executor(
+                None, run_result_visualizations, config
+            )
+            _result_images = result
+            _result_status = {
+                "status": "done",
+                "progress": 1.0,
+                "message": f"結果圖生成完成（{len(result)} 張）",
+            }
+        except Exception as e:
+            import traceback
+            logger.error(f"結果視覺化失敗：{e!r}\n{traceback.format_exc()}")
+            _result_status = {"status": "error", "progress": 0.0, "message": str(e)}

@@ -54,7 +54,7 @@ export const getRawHistogram = (roiName?: string, mergeRois?: boolean, source?: 
 export const runQC = (params?: object) => api.post('/analysis/run_qc', params ?? {})
 export const getQCStatus = () => api.get('/analysis/qc_status')
 export const getQCImages = () => api.get('/analysis/qc_images')
-export const getOverlayHdUrl = (name: 'pre_qc' | 'post_qc') => `/api/analysis/overlay_hd/${name}`
+export const getOverlayHdUrl = () => `/api/analysis/overlay_hd/qc_overlay`
 export const getAvailableRois = () => api.get('/analysis/available_rois')
 export const getRoiOverlays = () => api.get('/analysis/roi_overlays')
 
@@ -82,3 +82,8 @@ export const exportXenium = (body: object) => api.post('/export/xenium', body)
 export const exportLoupe = (body: object) => api.post('/export/loupe', body)
 export const getXeniumStatus = () => api.get('/export/status/xenium')
 export const getLoupeStatus = () => api.get('/export/status/loupe')
+
+// Stage 4: Result Visualizations
+export const generateResult = () => api.post('/export/generate_result')
+export const getResultStatus = () => api.get('/export/result_status')
+export const getResultImages = () => api.get('/export/result_images')

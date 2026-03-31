@@ -70,6 +70,7 @@ class AnnotateParams(BaseModel):
 class ApplyLabelsParams(BaseModel):
     resolution: float
     labels: dict[str, str]     # {cluster_id: cell_type_name}
+    roi_name: Optional[str] = None   # 非合併多 ROI 模式時指定目標 ROI
 
 
 # ─────────────────────── 舊版整合 status ──────────────────────────
@@ -306,8 +307,7 @@ async def get_qc_images():
                 ("violin",          fig_dir / "qc_violin.png"),
                 ("scatter",         fig_dir / "qc_scatter.png"),
                 ("elbow",           fig_dir / "pca_elbow.png"),
-                ("pre_qc",          fig_dir / "overlay_pre_qc.png"),
-                ("post_qc",         fig_dir / "overlay_post_qc.png"),
+                ("qc_overlay",      fig_dir / "overlay_qc.png"),
                 ("roi_comparison",  fig_dir / "roi_comparison_grid.png"),
             ])
         except Exception:
@@ -319,8 +319,8 @@ async def get_qc_images():
 
 @router.get("/overlay_hd/{name}")
 async def download_overlay_hd(name: str):
-    """下載 HD 疊圖（300 DPI）。name = pre_qc | post_qc"""
-    allowed = {"pre_qc": "overlay_pre_qc_hd.png", "post_qc": "overlay_post_qc_hd.png"}
+    """下載 HD 疊圖（300 DPI）。name = qc_overlay"""
+    allowed = {"qc_overlay": "overlay_qc_hd.png"}
     if name not in allowed:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"未知圖名：{name}")
@@ -338,9 +338,26 @@ async def _run_qc(config: dict):
     _qc_status = {"status": "running", "progress": 0.0, "message": "執行 QC 前處理..."}
     try:
         from backend.src.analysis.pipeline import run_qc_step
-        result = await asyncio.get_running_loop().run_in_executor(None, run_qc_step, config)
-        _qc_images = result
-        _qc_status = {"status": "done", "progress": 1.0, "message": f"QC 完成，已產生 {len(result)} 張圖表"}
+        loop = asyncio.get_running_loop()
+        rois = config.get("rois", [{"name": "test"}])
+        analysis_cfg = config.get("analysis", {})
+        merge_mode = analysis_cfg.get("merge_rois", False) and len(rois) > 1
+
+        if merge_mode or len(rois) <= 1:
+            result = await loop.run_in_executor(None, run_qc_step, config)
+            _qc_images = result
+        else:
+            # 非合併多 ROI：逐一處理每個 ROI
+            combined_images: dict[str, str] = {}
+            for i, roi in enumerate(rois):
+                rn = roi.get("name", f"roi{i}")
+                _qc_status["message"] = f"QC：處理 ROI {rn} ({i + 1}/{len(rois)})..."
+                _qc_status["progress"] = i / len(rois)
+                result = await loop.run_in_executor(None, run_qc_step, config, rn)
+                combined_images.update(result)
+            _qc_images = combined_images
+
+        _qc_status = {"status": "done", "progress": 1.0, "message": f"QC 完成，已產生 {len(_qc_images)} 張圖表"}
     except BaseException as e:
         import traceback
         logger.error(f"QC Step 失敗：{e!r}\n{traceback.format_exc()}")
@@ -445,17 +462,40 @@ async def _run_umap(config: dict, p: UMAPExploreParams):
     _umap_status = {"status": "running", "progress": 0.0, "message": "計算 UMAP..."}
     try:
         from backend.src.analysis.pipeline import run_umap_step
+        loop = asyncio.get_running_loop()
         clus_cfg = config.get("analysis", {}).get("clustering", {})
-        result = await asyncio.get_running_loop().run_in_executor(
-            None,
-            run_umap_step,
-            config,
-            p.resolutions,
-            p.n_pcs or clus_cfg.get("n_pcs", 30),
-            p.n_neighbors or clus_cfg.get("n_neighbors", 15),
-            p.min_dist if p.min_dist is not None else clus_cfg.get("min_dist", 0.3),
-        )
-        _umap_images = result
+        rois = config.get("rois", [{"name": "test"}])
+        analysis_cfg = config.get("analysis", {})
+        merge_mode = analysis_cfg.get("merge_rois", False) and len(rois) > 1
+
+        n_pcs      = p.n_pcs or clus_cfg.get("n_pcs", 30)
+        n_neighbors = p.n_neighbors or clus_cfg.get("n_neighbors", 15)
+        min_dist   = p.min_dist if p.min_dist is not None else clus_cfg.get("min_dist", 0.3)
+
+        if merge_mode or len(rois) <= 1:
+            result = await loop.run_in_executor(
+                None, run_umap_step, config, p.resolutions, n_pcs, n_neighbors, min_dist,
+            )
+            _umap_images = result
+        else:
+            # 非合併多 ROI：逐一處理每個 ROI
+            combined_images: dict[str, str] = {}
+            for i, roi in enumerate(rois):
+                rn = roi.get("name", f"roi{i}")
+                _umap_status["message"] = f"UMAP：處理 ROI {rn} ({i + 1}/{len(rois)})..."
+                _umap_status["progress"] = i / len(rois)
+                import functools
+                result = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        run_umap_step,
+                        config, p.resolutions, n_pcs, n_neighbors, min_dist,
+                        roi_name=rn,
+                    ),
+                )
+                combined_images.update({f"{rn}_{k}": v for k, v in result.items()})
+            _umap_images = combined_images
+
         _umap_status = {
             "status": "done",
             "progress": 1.0,
@@ -526,10 +566,35 @@ async def _run_heatmap(config: dict, p: HeatmapParams):
     _heat_status = {"status": "running", "progress": 0.0, "message": f"產生熱圖 + 點圖 (res={p.resolution})..."}
     try:
         from backend.src.analysis.pipeline import run_heatmap_step
-        result = await asyncio.get_running_loop().run_in_executor(
-            None, run_heatmap_step, config, p.resolution, p.n_top_genes, p.n_heatmap_genes
-        )
-        _heatmap_images = result  # dict: {"heatmap": b64, "dotplot": b64}
+        import functools
+        loop = asyncio.get_running_loop()
+        rois = config.get("rois", [{"name": "test"}])
+        analysis_cfg = config.get("analysis", {})
+        merge_mode = analysis_cfg.get("merge_rois", False) and len(rois) > 1
+
+        if merge_mode or len(rois) <= 1:
+            result = await loop.run_in_executor(
+                None, run_heatmap_step, config, p.resolution, p.n_top_genes, p.n_heatmap_genes
+            )
+            _heatmap_images = result
+        else:
+            # 非合併多 ROI：逐一處理每個 ROI
+            combined_images: dict[str, str] = {}
+            for i, roi in enumerate(rois):
+                rn = roi.get("name", f"roi{i}")
+                _heat_status["message"] = f"熱圖：處理 ROI {rn} ({i + 1}/{len(rois)})..."
+                _heat_status["progress"] = i / len(rois)
+                result = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        run_heatmap_step,
+                        config, p.resolution, p.n_top_genes, p.n_heatmap_genes,
+                        roi_name=rn,
+                    ),
+                )
+                combined_images.update({f"{rn}_{k}": v for k, v in result.items()})
+            _heatmap_images = combined_images
+
         _heat_status = {"status": "done", "progress": 1.0, "message": "熱圖 + 點圖完成"}
     except Exception as e:
         logger.error(f"Heatmap Step 失敗：{e}")
@@ -587,12 +652,12 @@ def _patch_config_from_qc_params(config: dict, params: QCParams):
 # ─────────────────── Step 3: CellTypist 標註 endpoints ────────────
 
 @router.get("/cluster_info")
-async def get_cluster_info(resolution: float):
+async def get_cluster_info(resolution: float, roi_name: Optional[str] = None):
     """取得指定 resolution 的 cluster ID 列表，以及已套用的標籤（若有）。"""
     config = load_config()
     try:
         from backend.src.analysis.pipeline import get_cluster_ids
-        ids, existing_labels = get_cluster_ids(config, resolution)
+        ids, existing_labels = get_cluster_ids(config, resolution, roi_name=roi_name)
         return {"status": "ok", "data": {"cluster_ids": ids, "existing_labels": existing_labels}}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -656,11 +721,11 @@ async def get_annotate_suggestions():
 
 @router.get("/roi_overlays")
 async def get_roi_overlays():
-    """回傳各 ROI 的 QC 前後疊圖（per-ROI 命名，供多 ROI 比較視圖）。
+    """回傳各 ROI 的 QC 後疊圖（per-ROI 命名，供多 ROI 比較視圖）。
 
     Returns
     -------
-    {roi_name: {pre_qc?: base64, post_qc?: base64}}
+    {roi_name: {qc_overlay?: base64}}
     """
     try:
         fig_dir = _get_fig_dir()
@@ -671,13 +736,9 @@ async def get_roi_overlays():
             name = roi.get("name", "")
             if not name:
                 continue
-            entry: dict[str, str] = {}
-            for stage in ("pre_qc", "post_qc"):
-                path = fig_dir / f"overlay_{name}_{stage}.png"
-                if path.exists():
-                    entry[stage] = base64.b64encode(path.read_bytes()).decode()
-            if entry:
-                result[name] = entry
+            path = fig_dir / f"overlay_{name}_qc.png"
+            if path.exists():
+                result[name] = {"qc_overlay": base64.b64encode(path.read_bytes()).decode()}
         if not result:
             return {"status": "error", "message": "尚未產生 ROI 疊圖，請先執行 QC"}
         return {"status": "ok", "data": result}
@@ -692,7 +753,7 @@ async def apply_labels_endpoint(params: ApplyLabelsParams):
     config = load_config()
     try:
         from backend.src.analysis.pipeline import apply_cluster_labels
-        apply_cluster_labels(config, params.resolution, params.labels)
+        apply_cluster_labels(config, params.resolution, params.labels, roi_name=params.roi_name)
         return {"status": "ok", "message": f"已套用 {len(params.labels)} 個 cluster 標籤"}
     except Exception as e:
         logger.error(f"套用標籤失敗：{e}")

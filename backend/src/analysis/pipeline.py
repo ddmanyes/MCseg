@@ -302,6 +302,51 @@ def _fix_log1p(adata: ad.AnnData) -> None:
 
 # ─────────────────────── helpers ──────────────────────────────────
 
+def _draw_per_cell_boundaries(
+    he_img: "np.ndarray",
+    seg_mask: "np.ndarray",
+    kept_ids: list,
+    removed_ids: list,
+) -> None:
+    """在 he_img 上繪製逐細胞邊界（向量化鄰接差值法，不合併觸碰細胞）。
+
+    保留細胞：青色 [0,220,220]；移除細胞：紅色 [255,60,60]。
+    邊界定義：遮罩中某像素的值與其右方或下方鄰居不同時，兩個像素皆為邊界。
+    邊界寬度：1px adjacency + 1px dilation = 約 2px 寬，確保縮圖可見。
+    """
+    import numpy as np
+    from scipy.ndimage import binary_dilation
+
+    # 預計算全域鄰接邊界（一次性，O(H×W)）
+    boundary = np.zeros(seg_mask.shape, dtype=bool)
+    h_diff = seg_mask[:, :-1] != seg_mask[:, 1:]
+    boundary[:, :-1] |= h_diff
+    boundary[:, 1:]  |= h_diff
+    v_diff = seg_mask[:-1, :] != seg_mask[1:, :]
+    boundary[:-1, :] |= v_diff
+    boundary[1:, :]  |= v_diff
+    # 只保留屬於細胞的邊界像素（排除背景/背景交界）
+    cell_boundary = boundary & (seg_mask > 0)
+    # 加粗 1px，讓邊界在縮圖中可見
+    cell_boundary = binary_dilation(cell_boundary, iterations=1)
+
+    # 先畫移除（紅），再畫保留（青）——保留優先顯示
+    if removed_ids:
+        removed_set = np.zeros(int(seg_mask.max()) + 1, dtype=bool)
+        for cid in removed_ids:
+            if 0 < cid < len(removed_set):
+                removed_set[cid] = True
+        pixels = cell_boundary & removed_set[seg_mask]
+        he_img[pixels] = [255, 60, 60]
+    if kept_ids:
+        kept_set = np.zeros(int(seg_mask.max()) + 1, dtype=bool)
+        for cid in kept_ids:
+            if 0 < cid < len(kept_set):
+                kept_set[cid] = True
+        pixels = cell_boundary & kept_set[seg_mask]
+        he_img[pixels] = [0, 220, 220]
+
+
 def _generate_overlay_images(
     pre_spatial: "np.ndarray",
     pre_obs_names: list,
@@ -309,21 +354,21 @@ def _generate_overlay_images(
     he_path: Path,
     fig_dir: Path,
     pixel_size_um: float,
-    input_source: str = "cellpose",
 ) -> dict[str, str]:
-    """在 H&E 底圖上疊加細胞重心或遮罩輪廓，產生 QC 前後比較圖。
+    """在 H&E 底圖上疊加細胞邊界輪廓，產生 QC 後合併疊圖（單張）。
+
+    保留細胞：青色輪廓；移除細胞：紅色輪廓。
 
     Returns
     -------
-    dict  {"pre_qc": base64_preview_png, "post_qc": base64_preview_png}
-    HD 版本（300 DPI）同時存檔至 fig_dir，但不放入回傳值（供下載）。
+    dict  {"qc_overlay": base64_preview_png}
+    HD 版本（300 DPI）同時存檔至 fig_dir/overlay_qc_hd.png（供下載）。
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import tifffile
     import numpy as np
-    from skimage.segmentation import find_boundaries
 
     figures: dict[str, str] = {}
 
@@ -339,144 +384,51 @@ def _generate_overlay_images(
 
     kept_mask    = np.array([n in post_obs_names_set for n in pre_obs_names])
     removed_mask = ~kept_mask
-    n_total  = len(pre_obs_names)
     n_kept   = int(kept_mask.sum())
     n_removed = int(removed_mask.sum())
 
     mask_path = he_path.parent / "segmentation_masks.npy"
     has_mask = mask_path.exists()
-    
-    he_pre = he.copy()
-    he_post = he.copy()
-    
-    if he_pre.ndim == 2:
-        he_pre = np.stack([he_pre]*3, axis=-1)
-        he_post = np.stack([he_post]*3, axis=-1)
-    elif he_pre.ndim == 3 and he_pre.shape[-1] == 4:
-        he_pre = he_pre[..., :3]
-        he_post = he_post[..., :3]
+
+    he_combined = he.copy()
+    if he_combined.ndim == 2:
+        he_combined = np.stack([he_combined]*3, axis=-1)
+    elif he_combined.ndim == 3 and he_combined.shape[-1] == 4:
+        he_combined = he_combined[..., :3]
 
     if has_mask:
-        import cv2
-        import json
-        logger.info(f"為 {he_path.parent.name} 繪製細胞輪廓 ({input_source})")
+        import re
+        logger.info(f"為 {he_path.parent.name} 繪製逐細胞邊界輪廓")
         seg_mask = np.load(str(mask_path))
-        def _get_id(n):
-            import re
+
+        def _get_id(n: str) -> int:
             m = re.search(r'\d+$', n.split("__")[-1])
             return int(m.group()) if m else -1
-            
-        proseg_polys = {}
-        if input_source == "proseg":
-            json_path = he_path.parent / "_proseg_work" / "proseg_results.json"
-            if json_path.exists():
-                import gzip
-                with open(json_path, "rb") as f:
-                    magic = f.read(2)
-                if magic == b"\x1f\x8b":
-                    with gzip.open(json_path, "rt", encoding="utf-8") as f:
-                        js = json.load(f)
-                else:
-                    with open(json_path, "r", encoding="utf-8") as f:
-                        js = json.load(f)
-                for feat in js.get("features", []):
-                    cid = feat["properties"]["cell"]
-                    g_type = feat["geometry"].get("type", "Polygon")
-                    coords = feat["geometry"].get("coordinates", [])
-                    rings = []
-                    if g_type == "Polygon" and coords:
-                        pts = (np.array(coords[0]) / pixel_size_um).astype(np.int32)
-                        rings.append(pts)
-                    elif g_type == "MultiPolygon" and coords:
-                        for poly in coords:
-                            if poly:
-                                pts = (np.array(poly[0]) / pixel_size_um).astype(np.int32)
-                                rings.append(pts)
-                    if rings:
-                        proseg_polys[cid] = rings
-        
-        fallback_all_ids, fallback_kept_ids, fallback_removed_ids = [], [], []
-        poly_all, poly_kept, poly_removed = [], [], []
 
-        for name, k, r in zip(pre_obs_names, kept_mask, removed_mask):
-            cid = _get_id(name)
-            if input_source == "proseg" and cid in proseg_polys:
-                poly_all.extend(proseg_polys[cid])
-                if k: poly_kept.extend(proseg_polys[cid])
-                if r: poly_removed.extend(proseg_polys[cid])
-            else:
-                fallback_all_ids.append(cid)
-                if k: fallback_kept_ids.append(cid)
-                if r: fallback_removed_ids.append(cid)
-
-        if poly_all:
-            cv2.polylines(he_pre, poly_all, True, (0, 255, 255), 1)
-        if poly_kept:
-            cv2.polylines(he_post, poly_kept, True, (0, 255, 0), 1)
-        if poly_removed:
-            cv2.polylines(he_post, poly_removed, True, (255, 0, 0), 1)
-
-        if fallback_all_ids:
-            b_all = find_boundaries(np.isin(seg_mask, fallback_all_ids), mode="thick")
-            he_pre[b_all] = [255, 255, 0] if input_source == "proseg" else [0, 255, 255]
-        if fallback_kept_ids:
-            b_kept = find_boundaries(np.isin(seg_mask, fallback_kept_ids), mode="thick")
-            he_post[b_kept] = [0, 128, 128] if input_source == "proseg" else [0, 255, 0]
-        if fallback_removed_ids:
-            b_removed = find_boundaries(np.isin(seg_mask, fallback_removed_ids), mode="thick")
-            he_post[b_removed] = [255, 128, 0] if input_source == "proseg" else [255, 0, 0]
+        kept_ids   = [_get_id(n) for n, k in zip(pre_obs_names, kept_mask)   if k]
+        removed_ids = [_get_id(n) for n, r in zip(pre_obs_names, removed_mask) if r]
+        _draw_per_cell_boundaries(he_combined, seg_mask, kept_ids, removed_ids)
 
     for dpi, suffix, s in [(150, "", 12), (300, "_hd", 3)]:
         figsize = (W / dpi, H / dpi)
-
-        # ── Pre-QC overlay ──
         fig, ax = plt.subplots(figsize=figsize)
-        ax.imshow(he_pre)
-        if not has_mask:
-            ax.scatter(x_px, y_px, s=s, c="cyan", alpha=0.6, linewidths=0, label=f"All cells ({n_total:,})")
-        else:
-            if input_source == "proseg":
-                if poly_all: ax.plot([], [], "o", color="cyan", markersize=4, label=f"Proseg All ({len(poly_all):,})")
-                if fallback_all_ids: ax.plot([], [], "o", color="gold", markersize=4, label=f"Fallback All ({len(fallback_all_ids):,})")
-            else:
-                ax.plot([], [], "o", color="cyan", markersize=4, label=f"All cells ({n_total:,})")
-            
-        ax.set_title(f"Pre-QC  ·  {n_total:,} cells", fontsize=9)
-        ax.axis("off")
-        ax.legend(loc="upper right", fontsize=7, markerscale=2 if not has_mask else 1, framealpha=0.5)
-        path = fig_dir / f"overlay_pre_qc{suffix}.png"
-        fig.savefig(str(path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
-        plt.close(fig)
-        if not suffix:
-            figures["pre_qc"] = _encode_image(path)
-        logger.info(f"已儲存 {path.name}")
-
-        # ── Post-QC overlay ──
-        fig, ax = plt.subplots(figsize=figsize)
-        ax.imshow(he_post)
+        ax.imshow(he_combined)
         if not has_mask:
             if removed_mask.any():
                 ax.scatter(x_px[removed_mask], y_px[removed_mask], s=s, c="red", alpha=0.5, linewidths=0, label=f"Removed ({n_removed:,})")
-            ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="lime", alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
+            ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="cyan", alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
         else:
-            if input_source == "proseg":
-                if poly_kept: ax.plot([], [], "o", color="lime", markersize=4, label=f"Proseg Kept ({len(poly_kept):,})")
-                if poly_removed: ax.plot([], [], "o", color="red", markersize=4, label=f"Proseg Removed ({len(poly_removed):,})")
-                if fallback_kept_ids: ax.plot([], [], "o", color="teal", markersize=4, label=f"Fallback Kept ({len(fallback_kept_ids):,})")
-                if fallback_removed_ids: ax.plot([], [], "o", color="darkorange", markersize=4, label=f"Fallback Removed ({len(fallback_removed_ids):,})")
-            else:
-                if removed_mask.any():
-                    ax.plot([], [], "o", color="red", markersize=4, label=f"Removed ({n_removed:,})")
-                ax.plot([], [], "o", color="lime", markersize=4, label=f"Kept ({n_kept:,})")
-            
-        ax.set_title(f"Post-QC  ·  kept {n_kept:,} / removed {n_removed:,}", fontsize=9)
+            ax.plot([], [], "-", color="cyan", linewidth=1.5, label=f"Kept ({n_kept:,})")
+            if removed_mask.any():
+                ax.plot([], [], "-", color="red", linewidth=1.5, label=f"Removed ({n_removed:,})")
+        ax.set_title(f"QC 後疊圖  ·  kept {n_kept:,} / removed {n_removed:,}", fontsize=9)
         ax.axis("off")
-        ax.legend(loc="upper right", fontsize=7, markerscale=2 if not has_mask else 1, framealpha=0.5)
-        path = fig_dir / f"overlay_post_qc{suffix}.png"
+        ax.legend(loc="upper right", fontsize=7, markerscale=1, framealpha=0.5)
+        path = fig_dir / f"overlay_qc{suffix}.png"
         fig.savefig(str(path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
         plt.close(fig)
         if not suffix:
-            figures["post_qc"] = _encode_image(path)
+            figures["qc_overlay"] = _encode_image(path)
         logger.info(f"已儲存 {path.name}")
 
     return figures
@@ -490,18 +442,17 @@ def _save_roi_overlay_images(
     fig_dir: Path,
     pixel_size_um: float,
     roi_name: str,
-    input_source: str = "cellpose",
 ) -> None:
-    """為單一 ROI 生成 QC 前後細胞重心或遮罩輪廓疊圖（供多 ROI 比較視圖），150 DPI。
+    """為單一 ROI 生成 QC 後合併疊圖（供多 ROI 比較視圖），150 DPI。
 
-    儲存至 fig_dir/overlay_{roi_name}_pre_qc.png 及 overlay_{roi_name}_post_qc.png。
+    保留細胞：青色輪廓；移除細胞：紅色輪廓。
+    儲存至 fig_dir/overlay_{roi_name}_qc.png。
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import tifffile
     import numpy as np
-    from skimage.segmentation import find_boundaries
 
     if not he_path.exists():
         logger.warning(f"找不到 H&E：{he_path}，跳過 {roi_name} per-ROI 疊圖")
@@ -515,149 +466,60 @@ def _save_roi_overlay_images(
 
     kept_mask    = np.array([n in post_obs_names_set for n in pre_obs_names])
     removed_mask = ~kept_mask
-    n_total   = len(pre_obs_names)
     n_kept    = int(kept_mask.sum())
     n_removed = int(removed_mask.sum())
 
     mask_path = he_path.parent / "segmentation_masks.npy"
     has_mask = mask_path.exists()
-    
-    he_pre = he.copy()
-    he_post = he.copy()
-    
-    if he_pre.ndim == 2:
-        he_pre = np.stack([he_pre]*3, axis=-1)
-        he_post = np.stack([he_post]*3, axis=-1)
-    elif he_pre.ndim == 3 and he_pre.shape[-1] == 4:
-        he_pre = he_pre[..., :3]
-        he_post = he_post[..., :3]
+
+    he_combined = he.copy()
+    if he_combined.ndim == 2:
+        he_combined = np.stack([he_combined]*3, axis=-1)
+    elif he_combined.ndim == 3 and he_combined.shape[-1] == 4:
+        he_combined = he_combined[..., :3]
 
     if has_mask:
-        import cv2
-        import json
-        logger.info(f"為 {he_path.parent.name} 繪製細胞輪廓 ({input_source})")
+        import re
+        logger.info(f"為 {he_path.parent.name} 繪製逐細胞邊界輪廓（per-ROI）")
         seg_mask = np.load(str(mask_path))
-        def _get_id(n):
-            import re
+
+        def _get_id(n: str) -> int:
             m = re.search(r'\d+$', n.split("__")[-1])
             return int(m.group()) if m else -1
-            
-        proseg_polys = {}
-        if input_source == "proseg":
-            json_path = he_path.parent / "_proseg_work" / "proseg_results.json"
-            if json_path.exists():
-                import gzip
-                with open(json_path, "rb") as f:
-                    magic = f.read(2)
-                if magic == b"\x1f\x8b":
-                    with gzip.open(json_path, "rt", encoding="utf-8") as f:
-                        js = json.load(f)
-                else:
-                    with open(json_path, "r", encoding="utf-8") as f:
-                        js = json.load(f)
-                for feat in js.get("features", []):
-                    cid = feat["properties"]["cell"]
-                    g_type = feat["geometry"].get("type", "Polygon")
-                    coords = feat["geometry"].get("coordinates", [])
-                    rings = []
-                    if g_type == "Polygon" and coords:
-                        pts = (np.array(coords[0]) / pixel_size_um).astype(np.int32)
-                        rings.append(pts)
-                    elif g_type == "MultiPolygon" and coords:
-                        for poly in coords:
-                            if poly:
-                                pts = (np.array(poly[0]) / pixel_size_um).astype(np.int32)
-                                rings.append(pts)
-                    if rings:
-                        proseg_polys[cid] = rings
-        
-        fallback_all_ids, fallback_kept_ids, fallback_removed_ids = [], [], []
-        poly_all, poly_kept, poly_removed = [], [], []
 
-        for name, k, r in zip(pre_obs_names, kept_mask, removed_mask):
-            cid = _get_id(name)
-            if input_source == "proseg" and cid in proseg_polys:
-                poly_all.extend(proseg_polys[cid])
-                if k: poly_kept.extend(proseg_polys[cid])
-                if r: poly_removed.extend(proseg_polys[cid])
-            else:
-                fallback_all_ids.append(cid)
-                if k: fallback_kept_ids.append(cid)
-                if r: fallback_removed_ids.append(cid)
-
-        if poly_all:
-            cv2.polylines(he_pre, poly_all, True, (0, 255, 255), 1)
-        if poly_kept:
-            cv2.polylines(he_post, poly_kept, True, (0, 255, 0), 1)
-        if poly_removed:
-            cv2.polylines(he_post, poly_removed, True, (255, 0, 0), 1)
-
-        if fallback_all_ids:
-            b_all = find_boundaries(np.isin(seg_mask, fallback_all_ids), mode="thick")
-            he_pre[b_all] = [255, 255, 0] if input_source == "proseg" else [0, 255, 255]
-        if fallback_kept_ids:
-            b_kept = find_boundaries(np.isin(seg_mask, fallback_kept_ids), mode="thick")
-            he_post[b_kept] = [0, 128, 128] if input_source == "proseg" else [0, 255, 0]
-        if fallback_removed_ids:
-            b_removed = find_boundaries(np.isin(seg_mask, fallback_removed_ids), mode="thick")
-            he_post[b_removed] = [255, 128, 0] if input_source == "proseg" else [255, 0, 0]
+        kept_ids    = [_get_id(n) for n, k in zip(pre_obs_names, kept_mask)    if k]
+        removed_ids = [_get_id(n) for n, r in zip(pre_obs_names, removed_mask) if r]
+        _draw_per_cell_boundaries(he_combined, seg_mask, kept_ids, removed_ids)
 
     dpi = 150
     figsize = (W / dpi, H / dpi)
     s = 12
 
-    # Pre-QC
     fig, ax = plt.subplots(figsize=figsize)
-    ax.imshow(he_pre)
-    if not has_mask:
-        ax.scatter(x_px, y_px, s=s, c="cyan", alpha=0.6, linewidths=0, label=f"All cells ({n_total:,})")
-    else:
-        if input_source == "proseg":
-            if poly_all: ax.plot([], [], "o", color="cyan", markersize=4, label=f"Proseg All ({len(poly_all):,})")
-            if fallback_all_ids: ax.plot([], [], "o", color="gold", markersize=4, label=f"Fallback All ({len(fallback_all_ids):,})")
-        else:
-            ax.plot([], [], "o", color="cyan", markersize=4, label=f"All cells ({n_total:,})")
-    ax.set_title(f"Pre-QC  ·  {n_total:,} cells", fontsize=9)
-    ax.axis("off")
-    ax.legend(loc="upper right", fontsize=7, markerscale=2 if not has_mask else 1, framealpha=0.5)
-    pre_path = fig_dir / f"overlay_{roi_name}_pre_qc.png"
-    fig.savefig(str(pre_path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
-    plt.close(fig)
-    logger.info(f"已儲存 {pre_path.name}")
-
-    # Post-QC
-    fig, ax = plt.subplots(figsize=figsize)
-    ax.imshow(he_post)
+    ax.imshow(he_combined)
     if not has_mask:
         if removed_mask.any():
             ax.scatter(x_px[removed_mask], y_px[removed_mask], s=s, c="red", alpha=0.5, linewidths=0, label=f"Removed ({n_removed:,})")
-        ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="lime", alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
+        ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="cyan", alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
     else:
-        if input_source == "proseg":
-            if poly_kept: ax.plot([], [], "o", color="lime", markersize=4, label=f"Proseg Kept ({len(poly_kept):,})")
-            if poly_removed: ax.plot([], [], "o", color="red", markersize=4, label=f"Proseg Removed ({len(poly_removed):,})")
-            if fallback_kept_ids: ax.plot([], [], "o", color="teal", markersize=4, label=f"Fallback Kept ({len(fallback_kept_ids):,})")
-            if fallback_removed_ids: ax.plot([], [], "o", color="darkorange", markersize=4, label=f"Fallback Removed ({len(fallback_removed_ids):,})")
-        else:
-            if removed_mask.any():
-                ax.plot([], [], "o", color="red", markersize=4, label=f"Removed ({n_removed:,})")
-            ax.plot([], [], "o", color="lime", markersize=4, label=f"Kept ({n_kept:,})")
-    ax.set_title(f"Post-QC  ·  kept {n_kept:,} / removed {n_removed:,}", fontsize=9)
+        ax.plot([], [], "-", color="cyan", linewidth=1.5, label=f"Kept ({n_kept:,})")
+        if removed_mask.any():
+            ax.plot([], [], "-", color="red", linewidth=1.5, label=f"Removed ({n_removed:,})")
+    ax.set_title(f"{roi_name}  ·  kept {n_kept:,} / removed {n_removed:,}", fontsize=9)
     ax.axis("off")
-    ax.legend(loc="upper right", fontsize=7, markerscale=2 if not has_mask else 1, framealpha=0.5)
-    post_path = fig_dir / f"overlay_{roi_name}_post_qc.png"
-    fig.savefig(str(post_path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
+    ax.legend(loc="upper right", fontsize=7, markerscale=1, framealpha=0.5)
+    qc_path = fig_dir / f"overlay_{roi_name}_qc.png"
+    fig.savefig(str(qc_path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
-    logger.info(f"已儲存 {post_path.name}")
+    logger.info(f"已儲存 {qc_path.name}")
 
 def _generate_roi_comparison_grid(
     roi_names: list[str],
     fig_dir: Path,
 ) -> str | None:
-    """將所有 ROI 的 pre/post QC 疊圖並排成一張比較圖。
+    """將所有 ROI 的 QC 疊圖並排成一張比較圖。
 
-    讀取已存在的 overlay_{roi_name}_pre_qc.png 及 overlay_{roi_name}_post_qc.png，
-    排列為 (N_rois × 2) grid：左欄=Pre-QC，右欄=Post-QC。
+    讀取已存在的 overlay_{roi_name}_qc.png，排列為 N_rois 行單欄 grid。
 
     Returns
     -------
@@ -670,9 +532,8 @@ def _generate_roi_comparison_grid(
 
     valid_roi_names = []
     for rn in roi_names:
-        pre  = fig_dir / f"overlay_{rn}_pre_qc.png"
-        post = fig_dir / f"overlay_{rn}_post_qc.png"
-        if pre.exists() and post.exists():
+        qc = fig_dir / f"overlay_{rn}_qc.png"
+        if qc.exists():
             valid_roi_names.append(rn)
         else:
             logger.warning(f"_generate_roi_comparison_grid：找不到 {rn} 的疊圖，跳過")
@@ -682,28 +543,16 @@ def _generate_roi_comparison_grid(
         return None
 
     n_rows = len(valid_roi_names)
-    fig, axes = plt.subplots(
-        n_rows, 2,
-        figsize=(14, 6 * n_rows),
-        squeeze=False,
-    )
+    fig, axes = plt.subplots(n_rows, 1, figsize=(10, 6 * n_rows), squeeze=False)
 
     for row, rn in enumerate(valid_roi_names):
-        pre_img  = mpimg.imread(str(fig_dir / f"overlay_{rn}_pre_qc.png"))
-        post_img = mpimg.imread(str(fig_dir / f"overlay_{rn}_post_qc.png"))
+        qc_img = mpimg.imread(str(fig_dir / f"overlay_{rn}_qc.png"))
+        ax = axes[row][0]
+        ax.imshow(qc_img)
+        ax.set_title(f"{rn}", fontsize=10, fontweight="bold")
+        ax.axis("off")
 
-        ax_pre  = axes[row][0]
-        ax_post = axes[row][1]
-
-        ax_pre.imshow(pre_img)
-        ax_pre.set_title(f"{rn}  ·  Pre-QC", fontsize=10, fontweight="bold")
-        ax_pre.axis("off")
-
-        ax_post.imshow(post_img)
-        ax_post.set_title(f"{rn}  ·  Post-QC", fontsize=10, fontweight="bold")
-        ax_post.axis("off")
-
-    plt.suptitle("QC 前後細胞輪廓比較（所有 ROI）", fontsize=13, fontweight="bold", y=1.01)
+    plt.suptitle("QC 後細胞輪廓（所有 ROI）", fontsize=13, fontweight="bold", y=1.01)
     plt.tight_layout()
 
     out_path = fig_dir / "roi_comparison_grid.png"
@@ -715,7 +564,7 @@ def _generate_roi_comparison_grid(
 
 # ─────────────────────── Step 1: QC + PCA ─────────────────────────
 
-def _get_analysis_h5ad_dir(config: dict, output_dir: Path) -> Path:
+def _get_analysis_h5ad_dir(config: dict, output_dir: Path, roi_name: str | None = None) -> Path:
     """
     決定 qc_preprocessed.h5ad / umap_computed.h5ad 的儲存目錄（純路徑計算，不建立目錄）。
     - 單 ROI 模式：output_dir/roi/{roi_name}/
@@ -726,10 +575,10 @@ def _get_analysis_h5ad_dir(config: dict, output_dir: Path) -> Path:
     merge_mode = analysis_cfg.get("merge_rois", False) and len(rois) > 1
     if merge_mode:
         return output_dir
-    roi_name = rois[0].get("name", "test")
-    return output_dir / "roi" / roi_name
+    name = roi_name or rois[0].get("name", "test")
+    return output_dir / "roi" / name
 
-def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
+def run_qc_step(config: dict[str, Any], _roi_name: str | None = None) -> dict[str, str]:
     """
     Step 1：QC 前處理 + PCA。
 
@@ -769,7 +618,7 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
         roi_name = None   # 合併模式不使用單一 ROI H&E 疊圖
         logger.info(f"QC Step（合併模式）：載入 {input_h5ad}")
     else:
-        roi_name = rois[0].get("name", "test")
+        roi_name = _roi_name or rois[0].get("name", "test")
         input_h5ad = out_base / roi_name / input_h5ad_name
         if not input_h5ad.exists():
             if input_source == "proseg":
@@ -901,16 +750,17 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
     if _pre_spatial is not None and roi_name is not None:
         # 單一 ROI 模式：生成標準疊圖（回傳給前端）
         he_path = out_base / roi_name / "he_crop.tif"
-        pixel_size_um = rois[0].get("pixel_size_um", VISIUM_UM_PX)
+        roi_cfg = next((r for r in rois if r.get("name") == roi_name), rois[0])
+        pixel_size_um = roi_cfg.get("pixel_size_um", VISIUM_UM_PX)
         overlay_figs = _generate_overlay_images(
             _pre_spatial, _pre_obs_names, set(adata.obs_names),
-            he_path, fig_dir, pixel_size_um, input_source,
+            he_path, fig_dir, pixel_size_um,
         )
         figures.update(overlay_figs)
         # 同時儲存為 per-ROI 命名（供 /roi_overlays 比較視圖）
         _save_roi_overlay_images(
             _pre_spatial, _pre_obs_names, set(adata.obs_names),
-            he_path, fig_dir, pixel_size_um, roi_name, input_source,
+            he_path, fig_dir, pixel_size_um, roi_name,
         )
     elif _pre_spatial is not None and merge_mode:
         # 合併模式：各 ROI 有獨立 H&E 座標系，逐一生成 per-ROI 疊圖
@@ -949,15 +799,15 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
                 if not first_roi_done and roi_he.exists():
                     overlay_figs = _generate_overlay_images(
                         roi_spatial_local, roi_pre_names, roi_post_set,
-                        roi_he, fig_dir, px_um, input_source,
+                        roi_he, fig_dir, px_um,
                     )
                     figures.update(overlay_figs)
                     first_roi_done = True
-                    logger.info(f"合併模式：已使用 {rn} 生成主疊圖（pre_qc / post_qc）")
+                    logger.info(f"合併模式：已使用 {rn} 生成主疊圖（qc_overlay）")
                 # 每個 ROI 都儲存獨立命名的疊圖（供 /roi_overlays 比較視圖）
                 _save_roi_overlay_images(
                     roi_spatial_local, roi_pre_names, roi_post_set,
-                    roi_he, fig_dir, px_um, rn, input_source,
+                    roi_he, fig_dir, px_um, rn,
                 )
             except Exception as e:
                 logger.warning(f"合併模式疊圖生成失敗（{rn}）：{e}")
@@ -971,7 +821,7 @@ def run_qc_step(config: dict[str, Any]) -> dict[str, str]:
 
     # ── 7. 儲存前處理結果 ──
     _fix_log1p(adata)
-    qc_h5ad_dir = _get_analysis_h5ad_dir(config, output_dir)
+    qc_h5ad_dir = _get_analysis_h5ad_dir(config, output_dir, roi_name if not merge_mode else None)
     qc_h5ad_dir.mkdir(parents=True, exist_ok=True)
     qc_h5ad = qc_h5ad_dir / "qc_preprocessed.h5ad"
     adata.write_h5ad(str(qc_h5ad))
@@ -988,6 +838,7 @@ def run_umap_step(
     n_pcs: int = 30,
     n_neighbors: int = 15,
     min_dist: float = 0.3,
+    roi_name: str | None = None,
 ) -> dict[str, str]:
     """
     Step 2：讀取前處理結果，計算 UMAP + Leiden（多解析度）。
@@ -1003,7 +854,7 @@ def run_umap_step(
     paths = config["paths"]
     output_dir = resolve_path(paths["output_dir"])
     fig_dir = resolve_path(paths["figure_dir"])
-    h5ad_dir = _get_analysis_h5ad_dir(config, output_dir)
+    h5ad_dir = _get_analysis_h5ad_dir(config, output_dir, roi_name)
 
     qc_h5ad = h5ad_dir / "qc_preprocessed.h5ad"
     if not qc_h5ad.exists():
@@ -1092,11 +943,11 @@ CELLTYPIST_MODELS: dict[str, str] = {
 }
 
 
-def get_cluster_ids(config: dict[str, Any], resolution: float) -> tuple[list[str], dict[str, str]]:
+def get_cluster_ids(config: dict[str, Any], resolution: float, roi_name: str | None = None) -> tuple[list[str], dict[str, str]]:
     """取得指定 resolution 的 cluster ID 列表（字串排序）。"""
     paths = config["paths"]
     output_dir = resolve_path(paths["output_dir"])
-    umap_h5ad = _get_analysis_h5ad_dir(config, output_dir) / "umap_computed.h5ad"
+    umap_h5ad = _get_analysis_h5ad_dir(config, output_dir, roi_name) / "umap_computed.h5ad"
     if not umap_h5ad.exists():
         raise FileNotFoundError(f"找不到 UMAP 資料：{umap_h5ad}")
 
@@ -1381,6 +1232,7 @@ def apply_cluster_labels(
     config: dict[str, Any],
     resolution: float,
     labels: dict[str, str],
+    roi_name: str | None = None,
 ) -> None:
     """
     將 cluster 標籤套用到 umap_computed.h5ad。
@@ -1388,7 +1240,7 @@ def apply_cluster_labels(
     """
     paths = config["paths"]
     output_dir = resolve_path(paths["output_dir"])
-    umap_h5ad = _get_analysis_h5ad_dir(config, output_dir) / "umap_computed.h5ad"
+    umap_h5ad = _get_analysis_h5ad_dir(config, output_dir, roi_name) / "umap_computed.h5ad"
     if not umap_h5ad.exists():
         raise FileNotFoundError(f"找不到 UMAP 資料：{umap_h5ad}")
 
@@ -1410,6 +1262,399 @@ def apply_cluster_labels(
     logger.info(f"標籤已套用並儲存：{umap_h5ad}")
 
 
+# ────────────────────── Result Visualizations ─────────────────────
+
+def run_result_visualizations(config: dict[str, Any]) -> dict[str, str]:
+    """
+    生成標註後的結果視覺化圖表：
+    - result_spatial.png：空間細胞分型圖（H&E + cell_type 填色）
+    - result_umap.png   ：UMAP（cell_type 顏色）
+    - result_dotplot.png：Dotplot（groupby=cell_type）
+    - result_heatmap.png：Heatmap（groupby=cell_type）
+
+    多 ROI 非合併模式時，逐一處理每個有 umap_computed.h5ad 的 ROI，
+    key 加上 _{roi_label} 後綴（空間圖已由內層邏輯處理後綴）。
+
+    Returns  {key: base64_png}
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import numpy as np
+    import re
+    import tifffile
+
+    paths      = config["paths"]
+    output_dir = resolve_path(paths["output_dir"])
+    fig_dir    = resolve_path(paths["figure_dir"])
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    rois       = config.get("rois", [{}])
+    analysis_cfg = config.get("analysis", {})
+    merge_mode   = analysis_cfg.get("merge_rois", False) and len(rois) > 1
+
+    # 決定要處理哪些 (roi_label, h5ad_dir) 配對
+    if merge_mode:
+        roi_analysis_pairs: list[tuple[str, Path]] = [("", output_dir)]
+    else:
+        roi_analysis_pairs = [
+            (roi.get("name", ""), output_dir / "roi" / roi.get("name", ""))
+            for roi in rois
+            if (output_dir / "roi" / roi.get("name", "") / "umap_computed.h5ad").exists()
+        ]
+        if not roi_analysis_pairs:
+            first = rois[0].get("name", "test")
+            roi_analysis_pairs = [(first, output_dir / "roi" / first)]
+
+    multi_roi = len(roi_analysis_pairs) > 1
+    figures: dict[str, str] = {}
+
+    for roi_label, h5ad_dir in roi_analysis_pairs:
+        umap_h5ad = h5ad_dir / "umap_computed.h5ad"
+        if not umap_h5ad.exists():
+            logger.warning(f"找不到 {umap_h5ad}，跳過 ROI '{roi_label}'")
+            continue
+
+        adata = sc.read_h5ad(str(umap_h5ad))
+        _run_result_visualizations_for_roi(
+            config, adata, roi_label, multi_roi, output_dir, fig_dir, figures,
+        )
+
+    if not figures:
+        raise FileNotFoundError("找不到任何 umap_computed.h5ad，請先完成 Stage 3")
+
+    return figures
+
+
+def _run_result_visualizations_for_roi(
+    config: dict[str, Any],
+    adata: "sc.AnnData",
+    roi_label: str,
+    multi_roi: bool,
+    output_dir: Path,
+    fig_dir: Path,
+    figures: dict[str, str],
+) -> None:
+    """
+    為單一 ROI 的 adata 產生 spatial / umap / dotplot / heatmap 圖，
+    結果直接寫入 figures dict。multi_roi=True 時 key 加 _{roi_label} 後綴。
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import numpy as np
+    import re
+    import tifffile
+
+    rois = config.get("rois", [{}])
+
+    # key 後綴：多 ROI 非合併模式時加上 _{roi_label}
+    key_suffix = f"_{roi_label}" if multi_roi and roi_label else ""
+
+    if "cell_type" not in adata.obs.columns:
+        raise ValueError("找不到 cell_type 欄位，請先在 Stage 3 完成 Apply Labels")
+
+    cell_types   = adata.obs["cell_type"].astype(str)
+    unique_types = sorted(cell_types.unique())
+    n_types      = len(unique_types)
+
+    # ── 色盤（最多 20 種，超過用 tab20b 補充）──
+    base_colors = list(plt.cm.tab10.colors) + list(plt.cm.Set2.colors) + list(plt.cm.tab20b.colors)
+    color_map   = {ct: base_colors[i % len(base_colors)] for i, ct in enumerate(unique_types)}
+
+    def _get_cell_id(name: str) -> int:
+        m = re.search(r"\d+$", name.split("__")[-1])
+        return int(m.group()) if m else -1
+
+    # ── 1. 空間細胞分型圖（只處理此 roi_label 對應的 ROI）──────────
+    from skimage.segmentation import find_boundaries as _find_boundaries
+    from scipy.ndimage import binary_dilation as _binary_dilation
+
+    # 確定要渲染的 ROI 清單（限縮到當前 roi_label）
+    if roi_label:
+        candidate_rn = roi_label
+        roi_names: list[str] = (
+            [candidate_rn]
+            if (output_dir / "roi" / candidate_rn / "segmentation_masks.npy").exists()
+            else []
+        )
+    else:
+        # merge mode 或 roi_label="" ：掃描所有有遮罩的 ROI
+        roi_names = []
+        for roi in rois:
+            rn = roi.get("name", "")
+            if rn and (output_dir / "roi" / rn / "segmentation_masks.npy").exists():
+                roi_names.append(rn)
+        if not roi_names:
+            fallback = adata.uns.get("active_roi", "")
+            candidate = (
+                output_dir / "roi" / fallback / "segmentation_masks.npy"
+                if fallback
+                else output_dir / "segmentation_masks.npy"
+            )
+            if candidate.exists():
+                roi_names = [fallback] if fallback else [""]
+
+    # 整體統計（用於 legend）
+    counts = cell_types.value_counts()
+    total  = len(cell_types)
+
+    def _save_spatial(canvas: np.ndarray, W: int, H: int,
+                      fname: str, key: str, title: str) -> None:
+        dpi = 150
+        fig, ax = plt.subplots(figsize=(W / dpi, H / dpi))
+        ax.imshow(canvas)
+        patches = [
+            mpatches.Patch(
+                color=color_map[ct],
+                label=f"{ct}  (n={counts.get(ct, 0):,}, {counts.get(ct, 0)/total*100:.0f}%)",
+            )
+            for ct in unique_types
+        ]
+        ax.legend(handles=patches, loc="lower right", fontsize=7,
+                  framealpha=0.8, markerscale=1)
+        ax.set_title(title, fontsize=9, fontweight="bold")
+        ax.axis("off")
+        p = fig_dir / fname
+        fig.savefig(str(p), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
+        plt.close(fig)
+        figures[key] = _encode_image(p)
+        logger.info(f"已儲存 {fname}")
+
+    for rn in roi_names:
+        roi_dir   = output_dir / "roi" / rn if rn else output_dir
+        mask_path = roi_dir / "segmentation_masks.npy"
+        he_path   = roi_dir / "he_crop.tif"
+
+        if not (mask_path.exists() and he_path.exists()):
+            logger.warning(f"ROI '{rn}'：找不到遮罩或 H&E，跳過")
+            continue
+
+        seg_mask = np.load(str(mask_path))
+        he       = tifffile.imread(str(he_path))
+        if he.ndim == 2:
+            he = np.stack([he] * 3, axis=-1)
+        elif he.ndim == 3 and he.shape[-1] == 4:
+            he = he[..., :3]
+        H, W = seg_mask.shape
+
+        # 只取屬於此 ROI 的細胞（obs_name 含 ROI 標識）
+        roi_mask_obs = np.array([
+            (f"__{rn}__" in name or rn == "") for name in adata.obs_names
+        ]) if rn else np.ones(len(adata.obs_names), dtype=bool)
+        roi_cell_types = cell_types[roi_mask_obs] if roi_mask_obs.any() else cell_types
+
+        # 建立 cell_id → RGB LUT（僅此 ROI 的細胞）
+        max_id = int(seg_mask.max())
+        color_lut = np.zeros((max_id + 1, 3), dtype=np.float32)
+        for name, ct in zip(adata.obs_names[roi_mask_obs] if roi_mask_obs.any() else adata.obs_names,
+                            roi_cell_types):
+            cid = _get_cell_id(name)
+            if 0 < cid <= max_id:
+                color_lut[cid] = color_map[ct][:3]
+
+        cell_px = seg_mask > 0
+        he_f    = he.astype(np.float32) / 255.0
+        # 只要 rn 非空就加後綴，避免多 ROI 下空間圖 key 衝突
+        suffix  = f"_{rn}" if rn else key_suffix
+        n_roi   = int(roi_mask_obs.sum()) if roi_mask_obs.any() else total
+
+        # 1a. 彩色輪廓（H&E 透明）
+        boundary = np.zeros(seg_mask.shape, dtype=bool)
+        h_diff = seg_mask[:, :-1] != seg_mask[:, 1:]
+        boundary[:, :-1] |= h_diff;  boundary[:, 1:] |= h_diff
+        v_diff = seg_mask[:-1, :] != seg_mask[1:, :]
+        boundary[:-1, :] |= v_diff;  boundary[1:, :] |= v_diff
+        cell_boundary = _binary_dilation(boundary & cell_px, iterations=1)
+        canvas_outline = (he_f * 255).clip(0, 255).astype(np.uint8).copy()
+        canvas_outline[cell_boundary] = (
+            color_lut[seg_mask[cell_boundary]] * 255
+        ).clip(0, 255).astype(np.uint8)
+        _save_spatial(canvas_outline, W, H,
+                      f"result_spatial{suffix}.png", f"result_spatial{suffix}",
+                      f"{rn} — Cell-type Map (outline, n={n_roi:,})")
+
+        # 1b. 實心填色 + 輪廓
+        cell_rgb = color_lut[seg_mask]
+        cell_a   = np.where(cell_px, 0.72, 0.0)[:, :, None]
+        blended  = (1 - cell_a) * he_f + cell_a * cell_rgb
+        blended[_find_boundaries(seg_mask, mode="thin")] = [0.15, 0.15, 0.15]
+        canvas_filled = np.clip(blended * 255, 0, 255).astype(np.uint8)
+        _save_spatial(canvas_filled, W, H,
+                      f"result_spatial_filled{suffix}.png", f"result_spatial_filled{suffix}",
+                      f"{rn} — Cell-type Map (filled, n={n_roi:,})")
+
+    # ── 2. UMAP（cell_type 顏色）────────────────────────────────────
+    if "X_umap" in adata.obsm:
+        coords = adata.obsm["X_umap"]
+
+        # 標註版（cell_type）
+        fig, ax = plt.subplots(figsize=(7, 6))
+        for ct in unique_types:
+            idx = cell_types == ct
+            ax.scatter(
+                coords[idx, 0], coords[idx, 1],
+                c=[color_map[ct]], s=4, alpha=0.7, linewidths=0,
+                label=f"{ct} ({idx.sum():,})",
+            )
+        ax.set_xlabel("UMAP 1", fontsize=9)
+        ax.set_ylabel("UMAP 2", fontsize=9)
+        title_label = f" [{roi_label}]" if roi_label else ""
+        ax.set_title(f"UMAP — Cell Type (annotated){title_label}", fontsize=10, fontweight="bold")
+        ax.legend(loc="best", fontsize=7, markerscale=2, framealpha=0.6,
+                  ncol=max(1, n_types // 8))
+        ax.tick_params(labelsize=7)
+        umap_fname = f"result_umap{key_suffix}.png"
+        umap_path = fig_dir / umap_fname
+        fig.savefig(str(umap_path), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        figures[f"result_umap{key_suffix}"] = _encode_image(umap_path)
+        logger.info(f"已儲存 {umap_fname}")
+
+    # ── 3. Dotplot（groupby=cell_type，grouped var_names，dendrogram）──
+    try:
+        import pandas as pd
+        leiden_key = f"leiden_{adata.uns.get('cell_type_resolution', 0.5)}"
+        cell_type_labels: dict[str, str] = {
+            str(k): str(v) for k, v in adata.uns.get("cell_type_labels", {}).items()
+        }
+
+        # 用 rank_genes_groups 為每個 leiden cluster 取 top marker genes
+        # 並以 cell_type 名稱作為 dict key → 產生分群 color box
+        top_genes_per_group: dict[str, list[str]] = {}
+        seen: set[str] = set()
+
+        if "rank_genes_groups" in adata.uns and leiden_key in adata.obs.columns:
+            clusters = sorted(adata.obs[leiden_key].astype(str).unique(),
+                              key=lambda x: int(x) if x.isdigit() else x)
+            for cl in clusters:
+                try:
+                    top = sc.get.rank_genes_groups_df(adata, group=cl, n_genes=5)
+                    genes = [g for g in top["names"].tolist() if g not in seen][:5]
+                except Exception:
+                    genes = []
+                if genes:
+                    label = cell_type_labels.get(cl, f"C{cl}")
+                    # 若同 label 已存在，合併
+                    top_genes_per_group.setdefault(label, []).extend(genes)
+                    seen.update(genes)
+
+        if not top_genes_per_group:
+            # fallback：每個 cell_type 取 HVG 中表達最高的 5 個基因
+            if "highly_variable" in adata.var.columns:
+                hvg_list = adata.var_names[adata.var["highly_variable"]].tolist()[:60]
+            else:
+                hvg_list = adata.var_names.tolist()[:60]
+            for ct in unique_types:
+                idx = (cell_types == ct).values
+                if idx.sum() == 0:
+                    continue
+                import scipy.sparse as _sp2
+                X_ct = adata[idx][:, hvg_list].X
+                if _sp2.issparse(X_ct):
+                    mean_ct = np.array(X_ct.mean(axis=0)).ravel()
+                else:
+                    mean_ct = np.array(X_ct).mean(axis=0)
+                top5 = [hvg_list[i] for i in np.argsort(mean_ct)[::-1][:5]
+                        if hvg_list[i] not in seen]
+                if top5:
+                    top_genes_per_group[ct] = top5
+                    seen.update(top5)
+
+        if top_genes_per_group:
+            total_genes = sum(len(v) for v in top_genes_per_group.values())
+            dp_fname = f"result_dotplot{key_suffix}.png"
+            dp_path = fig_dir / dp_fname
+            plt.close("all")
+            dp_fig = sc.pl.dotplot(
+                adata, top_genes_per_group, groupby="cell_type",
+                show=False, return_fig=True,
+                standard_scale="var",
+                dendrogram=True,
+                figsize=(max(10, total_genes * 0.32), max(4, n_types * 0.6 + 3)),
+            )
+            dp_fig.savefig(str(dp_path), dpi=150, bbox_inches="tight")
+            plt.close("all")
+            figures[f"result_dotplot{key_suffix}"] = _encode_image(dp_path)
+            logger.info(f"已儲存 {dp_fname}")
+    except Exception as e:
+        logger.warning(f"Dotplot 生成失敗：{e}")
+
+    # ── 4. Heatmap（groupby=cell_type，z-score，clustermap）──────────
+    try:
+        import seaborn as sns
+        import pandas as pd
+        import scipy.sparse as _sp
+
+        # 取 HVG，依方差選 top 50
+        if "highly_variable" in adata.var.columns:
+            hvg_names = adata.var_names[adata.var["highly_variable"]].tolist()
+        else:
+            hvg_names = adata.var_names.tolist()
+
+        n_heatmap = 50
+        if len(hvg_names) > n_heatmap:
+            X_hvg = adata[:, hvg_names].X
+            if _sp.issparse(X_hvg):
+                mean_sq = np.array(X_hvg.power(2).mean(axis=0)).ravel()
+                mean_   = np.array(X_hvg.mean(axis=0)).ravel()
+                gene_var = mean_sq - mean_ ** 2
+            else:
+                gene_var = np.array(X_hvg).var(axis=0)
+            top_idx   = np.argsort(gene_var)[::-1][:n_heatmap]
+            gene_list = [hvg_names[i] for i in sorted(top_idx)]
+        else:
+            gene_list = hvg_names
+
+        if gene_list:
+            X_sub = adata[:, gene_list].X
+            if _sp.issparse(X_sub):
+                X_sub = X_sub.toarray()
+
+            # 各 cell_type 加權平均（按細胞數加權）
+            df_mean = (
+                pd.DataFrame(X_sub, index=adata.obs_names, columns=gene_list)
+                .assign(_ct=cell_types.values)
+                .groupby("_ct")
+                .mean()
+            )
+
+            # Z-score per gene，界線由資料 95th percentile 自動決定
+            col_mean = df_mean.mean(axis=0)
+            col_std  = df_mean.std(axis=0).replace(0, 1)
+            df_scaled = (df_mean - col_mean) / col_std
+            abs_max = float(np.percentile(np.abs(df_scaled.values), 95))
+            abs_max = max(abs_max, 0.5)   # 最小色域防止全灰
+            df_scaled = df_scaled.clip(-abs_max, abs_max)
+
+            fig_h = max(4, n_types * 0.55 + 2)
+            fig_w = max(12, len(gene_list) * 0.22 + 3)
+            cg = sns.clustermap(
+                df_scaled,
+                cmap="RdYlBu_r", vmin=-abs_max, vmax=abs_max,
+                figsize=(fig_w, fig_h),
+                yticklabels=True, xticklabels=True,
+                linewidths=0,
+                cbar_pos=(1.02, 0.3, 0.03, 0.4),
+                cbar_kws={"label": f"Z-score (±{abs_max:.1f})"},
+                dendrogram_ratio=(0.12, 0.06),
+            )
+            cg.ax_heatmap.set_ylabel("")
+            cg.ax_heatmap.tick_params(axis="y", labelsize=8)
+            cg.ax_heatmap.tick_params(axis="x", labelsize=6, rotation=90)
+            cg.ax_col_dendrogram.set_title("Heatmap — Cell Type (Z-score, top HVG)",
+                                            fontsize=9, pad=4)
+            hm_fname = f"result_heatmap{key_suffix}.png"
+            hm_path = fig_dir / hm_fname
+            cg.fig.savefig(str(hm_path), dpi=150, bbox_inches="tight")
+            plt.close(cg.fig)
+            figures[f"result_heatmap{key_suffix}"] = _encode_image(hm_path)
+            logger.info(f"已儲存 {hm_fname}")
+    except Exception as e:
+        logger.warning(f"Heatmap 生成失敗：{e}")
+
+
 # ────────────────────── Step 4: Heatmap ──────────────────────────
 
 def run_heatmap_step(
@@ -1417,6 +1662,7 @@ def run_heatmap_step(
     resolution: float,
     n_top_genes: int = 20,
     n_heatmap_genes: int = 50,
+    roi_name: str | None = None,
 ) -> dict[str, str]:
     """
     Step 3：針對指定解析度同時產生兩張 marker gene 圖表。
@@ -1442,7 +1688,7 @@ def run_heatmap_step(
     output_dir = resolve_path(paths["output_dir"])
     fig_dir = resolve_path(paths["figure_dir"])
 
-    umap_h5ad = _get_analysis_h5ad_dir(config, output_dir) / "umap_computed.h5ad"
+    umap_h5ad = _get_analysis_h5ad_dir(config, output_dir, roi_name) / "umap_computed.h5ad"
     if not umap_h5ad.exists():
         raise FileNotFoundError(f"找不到 UMAP 資料，請先執行 UMAP 步驟：{umap_h5ad}")
 
@@ -1581,7 +1827,7 @@ def run_heatmap_step(
     top_genes_per_cluster: dict[str, list[str]] = {}
     seen: set[str] = set()
     for cluster in clusters:
-        cluster_genes = list(adata.uns["rank_genes_groups"]["names"][cluster][:n_top_genes])
+        cluster_genes = list(adata.uns["rank_genes_groups"]["names"][str(cluster)][:n_top_genes])
         unique_genes = [g for g in cluster_genes if g not in seen]
         seen.update(unique_genes)
         if unique_genes:
