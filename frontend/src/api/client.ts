@@ -93,6 +93,14 @@ export const downloadMarkerGenes = async (resolution: number, roiName?: string):
   return null
 }
 
+// Stage 3.5: Spatial Gene Explorer
+export const getSpatialGeneList = (roiName?: string) =>
+  api.get('/spatial/gene_list', { params: roiName ? { roi_name: roiName } : {} })
+export const postSpatialGenePlot = (body: {
+  roi_name?: string; genes: string[]; mode?: string; set_name?: string;
+  point_size?: number; cmap?: string; alpha?: number
+}) => api.post('/spatial/gene_plot', body)
+
 // Stage 3: Step 4 — Heatmap
 export const runHeatmap = (params: object) => api.post('/analysis/run_heatmap', params)
 export const getHeatmapStatus = () => api.get('/analysis/heatmap_status')

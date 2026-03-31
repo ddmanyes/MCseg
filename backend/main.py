@@ -27,6 +27,7 @@ from backend.src.api import (
     export,
     roi,
     segmentation,
+    spatial,
 )
 
 logger = logging.getLogger("pipeline.main")
@@ -64,6 +65,7 @@ app.include_router(roi.router,           prefix="/api/roi",         tags=["Stage
 app.include_router(segmentation.router,  prefix="/api/segmentation",tags=["Stage 1: Segmentation"])
 app.include_router(cellpose_count.router,prefix="/api/count",       tags=["Stage 2: Count"])
 app.include_router(analysis.router,      prefix="/api/analysis",    tags=["Stage 3: Analysis"])
+app.include_router(spatial.router,       prefix="/api/spatial",     tags=["Stage 3.5: Spatial Explorer"])
 app.include_router(export.router,        prefix="/api/export",      tags=["Stage 4: Export"])
 
 

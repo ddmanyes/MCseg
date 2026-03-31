@@ -13,6 +13,7 @@ const STAGE_KEYS = [
   { path: '/segmentation', idx: '1',   tKey: 'nav.stage.seg',      stage: 'segmentation', dep: 'roi' },
   { path: '/count',        idx: '2',   tKey: 'nav.stage.count',    stage: 'count',        dep: 'segmentation' },
   { path: '/analysis',     idx: '3',   tKey: 'nav.stage.analysis', stage: 'analysis',     dep: 'count' },
+  { path: '/spatial',      idx: '✦',   tKey: 'nav.stage.spatial',  stage: 'spatial',      dep: 'analysis' },
   { path: '/export',       idx: '4',   tKey: 'nav.stage.export',   stage: 'export',       dep: 'analysis' },
 ] as const
 

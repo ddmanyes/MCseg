@@ -6,6 +6,7 @@ import Stage0_ROI from './pages/Stage0_ROI'
 import Stage1_Segmentation from './pages/Stage1_Segmentation'
 import Stage2_Count from './pages/Stage2_Count'
 import Stage3_Analysis from './pages/Stage3_Analysis'
+import Stage35_SpatialExplorer from './pages/Stage35_SpatialExplorer'
 import Stage4_Export from './pages/Stage4_Export'
 import { getDiskStatus } from './api/client'
 import { usePipelineStore } from './stores/pipelineStore'
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="/segmentation" element={<Stage1_Segmentation />} />
           <Route path="/count" element={<Stage2_Count />} />
           <Route path="/analysis" element={<Stage3_Analysis />} />
+          <Route path="/spatial" element={<Stage35_SpatialExplorer />} />
           <Route path="/export" element={<Stage4_Export />} />
         </Routes>
       </main>
