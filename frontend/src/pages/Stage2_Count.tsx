@@ -55,20 +55,20 @@ export default function Stage2_Count() {
   return (
     <div className="space-y-4">
       <StageCard
-        title="RNA 計數（Cellpose 直接分析）"
+        title="RNA 計數（MCseg v2）"
         status={stage.status}
         progress={stage.progress}
         message={stage.message}
       >
         {/* 說明 */}
         <div className="mt-3 p-3 rounded-lg bg-blue-900/20 border border-blue-700/40 text-xs text-blue-300 space-y-1">
-          <p className="font-semibold text-blue-200">Pipeline 3 直接分析模式</p>
+          <p className="font-semibold text-blue-200">MCseg v2 RNA 計數</p>
           <p>
-            跳過 Zarr 建構與 Proseg，直接將 Visium HD 2µm bins 依據
-            Cellpose 分割遮罩分配至細胞，並以稀疏矩陣匯總基因計數。
+            將 Visium HD 2µm bins 依據 MCseg v2 分割遮罩分配至細胞，
+            以稀疏矩陣向量化匯總基因計數（&lt; 30 秒 / ROI）。
           </p>
           <ul className="list-disc pl-4 space-y-0.5 text-blue-400">
-            <li>輸入：<code>he_crop.tif</code>、<code>adata_002um.h5ad</code>（Stage 0）、<code>segmentation_masks.npy</code>（Stage 1）</li>
+            <li>輸入：<code>adata_002um.h5ad</code>（Stage 0）、<code>segmentation_masks.npy</code>（Stage 1）</li>
             <li>輸出：<code>cellpose_cells.h5ad</code>（cells × genes，供 Stage 3 分析）</li>
             <li>座標系：ROI 局部 µm（原點 = ROI 左上角）</li>
           </ul>

@@ -221,16 +221,15 @@ export default function Stage4_Analysis() {
   // ── 分析來源選擇 ──
   const [analysisMode, setAnalysisMode] = useState<'single' | 'merge'>('single')
   const [selectedRoi, setSelectedRoi] = useState<string>('')
-  const [inputSource, setInputSource] = useState<'cellpose' | 'proseg'>('cellpose')
+  const inputSource = 'cellpose'
 
   const { data: availableRoisData } = useQuery({
     queryKey: ['available_rois'],
     queryFn: async () => (await getAvailableRois()).data,
   })
-  const availableRois: { name: string; available: boolean; has_cellpose?: boolean; has_proseg?: boolean }[] =
+  const availableRois: { name: string; available: boolean; has_cellpose?: boolean }[] =
     availableRoisData?.data ?? []
   const hasMultipleRois = availableRois.length > 1
-  const hasProsegRois   = availableRois.some(r => r.has_proseg)
 
   // ── QC 參數 ──
   const [qcParams, setQcParams] = useState({
@@ -447,7 +446,7 @@ export default function Stage4_Analysis() {
   }, [resolutionInput])
 
   // ── 直方圖 handlers ──
-  const handleLoadHist = async (src?: 'cellpose' | 'proseg') => {
+  const handleLoadHist = async (src?: string) => {
     setHistLoading(true)
     setHistError('')
     try {
@@ -650,45 +649,11 @@ export default function Stage4_Analysis() {
           </div>
         </div>
 
-        {/* RNA 計數來源選擇 */}
-        <div className="bg-surface-darker rounded-lg border border-surface-border p-4 mt-3">
-          <p className="text-xs text-gray-400 mb-2 font-medium">RNA 計數來源</p>
-          <div className="flex gap-4">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="inputSource"
-                value="cellpose"
-                checked={inputSource === 'cellpose'}
-                onChange={() => {
-                  setInputSource('cellpose')
-                  if (histData) handleLoadHist('cellpose')
-                }}
-                className="accent-brand-primary"
-              />
-              <span className="text-sm text-gray-200">Cellpose 直接計數</span>
-              <span className="text-[11px] text-gray-500 ml-1">（cellpose_cells.h5ad）</span>
-            </label>
-            <label className={`flex items-center gap-2 ${hasProsegRois ? 'cursor-pointer' : 'opacity-40 cursor-not-allowed'}`}>
-              <input
-                type="radio"
-                name="inputSource"
-                value="proseg"
-                checked={inputSource === 'proseg'}
-                onChange={() => {
-                  setInputSource('proseg')
-                  if (histData) handleLoadHist('proseg')
-                }}
-                disabled={!hasProsegRois}
-                className="accent-purple-500"
-              />
-              <span className="text-sm text-gray-200">Proseg RNA 重分配</span>
-              <span className="text-[11px] text-gray-500 ml-1">（proseg_cells.h5ad）</span>
-              {!hasProsegRois && (
-                <span className="text-[11px] text-yellow-600 ml-1">← 請先完成 Stage 2.5</span>
-              )}
-            </label>
-          </div>
+        {/* RNA 計數來源：MCseg v2（固定） */}
+        <div className="bg-surface-darker rounded-lg border border-surface-border px-4 py-2 mt-3 flex items-center gap-2">
+          <span className="text-xs text-gray-400">輸入來源：</span>
+          <span className="text-xs font-medium text-green-400">MCseg v2</span>
+          <span className="text-[11px] text-gray-500">cellpose_cells.h5ad</span>
         </div>
 
         {/* ── 原始分布預覽 ── */}
@@ -760,7 +725,7 @@ export default function Stage4_Analysis() {
                 />
               )}
 
-              {/* Cell Size (Proseg only) */}
+              {/* Cell Size */}
               {histData.metrics.cell_area && (
                 <QcHistogram
                   metric={histData.metrics.cell_area}
