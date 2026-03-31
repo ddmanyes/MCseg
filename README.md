@@ -6,26 +6,123 @@ MSseg 是專為 10x Genomics **Visium HD**（2µm 解析度）空間轉錄體學
 
 ---
 
-## 快速啟動
+## 安裝與啟動
 
 ### 系統需求
 
-- **uv**：Python 套件管理器（`curl -LsSf https://astral.sh/uv/install.sh | sh`）
-- **Node.js**：v18 以上（供前端使用）
-- **GPU**（選配）：CUDA 12.4 相容 GPU 可加速 MCseg v2 推論
+| 工具 | 版本 | 備註 |
+| --- | --- | --- |
+| macOS | 12 以上 | Apple Silicon（MPS）或 Intel 均可 |
+| Python | 3.10 以上 | 由 uv 自動管理，無需手動安裝 |
+| Node.js | v18 以上 | 供前端 Vite 使用 |
+| GPU | 選配 | Apple MPS / NVIDIA CUDA 12.4，無 GPU 自動回退 CPU |
 
-### 分開啟動（開發模式）
+---
+
+### 步驟 1：安裝 uv（Python 套件管理器）
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+安裝後重新開啟終端機，確認安裝成功：
+
+```bash
+uv --version
+```
+
+> 若已安裝可跳過此步驟。
+
+---
+
+### 步驟 2：安裝 Node.js（供前端使用）
+
+建議使用 [nvm](https://github.com/nvm-sh/nvm) 管理版本：
+
+```bash
+# 安裝 nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+
+# 重新開啟終端機後安裝 Node.js 22
+nvm install 22
+nvm use 22
+```
+
+或直接從 [nodejs.org](https://nodejs.org) 下載安裝 v18 以上版本。
+
+確認安裝成功：
+
+```bash
+node --version   # 應顯示 v18.x 以上
+npm --version
+```
+
+---
+
+### 步驟 3：下載專案
+
+```bash
+git clone <repository-url> MSseg
+cd MSseg
+```
+
+---
+
+### 步驟 4：安裝 Python 依賴
+
+```bash
+uv sync
+```
+
+`uv sync` 會自動讀取 `pyproject.toml`，建立 `.venv` 並安裝所有套件（包含 Cellpose、PyTorch、Scanpy 等），**無需手動 pip install**。
+
+> **外接硬碟（ExFAT）注意**：ExFAT 格式的外接硬碟不支援 symlink，建議直接執行下方的一鍵啟動腳本，它會自動將 `.venv` 移至本機 `~/.venvs/msseg` 以避免問題。
+
+---
+
+### 步驟 5：安裝前端依賴
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+---
+
+### 啟動方式
+
+#### 方式 A：一鍵啟動（推薦）
+
+```bash
+bash start.sh
+```
+
+腳本會自動：
+- 處理 `.venv` ExFAT 問題（symlink 至本機）
+- 清除佔用 port 8001/3000 的舊行程
+- 依序啟動後端（等待健康確認）→ 前端
+- `Ctrl+C` 同時停止所有服務
+
+#### 方式 B：分開啟動（開發模式）
 
 ```bash
 # 終端機 1：後端
-cd /path/to/MSseg
 uv run uvicorn backend.main:app --reload --port 8001
 
 # 終端機 2：前端
-cd frontend && npm install && npm run dev
+cd frontend && npm run dev
 ```
 
-啟動後前往：<http://localhost:3000>
+---
+
+啟動後前往 **<http://localhost:3000>**
+
+| 服務 | 網址 |
+| --- | --- |
+| 前端 UI | http://localhost:3000 |
+| 後端 API | http://localhost:8001 |
+| API 文件 | http://localhost:8001/docs |
 
 ---
 

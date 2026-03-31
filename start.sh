@@ -1,5 +1,5 @@
 #!/bin/bash
-# VisiumHD Pipeline 3 — 一鍵啟動（開發模式）
+# MSseg — 一鍵啟動（開發模式）
 # 使用方式：bash start.sh
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 # 顏色
 RED='\033[0;31m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
-echo -e "${BLUE}VisiumHD Pipeline 3${NC}"
+echo -e "${BLUE}MSseg — MCseg v2 Visium HD 分析平台${NC}"
 echo "Root: $ROOT"
 
 # 檢查 uv
@@ -17,7 +17,7 @@ if ! command -v uv &>/dev/null; then
 fi
 
 # ExFAT 防護：把 .venv 實體放在本機 APFS（避免 ._* resource fork 破壞安裝）
-LOCAL_VENV="$HOME/.venvs/visiumHD_pipeline_3"
+LOCAL_VENV="$HOME/.venvs/msseg"
 VENV_DIR="$ROOT/.venv"
 export UV_CACHE_DIR="$HOME/.cache/uv"
 
@@ -66,7 +66,7 @@ echo ""
 if [ "$BACKEND_OK" = false ]; then
     echo -e "${RED}❌ 後端啟動失敗！請嘗試手動修復：${NC}"
     echo -e "${YELLOW}  rm -rf .venv${NC}"
-    echo -e "${YELLOW}  mkdir -p ~/.venvs/visiumHD_pipeline_3 && ln -s ~/.venvs/visiumHD_pipeline_3 .venv${NC}"
+    echo -e "${YELLOW}  mkdir -p ~/.venvs/msseg && ln -s ~/.venvs/msseg .venv${NC}"
     echo -e "${YELLOW}  UV_CACHE_DIR=~/.cache/uv uv sync${NC}"
     kill "$BACKEND_PID" 2>/dev/null || true
     exit 1
