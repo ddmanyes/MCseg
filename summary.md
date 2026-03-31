@@ -17,6 +17,13 @@
   - `pipeline.yaml` stage25 更新最佳參數：max_dist=10µm, compactness=0.04, burnin=500, `hungarian_refine: true`
   - 輸出 `proseg_cells.h5ad` 細胞數固定 = Cellpose 細胞數，obs 含 `refined` boolean 欄位（n_refined / n_fallback 記錄於 uns）
   - 修復 4 個 code review 問題：BUG1（center_of_mass single-element crash）、BUG2（n_cp=0 早退）、BUG3（`__import__` 風格）、BUG5（gene mismatch silent discard → 加 warning）
+- [2026-03-31] **Stage 3.5 空間基因表達探索器**上線。
+  - 新增 `/spatial` 頁面（Stage35_SpatialExplorer），位於 Analysis 與 Export 之間
+  - 支援 Contour 模式（細胞填色 + 深色 inner border 分隔）與 Gene Set 模式（多基因平均分 → 輪廓著色）
+  - 8 組預設基因集（CD4 T / CD8 T / NK / Macrophage / B cell / Tumor / Fibroblast / Endothelial）；preset 採 case-insensitive 匹配，支援小鼠 Title Case 基因名
+  - Merge ROI 模式自動依 `obs["roi"]` 分組，各 ROI 獨立渲染成 grid（上限 12 格）
+  - 300 DPI PNG 下載，檔名自動帶 ROI / 模式 / 基因集名
+  - `_parse_cell_id` 嚴格 regex 解析，非 `cell_N` format（如 barcode）提前報錯，避免靜默資料污染
 - [2026-03-31] **MSseg v1.0 建立**（基於 visiumHD_pipeline_3，整合 MCseg v2 分割引擎）。
   - 核心分割由 LOGIC_A 雙尺寸策略改為 **MCseg v2 多模型 Voronoi 集成**（cyto3 三直徑 13/17/22px + Hematoxylin pass + Voronoi 擴張）
   - LUAD PQ@0.5：0.432（cellpose_dilate）→ **0.554**（MCseg v2，+28%）
