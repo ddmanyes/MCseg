@@ -591,13 +591,10 @@ export default function Stage4_Analysis() {
             title="QC 前處理"
             subtitle="QC → normalize → HVG → PCA"
           />
-          <div className="flex items-center gap-4">
-            <StatusBadge
-              status={qcSt?.status ?? 'idle'}
-              message={qcSt?.message ?? '尚未執行'}
-            />
-            <RunButton label="執行前處理" onClick={handleRunQC} status={qcSt?.status ?? 'idle'} />
-          </div>
+          <StatusBadge
+            status={qcSt?.status ?? 'idle'}
+            message={qcSt?.message ?? '尚未執行'}
+          />
         </div>
 
         {/* 分析來源選擇 */}
@@ -797,6 +794,11 @@ export default function Stage4_Analysis() {
             onChange={v => setQcParams(p => ({ ...p, n_top_genes: v }))} min={100} />
           <NumberField label="PCA 維度數 (n_pcs)" value={qcParams.n_pcs}
             onChange={v => setQcParams(p => ({ ...p, n_pcs: v }))} min={10} />
+        </div>
+
+        {/* 執行 QC 按鈕 */}
+        <div className="flex justify-end mt-3">
+          <RunButton label="執行前處理" onClick={handleRunQC} status={qcSt?.status ?? 'idle'} />
         </div>
 
         {/* QC 圖表 */}
