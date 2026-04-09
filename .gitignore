@@ -23,3 +23,6 @@ scripts/test_parse.js
 # Analysis figures (large PNGs — host on Zenodo)
 analysis/figures/
 analysis/supplementary/SuppFig*.png
+
+# Runtime logs
+logs/
