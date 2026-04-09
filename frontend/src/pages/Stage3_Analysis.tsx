@@ -141,7 +141,7 @@ type RoiOverlayData = Record<string, { qc_overlay?: string }>
 function RoiContourPanel({ data }: { data: RoiOverlayData }) {
   const roiNames = Object.keys(data)
   const [activeRoi, setActiveRoi] = useState(roiNames[0] ?? '')
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
   const t = useT()
 
   if (!roiNames.length) return null
@@ -806,33 +806,29 @@ export default function Stage4_Analysis() {
           <RunButton label={t('stage3.qc.run')} onClick={handleRunQC} status={qcSt?.status ?? 'idle'} />
         </div>
 
-        {/* QC 圖表 */}
-        {Object.keys(qcImages).length > 0 && (
-          <>
-            <ChartView
-              images={qcImages}
-              tabs={[
-                { key: 'violin',         label: t('stage3.qc.chart.violin') },
-                { key: 'scatter',        label: t('stage3.qc.chart.scatter') },
-                { key: 'elbow',          label: 'PCA Elbow' },
-                { key: 'qc_overlay',     label: t('stage3.qc.chart.overlay') },
-                { key: 'roi_comparison', label: t('stage3.qc.chart.roi_comparison') },
-              ]}
-            />
-            {/* HD 存檔下載 */}
-            {qcImages['qc_overlay'] && (
-              <div className="mt-2 flex gap-3">
-                <span className="text-xs text-gray-400 self-center">{t('stage3.qc.hd_archive')}</span>
-                <a
-                  href={getOverlayHdUrl()}
-                  download="overlay_qc_hd.png"
-                  className="text-xs text-brand-primary hover:underline"
-                >
-                  {t('stage3.qc.hd_download')}
-                </a>
-              </div>
-            )}
-          </>
+        {/* QC 圖表（保持掛載以保留 active tab 狀態，ChartView 空白時自回傳 null）*/}
+        <ChartView
+          images={qcImages}
+          tabs={[
+            { key: 'violin',         label: t('stage3.qc.chart.violin') },
+            { key: 'scatter',        label: t('stage3.qc.chart.scatter') },
+            { key: 'elbow',          label: 'PCA Elbow' },
+            { key: 'qc_overlay',     label: t('stage3.qc.chart.overlay') },
+            { key: 'roi_comparison', label: t('stage3.qc.chart.roi_comparison') },
+          ]}
+        />
+        {/* HD 存檔下載 */}
+        {qcImages['qc_overlay'] && (
+          <div className="mt-2 flex gap-3">
+            <span className="text-xs text-gray-400 self-center">{t('stage3.qc.hd_archive')}</span>
+            <a
+              href={getOverlayHdUrl()}
+              download="overlay_qc_hd.png"
+              className="text-xs text-brand-primary hover:underline"
+            >
+              {t('stage3.qc.hd_download')}
+            </a>
+          </div>
         )}
 
         {/* ROI 輪廓比較（QC 完成後出現，多 ROI 或單 ROI 均支援）*/}
