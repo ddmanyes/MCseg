@@ -1,0 +1,5 @@
+ROI,Description,x_px,y_px,Width_px,Height_px,Width_um,Height_um
+Tumor boundary,G2/G3 grade transition zone with lymphoid infiltration,9202,16552,6022,4521,1648,1238
+HEV / TLS,High endothelial venule cluster within tertiary lymphoid structure,11787,17937,1402,1151,384,315
+Dust cells,Carbon-laden alveolar macrophage aggregate,7934,11264,2869,1602,785,438
+Normal lung,Open alveolar region; AT1/AT2 pneumocyte validation,7050,23275,2069,1267,566,347

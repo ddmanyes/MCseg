@@ -1,0 +1,13 @@
+roi,tissue,method,PQ,SQ,RQ
+roi1,Tumor_Boundary,MCseg_v2,0.6615,0.831,0.796
+roi1,Tumor_Boundary,MCseg_v1,0.502222,0.642549,0.781609
+roi2,Tumor_Stroma,MCseg_v2,0.5534,0.777,0.713
+roi2,Tumor_Stroma,MCseg_v1,0.437619,0.596133,0.734096
+roi3,Mixed,MCseg_v2,0.5229,0.761,0.687
+roi3,Mixed,MCseg_v1,0.401194,0.550167,0.729221
+roi4,Normal_Tumor_Interface,MCseg_v2,0.5101,0.755,0.676
+roi4,Normal_Tumor_Interface,MCseg_v1,0.409299,0.555841,0.736361
+roi5,Alveolar,MCseg_v2,0.4683,0.734,0.638
+roi5,Alveolar,MCseg_v1,0.394689,0.550859,0.716496
+roi6,Tumor_Core,MCseg_v2,0.6097,0.805,0.758
+roi6,Tumor_Core,MCseg_v1,0.449939,0.613643,0.733226

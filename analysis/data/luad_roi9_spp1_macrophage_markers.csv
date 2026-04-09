@@ -1,0 +1,6 @@
+gene,pct_positive,mean_umi,n_cells,roi,method
+SPP1,2.17,0.0412,8393,roi9,MCseg_v2
+TREM2,0.13,0.0013,8393,roi9,MCseg_v2
+MMP9,1.22,0.0133,8393,roi9,MCseg_v2
+CD163,0.54,0.0055,8393,roi9,MCseg_v2
+CD68,1.75,0.0181,8393,roi9,MCseg_v2

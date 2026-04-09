@@ -1,0 +1,15 @@
+# ROI10 Platform Comparison: MCseg v2 vs Xenium GT
+# Section 1: Cell type composition
+cell_type,mcseg_n,mcseg_pct,xenium_n,xenium_pct
+AT2 Pneumocyte,463,42.67,120,6.88
+Alveolar Macrophage,67,6.18,95,5.44
+Endothelial,31,2.86,308,17.65
+AT1 Pneumocyte,23,2.12,399,22.87
+Unassigned,501,46.18,823,47.16
+
+# Section 2: Pixel overlap metrics
+metric,value,description
+overall_iou,0.5617,Pixel IoU between MCseg and Xenium GT binary masks
+xenium_area_covered_by_mcseg,0.758,Fraction of Xenium-covered pixels also covered by MCseg
+mcseg_area_within_xenium,0.6844,Fraction of MCseg pixels falling inside a Xenium cell
+at1_pixel_recall,0.7092,Fraction of Xenium GT AT1 pixels covered by MCseg

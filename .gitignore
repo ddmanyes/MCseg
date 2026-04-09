@@ -7,6 +7,19 @@ __pycache__/
 .venv/
 results/
 figures/
+!analysis/scripts/figures/
 config/state.json
 *.zarr
 *.h5ad
+
+# Internal development files
+execution_trace.md
+plan.md
+summary.md
+CLAUDE.md
+scripts/temp/
+scripts/test_parse.js
+
+# Analysis figures (large PNGs — host on Zenodo)
+analysis/figures/
+analysis/supplementary/SuppFig*.png
