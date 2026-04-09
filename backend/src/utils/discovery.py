@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -53,9 +54,14 @@ class DiscoveryResult:
     xenium_outs: Optional[DiscoveredFile] = None
     extra_files: list[DiscoveredFile] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    pixel_size_um: Optional[float] = None   # 從 scalefactors_json.json 讀取
 
     def to_dict(self) -> dict:
-        result = {"data_root": self.data_root, "warnings": self.warnings}
+        result = {
+            "data_root": self.data_root,
+            "warnings": self.warnings,
+            "pixel_size_um": self.pixel_size_um,
+        }
         for key in ("he_image", "binned_002", "binned_008", "xenium_outs"):
             item = getattr(self, key)
             if item:
@@ -224,6 +230,16 @@ def scan_data_root(data_root: str | Path) -> DiscoveryResult:
             size_bytes=dsize,
             size_human=_human_size(dsize),
         )
+        # 從 scalefactors_json.json 讀取 microns_per_pixel
+        sf_path = best / "spatial" / "scalefactors_json.json"
+        if sf_path.exists():
+            try:
+                with open(sf_path) as f:
+                    sf = json.load(f)
+                result.pixel_size_um = float(sf["microns_per_pixel"])
+                logger.info(f"偵測到 pixel_size_um = {result.pixel_size_um:.4f} µm/px")
+            except Exception as e:
+                logger.warning(f"無法讀取 scalefactors_json.json：{e}")
     else:
         result.warnings.append("未找到 square_002um 目錄（Visium HD 2µm binned）")
 

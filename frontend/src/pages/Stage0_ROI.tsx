@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
 import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
-import { listRois, addRoi, deleteRoi, runRoiExtract, getRoiStatus } from '../api/client'
+import { listRois, addRoi, deleteRoi, runRoiExtract, getRoiStatus, getConfig } from '../api/client'
 import type { RoiDefinition } from '../types/pipeline'
 import useStageLog from '../hooks/useStageLog'
 import RoiSelector from '../components/roi/RoiSelector'
@@ -16,10 +16,19 @@ export default function Stage0_ROI() {
   const { refetch: refetchStatus } = useStageStatus('roi', getRoiStatus, 2000)
   const [form, setForm] = useState<Partial<RoiDefinition>>({ pixel_size_um: 0.2737 })
   const [formError, setFormError] = useState<string | null>(null)
+  const [configPixelSize, setConfigPixelSize] = useState<number>(0.2737)
   const t = useT()
 
   useEffect(() => {
     listRois().then(r => setRois(r.data.data ?? []))
+    // 從 config 讀取 pixel_size_um（Data Setup 掃描時寫入）
+    getConfig().then((r: any) => {
+      const ps = r.data?.data?.global?.pixel_size_um
+      if (ps && typeof ps === 'number' && ps > 0) {
+        setConfigPixelSize(ps)
+        setForm(f => ({ ...f, pixel_size_um: ps }))
+      }
+    }).catch(() => {})
   }, [])
 
   const handleRun = async () => {
@@ -39,7 +48,7 @@ export default function Stage0_ROI() {
     await addRoi(form as RoiDefinition)
     const updated = await listRois()
     setRois(updated.data.data ?? [])
-    setForm({ pixel_size_um: 0.2737 })
+    setForm({ pixel_size_um: configPixelSize })
   }
 
   return (
@@ -86,14 +95,15 @@ export default function Stage0_ROI() {
           <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-3">{t('stage0.add_roi')}</p>
           <div className="grid grid-cols-2 gap-3">
             {([
-              ['name',      t('stage0.form.name'),   'text'],
-              ['tissue',    t('stage0.form.tissue'),  'text'],
-              ['x',         t('stage0.form.x'),       'number'],
-              ['y',         t('stage0.form.y'),       'number'],
-              ['width_px',  t('stage0.form.width'),   'number'],
-              ['height_px', t('stage0.form.height'),  'number'],
+              ['name',          t('stage0.form.name'),      'text'],
+              ['tissue',        t('stage0.form.tissue'),     'text'],
+              ['x',             t('stage0.form.x'),          'number'],
+              ['y',             t('stage0.form.y'),          'number'],
+              ['width_px',      t('stage0.form.width'),      'number'],
+              ['height_px',     t('stage0.form.height'),     'number'],
+              ['pixel_size_um', 'Pixel Size (µm/px)',        'number'],
             ] as [string, string, string][]).map(([key, label, type]) => (
-              <div key={key}>
+              <div key={key} className={key === 'pixel_size_um' ? 'col-span-2' : ''}>
                 <label className="text-xs text-gray-400">{label}</label>
                 <input
                   type={type}

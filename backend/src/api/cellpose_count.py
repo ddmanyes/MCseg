@@ -56,6 +56,7 @@ async def run_count(background_tasks: BackgroundTasks, params: Optional[CountPar
     async with _lock:
         if _status["status"] == "running":
             return {"status": "error", "message": "任務執行中"}
+        _status["status"] = "running"
 
     config = load_config()
     roi_name = params.roi_name if params else None

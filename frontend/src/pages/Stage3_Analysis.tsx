@@ -474,11 +474,13 @@ export default function Stage4_Analysis() {
     const m = histData.metrics
     setQcParams(p => ({
       ...p,
-      ...(m.total_counts    ? { min_counts: Math.ceil(m.total_counts.mad_min) }     : {}),
+      ...(m.total_counts      ? { min_counts:      Math.ceil(m.total_counts.mad_min) }      : {}),
       ...(m.n_genes_by_counts ? {
         min_genes: Math.ceil(m.n_genes_by_counts.mad_min),
         max_genes: Math.ceil(m.n_genes_by_counts.mad_max),
       } : {}),
+      ...(m.complexity        ? { min_complexity:   Math.round(m.complexity.mad_min * 1000) / 1000 } : {}),
+      ...(m.pct_counts_mt     ? { max_pct_mito:     Math.ceil(m.pct_counts_mt.mad_max) }    : {}),
     }))
   }
 

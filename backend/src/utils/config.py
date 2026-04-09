@@ -33,23 +33,29 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_state() -> dict[str, Any]:
-    """讀取 state.json（不存在時回傳空字典）。"""
+    """讀取 state.json（不存在或 JSON 損壞時回傳空字典）。"""
     if not _STATE_PATH.exists():
         return {}
-    with open(_STATE_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(_STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        logger.warning(f"state.json 損壞，忽略並重置：{e}")
+        return {}
 
 
 def save_state(updates: dict[str, Any]) -> None:
     """
-    將動態狀態寫入 state.json。
+    將動態狀態寫入 state.json（原子寫入，防止寫到一半損壞）。
     只傳入需要更新的部分，其餘已有狀態不受影響。
     """
     state = load_state()
     state = _deep_merge(state, updates)
     _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_STATE_PATH, "w", encoding="utf-8") as f:
+    tmp_path = _STATE_PATH.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+    tmp_path.replace(_STATE_PATH)  # 原子替換，防止寫到一半損壞
     logger.info(f"已更新 state.json：{list(updates.keys())}")
 
 

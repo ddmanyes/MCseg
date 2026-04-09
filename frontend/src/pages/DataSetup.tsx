@@ -19,6 +19,7 @@ interface ScanResult {
     binned_008: DiscoveredFile | null
     extra_files: { path: string; label: string; size_human: string }[]
     warnings: string[]
+    pixel_size_um: number | null
 }
 
 interface PathStatus {
@@ -227,6 +228,7 @@ export default function DataSetup() {
     const [applied, setApplied] = useState(false)
     const [pathStatus, setPathStatus] = useState<Record<string, PathStatus>>({})
     const [showBrowser, setShowBrowser] = useState(false)
+    const [pixelSizeOverride, setPixelSizeOverride] = useState<string>('')
 
     // output dir state
     const [outputDir, setOutputDir] = useState('')
@@ -251,10 +253,13 @@ export default function DataSetup() {
         setScanResult(null)
         setScanError('')
         setApplied(false)
+        setPixelSizeOverride('')
         try {
             const r = await scanData({ data_root: dataRoot })
             if (r.data.status === 'ok') {
                 setScanResult(r.data.data)
+                if (r.data.data.pixel_size_um != null)
+                    setPixelSizeOverride(String(r.data.data.pixel_size_um))
             } else {
                 setScanError(r.data.message ?? '掃描失敗')
             }
@@ -271,10 +276,13 @@ export default function DataSetup() {
         if (!scanResult) return
         setApplying(true)
         try {
-            const paths: Record<string, string> = {}
+            const paths: Record<string, string | number> = {}
+            paths.data_root = scanResult.data_root
             if (scanResult.he_image) paths.he_image = scanResult.he_image.path
             if (scanResult.binned_002) paths.binned_002 = scanResult.binned_002.path
             if (scanResult.binned_008) paths.binned_008 = scanResult.binned_008.path
+            const psVal = parseFloat(pixelSizeOverride)
+            if (!isNaN(psVal) && psVal > 0) paths.pixel_size_um = psVal
             await applyData(paths)
             setApplied(true)
         } catch {
@@ -504,6 +512,26 @@ export default function DataSetup() {
                                 </div>
                             )
                         })}
+                    </div>
+
+                    {/* Pixel size */}
+                    <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface/50 border border-surface-border">
+                        <div className="min-w-0 flex-1">
+                            <p className="text-sm text-gray-300">Pixel Size (µm/px)</p>
+                            <p className="text-xs text-gray-500">
+                                {scanResult.pixel_size_um != null
+                                    ? `自 scalefactors_json.json 偵測`
+                                    : '未偵測到，使用預設值'}
+                            </p>
+                        </div>
+                        <input
+                            type="number"
+                            step="0.0001"
+                            value={pixelSizeOverride}
+                            onChange={e => setPixelSizeOverride(e.target.value)}
+                            placeholder="0.2737"
+                            className="w-28 px-2 py-1 bg-surface border border-surface-border rounded text-sm text-gray-200 font-mono focus:border-primary focus:outline-none text-right"
+                        />
                     </div>
 
                     {/* 警告 */}

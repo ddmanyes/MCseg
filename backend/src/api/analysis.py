@@ -122,6 +122,7 @@ async def run_analysis(background_tasks: BackgroundTasks, params: Optional[Analy
     async with _task_lock:
         if _task_status["status"] == "running":
             return {"status": "error", "message": "任務執行中"}
+        _task_status["status"] = "running"
 
     config = load_config()
     if params:
@@ -358,7 +359,7 @@ async def _run_qc(config: dict):
             _qc_images = combined_images
 
         _qc_status = {"status": "done", "progress": 1.0, "message": f"QC complete — {len(_qc_images)} plots generated"}
-    except BaseException as e:
+    except Exception as e:
         import traceback
         logger.error(f"QC Step 失敗：{e!r}\n{traceback.format_exc()}")
         _qc_status = {"status": "error", "progress": 0.0, "message": str(e)}
@@ -369,6 +370,7 @@ async def run_qc(background_tasks: BackgroundTasks, params: Optional[QCParams] =
     async with _qc_lock:
         if _qc_status["status"] == "running":
             return {"status": "error", "message": "QC 任務執行中"}
+        _qc_status["status"] = "running"
 
     config = load_config()
     if params:
@@ -512,6 +514,7 @@ async def run_umap_explore(background_tasks: BackgroundTasks, params: Optional[U
     async with _umap_lock:
         if _umap_status["status"] == "running":
             return {"status": "error", "message": "UMAP 任務執行中"}
+        _umap_status["status"] = "running"
 
     p = params or UMAPExploreParams()
     config = load_config()
@@ -606,6 +609,7 @@ async def run_heatmap(background_tasks: BackgroundTasks, params: HeatmapParams):
     async with _heat_lock:
         if _heat_status["status"] == "running":
             return {"status": "error", "message": "熱圖任務執行中"}
+        _heat_status["status"] = "running"
 
     config = load_config()
     background_tasks.add_task(_run_heatmap, config, params)
@@ -702,6 +706,7 @@ async def run_annotation(background_tasks: BackgroundTasks, params: AnnotatePara
     async with _annot_lock:
         if _annot_status["status"] == "running":
             return {"status": "error", "message": "標註任務執行中"}
+        _annot_status["status"] = "running"
     config = load_config()
     background_tasks.add_task(_run_annotate, config, params)
     return {"status": "ok", "message": "CellTypist 標註已啟動"}
@@ -777,7 +782,7 @@ async def get_marker_genes_csv(
         )
         rows = []
         for cl in clusters:
-            df = sc.get.rank_genes_groups_df(adata, group=cl, n_genes=n_genes)
+            df = sc.get.rank_genes_groups_df(adata, group=cl).iloc[:n_genes]
             df.insert(0, "cluster", cl)
             rows.append(df[["cluster", "names", "scores", "logfoldchanges", "pvals_adj"]])
         result = pd.concat(rows, ignore_index=True)

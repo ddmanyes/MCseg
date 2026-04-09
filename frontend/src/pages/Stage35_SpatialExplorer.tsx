@@ -27,16 +27,49 @@ interface PresetGeneSet {
   genes: string[]
 }
 
-const PRESET_GENE_SETS: PresetGeneSet[] = [
-  { label: 'CD4 T',       genes: ['CD4', 'IL7R', 'CCR7', 'TCF7'] },
-  { label: 'CD8 T',       genes: ['CD8A', 'CD8B', 'GZMB', 'PRF1'] },
-  { label: 'NK',          genes: ['NKG7', 'GNLY', 'KLRD1', 'NCR1'] },
-  { label: 'Macrophage',  genes: ['CD68', 'CSF1R', 'MRC1', 'ITGAM'] },
-  { label: 'B cell',      genes: ['CD19', 'MS4A1', 'CD79A', 'CD79B'] },
-  { label: 'Tumor',       genes: ['EPCAM', 'KRT8', 'KRT18', 'MUC1'] },
-  { label: 'Fibroblast',  genes: ['ACTA2', 'FAP', 'PDGFRA', 'COL1A1'] },
-  { label: 'Endothelial', genes: ['PECAM1', 'VWF', 'CDH5', 'CLDN5'] },
+interface PresetGroup {
+  group: string
+  sets: PresetGeneSet[]
+}
+
+const PRESET_GROUPS: PresetGroup[] = [
+  {
+    group: 'Immune / Tumor',
+    sets: [
+      { label: 'CD4 T',       genes: ['CD4', 'IL7R', 'CCR7', 'TCF7'] },
+      { label: 'CD8 T',       genes: ['CD8A', 'CD8B', 'GZMB', 'PRF1'] },
+      { label: 'NK',          genes: ['NKG7', 'GNLY', 'KLRD1', 'NCR1'] },
+      { label: 'Macrophage',  genes: ['CD68', 'CSF1R', 'MRC1', 'ITGAM'] },
+      { label: 'B cell',      genes: ['CD19', 'MS4A1', 'CD79A', 'CD79B'] },
+      { label: 'Tumor',       genes: ['EPCAM', 'KRT8', 'KRT18', 'MUC1'] },
+      { label: 'Fibroblast',  genes: ['ACTA2', 'FAP', 'PDGFRA', 'COL1A1'] },
+      { label: 'Endothelial', genes: ['PECAM1', 'VWF', 'CDH5', 'CLDN5'] },
+    ],
+  },
+  {
+    group: 'Hair Follicle',
+    sets: [
+      { label: 'Bulge (HFSC)',  genes: ['Cd34', 'Lgr5', 'Krt15', 'Sox9'] },
+      { label: 'ORS',           genes: ['Krt17', 'Krt14', 'Sox9'] },
+      { label: 'Matrix',        genes: ['Lef1', 'Mki67', 'Shh'] },
+      { label: 'IRS',           genes: ['Krt71', 'Krt25', 'Tgm3'] },
+      { label: 'Dermal Papilla',genes: ['P2ry1', 'Sox2', 'Alpl', 'Corin'] },
+    ],
+  },
 ]
+
+// Flat list kept for backward-compat with applyPreset logic
+const PRESET_GENE_SETS: PresetGeneSet[] = PRESET_GROUPS.flatMap(g => g.sets)
+
+const CUSTOM_SETS_KEY   = 'msseg_custom_gene_sets'
+const OVERRIDE_SETS_KEY = 'msseg_preset_overrides'   // { [label]: string[] }
+
+function loadCustomSets(): PresetGeneSet[] {
+  try { return JSON.parse(localStorage.getItem(CUSTOM_SETS_KEY) ?? '[]') } catch { return [] }
+}
+function loadOverrides(): Record<string, string[]> {
+  try { return JSON.parse(localStorage.getItem(OVERRIDE_SETS_KEY) ?? '{}') } catch { return {} }
+}
 
 function SpatialExplorerInner() {
   const t = useT()
@@ -55,6 +88,79 @@ function SpatialExplorerInner() {
   const [plotError, setPlotError]       = useState('')
   const [plotInfo, setPlotInfo]         = useState<{ n_cells?: number } | null>(null)
   const searchRef = useRef<HTMLDivElement>(null)
+
+  // ── Custom & override presets ─────────────────────────────────
+  const [customSets, setCustomSets]       = useState<PresetGeneSet[]>(loadCustomSets)
+  const [overrides, setOverrides]         = useState<Record<string, string[]>>(loadOverrides)
+  const [showNewSet, setShowNewSet]       = useState(false)
+  const [newSetName, setNewSetName]       = useState('')
+  const [editingLabel, setEditingLabel]   = useState<string | null>(null)  // non-null = edit mode
+
+  // All built-in labels (for override detection)
+  const builtinLabels = useMemo(() => new Set(PRESET_GENE_SETS.map(s => s.label)), [])
+
+  // Effective genes for a built-in set (override if present)
+  const effectiveGenes = (label: string, defaultGenes: string[]) =>
+    overrides[label] ?? defaultGenes
+
+  const openEditPreset = (ps: PresetGeneSet) => {
+    setSelectedGenes(effectiveGenes(ps.label, ps.genes))
+    setNewSetName(ps.label)
+    setEditingLabel(ps.label)
+    setShowNewSet(true)
+  }
+
+  const openEditCustom = (ps: PresetGeneSet) => {
+    setSelectedGenes([...ps.genes])
+    setNewSetName(ps.label)
+    setEditingLabel(ps.label)
+    setShowNewSet(true)
+  }
+
+  const saveSet = () => {
+    if (!newSetName.trim() || selectedGenes.length === 0) return
+    const name = newSetName.trim()
+
+    if (editingLabel !== null && builtinLabels.has(editingLabel)) {
+      // Editing a built-in set → save as override (keep same label even if renamed)
+      const updatedOverrides = { ...overrides, [editingLabel]: [...selectedGenes] }
+      // If user renamed it, also store under new label
+      if (name !== editingLabel) updatedOverrides[name] = [...selectedGenes]
+      setOverrides(updatedOverrides)
+      localStorage.setItem(OVERRIDE_SETS_KEY, JSON.stringify(updatedOverrides))
+    } else if (editingLabel !== null) {
+      // Editing a custom set → replace in-place
+      const updated = customSets.map(s =>
+        s.label === editingLabel ? { label: name, genes: [...selectedGenes] } : s
+      )
+      setCustomSets(updated)
+      localStorage.setItem(CUSTOM_SETS_KEY, JSON.stringify(updated))
+    } else {
+      // New custom set
+      const updated = [...customSets, { label: name, genes: [...selectedGenes] }]
+      setCustomSets(updated)
+      localStorage.setItem(CUSTOM_SETS_KEY, JSON.stringify(updated))
+    }
+
+    setNewSetName('')
+    setEditingLabel(null)
+    setShowNewSet(false)
+  }
+
+  const cancelEdit = () => { setShowNewSet(false); setNewSetName(''); setEditingLabel(null) }
+
+  const resetOverride = (label: string) => {
+    const updated = { ...overrides }
+    delete updated[label]
+    setOverrides(updated)
+    localStorage.setItem(OVERRIDE_SETS_KEY, JSON.stringify(updated))
+  }
+
+  const deleteCustomSet = (label: string) => {
+    const updated = customSets.filter(s => s.label !== label)
+    setCustomSets(updated)
+    localStorage.setItem(CUSTOM_SETS_KEY, JSON.stringify(updated))
+  }
 
   // ── Load available ROIs ───────────────────────────────────────
   const { data: roisData } = useQuery({
@@ -217,7 +323,7 @@ function SpatialExplorerInner() {
               value={searchText}
               onChange={e => { setSearchText(e.target.value); setShowDropdown(true) }}
               onFocus={() => setShowDropdown(true)}
-              placeholder={geneLoading ? t('spatial.loading_genes') : t('spatial.gene_placeholder')}
+              placeholder={geneLoading ? t('spatial.loading_genes') : selectedGenes.length >= MAX_GENES ? `已達上限 (${MAX_GENES})，請先移除基因` : t('spatial.gene_placeholder')}
               disabled={geneLoading || selectedGenes.length >= MAX_GENES}
               className="w-full bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 focus:border-primary focus:outline-none disabled:opacity-50"
             />
@@ -240,19 +346,104 @@ function SpatialExplorerInner() {
         </div>
 
         {/* Preset gene sets */}
-        <div>
-          <label className="block text-xs text-gray-400 mb-1.5">{t('spatial.presets')}</label>
-          <div className="flex flex-wrap gap-1.5">
-            {PRESET_GENE_SETS.map(ps => (
+        <div className="space-y-2">
+          <label className="block text-xs text-gray-400">{t('spatial.presets')}</label>
+          {PRESET_GROUPS.map(group => (
+            <div key={group.group} className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-gray-600 w-28 shrink-0">{group.group}</span>
+              {group.sets.map(ps => {
+                const isOverridden = !!overrides[ps.label]
+                return (
+                  <span key={ps.label} className="inline-flex items-center gap-0 group/ps">
+                    <button
+                      onClick={() => applyPreset({ ...ps, genes: effectiveGenes(ps.label, ps.genes) })}
+                      className={`px-2.5 py-0.5 rounded-l-full text-xs border transition-colors ${
+                        isOverridden
+                          ? 'border-amber-600/50 text-amber-400 hover:border-primary hover:text-primary'
+                          : 'border-surface-border text-gray-400 hover:border-primary hover:text-primary'
+                      }`}
+                      title={isOverridden ? `已修改：${overrides[ps.label]?.join(', ')}` : ps.genes.join(', ')}
+                    >
+                      {ps.label}{isOverridden && <span className="ml-1 text-amber-500">·</span>}
+                    </button>
+                    <button
+                      onClick={() => openEditPreset(ps)}
+                      className="px-1 py-0.5 text-xs border border-l-0 border-surface-border text-gray-700 hover:border-primary hover:text-primary opacity-0 group-hover/ps:opacity-100 transition-all"
+                      title="編輯基因"
+                    >✎</button>
+                    {isOverridden && (
+                      <button
+                        onClick={() => resetOverride(ps.label)}
+                        className="px-1 py-0.5 rounded-r-full text-xs border border-l-0 border-amber-600/40 text-amber-700 hover:text-red-400 hover:border-red-500 transition-colors"
+                        title="恢復預設"
+                      >↺</button>
+                    )}
+                    {!isOverridden && <span className="rounded-r-full border border-l-0 border-surface-border opacity-0 group-hover/ps:opacity-0" />}
+                  </span>
+                )
+              })}
+            </div>
+          ))}
+
+          {/* Custom presets */}
+          {(customSets.length > 0 || showNewSet) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-gray-600 w-28 shrink-0">Custom</span>
+              {customSets.map(ps => (
+                <span key={ps.label} className="inline-flex items-center gap-0.5">
+                  <button
+                    onClick={() => applyPreset(ps)}
+                    className="px-2.5 py-0.5 rounded-l-full text-xs border border-surface-border text-gray-400 hover:border-primary hover:text-primary transition-colors"
+                  >
+                    {ps.label}
+                  </button>
+                  <button
+                    onClick={() => openEditCustom(ps)}
+                    className="px-1 py-0.5 text-xs border border-l-0 border-surface-border text-gray-600 hover:border-primary hover:text-primary transition-colors"
+                    title="編輯"
+                  >✎</button>
+                  <button
+                    onClick={() => deleteCustomSet(ps.label)}
+                    className="px-1.5 py-0.5 rounded-r-full text-xs border border-l-0 border-surface-border text-gray-600 hover:border-red-500 hover:text-red-400 transition-colors"
+                    title="刪除"
+                  >×</button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* New / edit set form */}
+          {showNewSet ? (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-gray-600 w-28 shrink-0">
+                {editingLabel ? '編輯 Set' : '新增 Set'}
+              </span>
+              <input
+                type="text"
+                value={newSetName}
+                onChange={e => setNewSetName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') saveSet(); if (e.key === 'Escape') cancelEdit() }}
+                placeholder="Set 名稱"
+                autoFocus
+                className="w-32 px-2 py-0.5 bg-surface border border-surface-border rounded text-xs text-gray-200 focus:border-primary focus:outline-none"
+              />
+              <span className="text-xs text-gray-500">← {selectedGenes.length > 0 ? selectedGenes.join(', ') : '請先選基因'}</span>
               <button
-                key={ps.label}
-                onClick={() => applyPreset(ps)}
-                className="px-2.5 py-0.5 rounded-full text-xs border border-surface-border text-gray-400 hover:border-primary hover:text-primary transition-colors"
-              >
-                {ps.label}
-              </button>
-            ))}
-          </div>
+                onClick={saveSet}
+                disabled={!newSetName.trim() || selectedGenes.length === 0}
+                className="px-2.5 py-0.5 rounded-full text-xs border border-primary text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+              >儲存</button>
+              <button onClick={cancelEdit} className="text-xs text-gray-600 hover:text-gray-400">取消</button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <span className="w-28 shrink-0" />
+              <button
+                onClick={() => { setEditingLabel(null); setNewSetName(''); setShowNewSet(true) }}
+                className="px-2.5 py-0.5 rounded-full text-xs border border-dashed border-surface-border text-gray-600 hover:border-primary hover:text-primary transition-colors"
+              >+ 新增 Set</button>
+            </div>
+          )}
         </div>
 
         {/* Selected gene chips */}

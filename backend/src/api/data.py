@@ -19,10 +19,12 @@ class ScanRequest(BaseModel):
 
 
 class ApplyRequest(BaseModel):
+    data_root: Optional[str] = None
     he_image: Optional[str] = None
     binned_002: Optional[str] = None
     binned_008: Optional[str] = None
     output_dir: Optional[str] = None
+    pixel_size_um: Optional[float] = None
 
 
 @router.post("/scan")
@@ -44,17 +46,37 @@ async def apply_paths(req: ApplyRequest):
         paths = config.setdefault("paths", {})
         updates = req.model_dump(exclude_none=True)
 
+        pixel_size_um = updates.pop("pixel_size_um", None)
+
         for key, value in updates.items():
-            if value:  # 只更新非空值
+            if value is not None and value != "":
                 paths[key] = value
 
-        # 若有設定 output_dir，立即建立目錄
-        if "output_dir" in updates and updates["output_dir"]:
-            output_path = resolve_path(updates["output_dir"])
-            output_path.mkdir(parents=True, exist_ok=True)
-            logger.info(f"已建立輸出目錄：{output_path}")
+        # 只有當 request 明確帶入 data_root 時才自動設定輸出目錄
+        data_root_in_request = updates.get("data_root")
+        if data_root_in_request:
+            result_base = Path(os.path.expanduser(data_root_in_request)) / "MCseg_result"
+            paths["output_dir"] = str(result_base / "analysis")
+            paths["export_dir"] = str(result_base / "export")
+            paths["figure_dir"] = str(result_base / "figures")
+            logger.info(f"輸出目錄設為：{result_base}")
+        elif "output_dir" in updates and updates["output_dir"]:
+            logger.info(f"手動指定 output_dir：{updates['output_dir']}")
 
-        save_state({"paths": config["paths"]})
+        state_update: dict = {"paths": config["paths"]}
+        if pixel_size_um is not None:
+            config.setdefault("global", {})["pixel_size_um"] = pixel_size_um
+            state_update["global"] = config["global"]
+            logger.info(f"已更新 pixel_size_um = {pixel_size_um}")
+
+        # 先存 config，再建立目錄
+        save_state(state_update)
+
+        if data_root_in_request:
+            for subdir in ("analysis", "export", "figures"):
+                (result_base / subdir).mkdir(parents=True, exist_ok=True)
+        elif "output_dir" in updates and updates["output_dir"]:
+            resolve_path(updates["output_dir"]).mkdir(parents=True, exist_ok=True)
         logger.info(f"已套用 {len(updates)} 項路徑設定")
         return {"status": "ok", "message": f"已更新 {len(updates)} 項路徑", "data": paths}
     except Exception as e:
@@ -65,27 +87,35 @@ async def apply_paths(req: ApplyRequest):
 @router.get("/output-dir")
 async def get_output_dir():
     """取得目前輸出目錄設定"""
-    config = load_config()
-    paths = config.get("paths", {})
-    output_dir = paths.get("output_dir", "results/analysis")
-    resolved = str(resolve_path(output_dir))
-    return {"status": "ok", "data": {"output_dir": output_dir, "resolved": resolved}}
+    try:
+        config = load_config()
+        paths = config.get("paths", {})
+        output_dir = paths.get("output_dir", "results/analysis")
+        resolved = str(resolve_path(output_dir))
+        return {"status": "ok", "data": {"output_dir": output_dir, "resolved": resolved}}
+    except Exception as e:
+        logger.error(f"取得輸出目錄失敗：{e}")
+        return {"status": "error", "message": str(e)}
 
 
 @router.get("/status")
 async def get_data_status():
     """取得目前 paths 配置狀態（哪些已填、哪些為空）"""
-    config = load_config()
-    paths = config.get("paths", {})
-    required_keys = ["he_image", "binned_002", "binned_008"]
-    status = {}
-    for key in required_keys:
-        val = paths.get(key, "")
-        status[key] = {
-            "path": val,
-            "configured": bool(val),
-        }
-    return {"status": "ok", "data": status}
+    try:
+        config = load_config()
+        paths = config.get("paths", {})
+        required_keys = ["he_image", "binned_002", "binned_008"]
+        status = {}
+        for key in required_keys:
+            val = paths.get(key, "")
+            status[key] = {
+                "path": val,
+                "configured": bool(val),
+            }
+        return {"status": "ok", "data": status}
+    except Exception as e:
+        logger.error(f"取得資料狀態失敗：{e}")
+        return {"status": "error", "message": str(e)}
 
 
 @router.get("/disk-status")
@@ -93,7 +123,11 @@ async def get_disk_status():
     """
     掃描磁碟，回傳各 Stage 實際完成狀態（重啟後前端可據此恢復 UI 狀態）。
     """
-    config = load_config()
+    try:
+      config = load_config()
+    except Exception as e:
+        logger.error(f"disk-status 載入設定失敗：{e}")
+        return {"status": "error", "message": str(e)}
     paths = config.get("paths", {})
     output_dir = resolve_path(paths.get("output_dir", "results/analysis"))
 

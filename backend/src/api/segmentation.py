@@ -120,7 +120,7 @@ def _build_preview_mcseg_cfg(config: dict, req: PreviewRequest) -> dict:
 
 def _find_he_crop(config: dict, roi_name: str | None) -> Path | None:
     output_dir = config.get("paths", {}).get("output_dir", "results/analysis")
-    roi_base   = Path(output_dir) / "roi"
+    roi_base   = resolve_path(output_dir) / "roi"
 
     if roi_name:
         c = roi_base / roi_name / "he_crop.tif"
@@ -164,7 +164,7 @@ async def _run_segmentation(config: dict) -> None:
         _task_status = {"status": "done", "progress": 1.0, "message": "分割完成"}
     except Exception as e:
         logger.error(f"分割失敗：{e}", exc_info=True)
-        _task_status = {"status": "error", "progress": 0.0, "message": str(e)}
+        _task_status = {"status": "error", "progress": 0.0, "message": "分割失敗，請查閱 log"}
 
 
 @router.get("/status")
@@ -240,6 +240,16 @@ async def _run_full_segmentation(config: dict) -> None:
             store = tif.aszarr()
             z = _zarr.open(store, mode="r")
             arr = z if not isinstance(z, _zarr.Group) else z[0]
+            shape = arr.shape
+            h_img, w_img = shape[0], shape[1]
+            n_ch = shape[2] if len(shape) > 2 else 1
+            estimated_gb = h_img * w_img * n_ch / 1024 ** 3
+            if estimated_gb > 6.0:
+                raise MemoryError(
+                    f"全圖 {w_img}×{h_img}px ≈ {estimated_gb:.1f} GB，"
+                    f"超過安全載入上限（6 GB）。"
+                    f"請改用 ROI 裁切模式（Stage 0 + Stage 1）。"
+                )
             img = np.array(arr)
         if img.ndim == 3 and img.shape[-1] == 4:
             img = img[..., :3]
@@ -276,7 +286,12 @@ async def _run_full_segmentation(config: dict) -> None:
         }
     except Exception as e:
         logger.error(f"全圖分割失敗：{e}", exc_info=True)
-        _full_status = {"status": "error", "progress": 0.0, "message": str(e)}
+        if isinstance(e, MemoryError):
+            # MemoryError 訊息含有尺寸資訊但不含路徑，可安全回傳
+            safe_msg = str(e).split("，請改")[0] + "，請改用 ROI 裁切模式。"
+        else:
+            safe_msg = "全圖分割失敗，請查閱 log"
+        _full_status = {"status": "error", "progress": 0.0, "message": safe_msg}
 
 
 @router.get("/roi_overrides")
@@ -286,12 +301,23 @@ async def get_roi_overrides():
 
 @router.put("/roi_overrides")
 async def put_roi_overrides(body: dict):
+    from backend.src.segmentation.cellpose_runner import _ROI_OVERRIDE_FIELDS
+
     # 驗證 ROI 名稱：只允許已存在於 config 的 ROI，防止路徑穿越攻擊
     config = load_config()
     valid_names = {r.get("name", "") for r in config.get("rois", [])}
-    invalid = [k for k in body if k not in valid_names]
-    if invalid:
-        return {"status": "error", "message": f"未知的 ROI 名稱：{invalid}"}
+    invalid_names = [k for k in body if k not in valid_names]
+    if invalid_names:
+        return {"status": "error", "message": f"未知的 ROI 名稱：{invalid_names}"}
+
+    # 驗證每個 ROI 的覆寫欄位名稱
+    for roi_name, overrides in body.items():
+        if not isinstance(overrides, dict):
+            return {"status": "error", "message": f"ROI '{roi_name}' 的覆寫值必須是 dict"}
+        invalid_fields = [k for k in overrides if k not in _ROI_OVERRIDE_FIELDS]
+        if invalid_fields:
+            return {"status": "error", "message": f"ROI '{roi_name}' 包含未知欄位：{invalid_fields}"}
+
     save_state({"roi_seg_overrides": body})
     return {"status": "ok"}
 
@@ -365,7 +391,7 @@ async def run_preview(req: PreviewRequest):
         return result
     except Exception as e:
         logger.error(f"Preview 失敗：{e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": "預覽失敗，請查閱 log"}
 
 
 @router.post("/preview_preproc")
@@ -429,7 +455,7 @@ async def preview_preproc(req: PreviewRequest):
         }
     except Exception as e:
         logger.error(f"前處理預覽失敗：{e}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": "前處理預覽失敗，請查閱 log"}
 
 
 @router.get("/preview")
@@ -503,4 +529,5 @@ async def get_preview(roi_name: Optional[str] = None):
             },
         }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        logger.error(f"取得分割預覽失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "取得分割預覽失敗，請查閱 log"}

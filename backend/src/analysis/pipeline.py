@@ -1401,7 +1401,8 @@ def _run_result_visualizations_for_roi(
     total  = len(cell_types)
 
     def _save_spatial(canvas: np.ndarray, W: int, H: int,
-                      fname: str, key: str, title: str) -> None:
+                      fname: str, key: str, title: str,
+                      n_unlabeled: int = 0) -> None:
         dpi = 150
         fig, ax = plt.subplots(figsize=(W / dpi, H / dpi))
         ax.imshow(canvas)
@@ -1412,6 +1413,11 @@ def _run_result_visualizations_for_roi(
             )
             for ct in unique_types
         ]
+        if n_unlabeled > 0:
+            patches.append(mpatches.Patch(
+                color=(0.35, 0.35, 0.35),
+                label=f"Unlabeled  (n={n_unlabeled:,}, {n_unlabeled/total*100:.0f}%)",
+            ))
         ax.legend(handles=patches, loc="lower right", fontsize=7,
                   framealpha=0.8, markerscale=1)
         ax.set_title(title, fontsize=9, fontweight="bold")
@@ -1447,7 +1453,9 @@ def _run_result_visualizations_for_roi(
 
         # 建立 cell_id → RGB LUT（僅此 ROI 的細胞）
         max_id = int(seg_mask.max())
-        color_lut = np.zeros((max_id + 1, 3), dtype=np.float32)
+        UNLABELED_COLOR = np.array([0.35, 0.35, 0.35], dtype=np.float32)  # 深灰，易與背景區分
+        color_lut = np.full((max_id + 1, 3), UNLABELED_COLOR, dtype=np.float32)
+        color_lut[0] = 0.0  # cell_id=0 是背景，保持黑色
         for name, ct in zip(adata.obs_names[roi_mask_obs] if roi_mask_obs.any() else adata.obs_names,
                             roi_cell_types):
             cid = _get_cell_id(name)
@@ -1471,9 +1479,20 @@ def _run_result_visualizations_for_roi(
         canvas_outline[cell_boundary] = (
             color_lut[seg_mask[cell_boundary]] * 255
         ).clip(0, 255).astype(np.uint8)
+        # 計算此 ROI 中未標籤細胞數
+        labeled_ids = set()
+        for name, ct in zip(adata.obs_names[roi_mask_obs] if roi_mask_obs.any() else adata.obs_names,
+                            roi_cell_types):
+            cid = _get_cell_id(name)
+            if 0 < cid <= max_id:
+                labeled_ids.add(cid)
+        all_cell_ids = set(int(x) for x in np.unique(seg_mask) if x > 0)
+        n_unlabeled = len(all_cell_ids - labeled_ids)
+
         _save_spatial(canvas_outline, W, H,
                       f"result_spatial{suffix}.png", f"result_spatial{suffix}",
-                      f"{rn} — Cell-type Map (outline, n={n_roi:,})")
+                      f"{rn} — Cell-type Map (outline, n={n_roi:,})",
+                      n_unlabeled=n_unlabeled)
 
         # 1b. 實心填色 + 輪廓
         cell_rgb = color_lut[seg_mask]
@@ -1483,7 +1502,8 @@ def _run_result_visualizations_for_roi(
         canvas_filled = np.clip(blended * 255, 0, 255).astype(np.uint8)
         _save_spatial(canvas_filled, W, H,
                       f"result_spatial_filled{suffix}.png", f"result_spatial_filled{suffix}",
-                      f"{rn} — Cell-type Map (filled, n={n_roi:,})")
+                      f"{rn} — Cell-type Map (filled, n={n_roi:,})",
+                      n_unlabeled=n_unlabeled)
 
     # ── 2. UMAP（cell_type 顏色）────────────────────────────────────
     if "X_umap" in adata.obsm:
@@ -1530,7 +1550,7 @@ def _run_result_visualizations_for_roi(
                               key=lambda x: int(x) if x.isdigit() else x)
             for cl in clusters:
                 try:
-                    top = sc.get.rank_genes_groups_df(adata, group=cl, n_genes=5)
+                    top = sc.get.rank_genes_groups_df(adata, group=cl).iloc[:5]
                     genes = [g for g in top["names"].tolist() if g not in seen][:5]
                 except Exception:
                     genes = []
