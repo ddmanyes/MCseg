@@ -78,6 +78,16 @@ class Preprocessor:
             inplace=True
         )
 
+        # total_counts=0 的空細胞（分割偵測到但無 RNA）會使 pct_counts_mt=NaN，
+        # 應填為 0（無粒線體讀數），避免被粒線體過濾器意外移除。
+        n_empty = int((adata.obs["total_counts"] == 0).sum())
+        if n_empty:
+            logger.warning(
+                f"  ⚠ {n_empty:,} 個空細胞（total_counts=0）：分割偵測到但無 RNA 計入，"
+                "pct_counts_mt 已填為 0，將由 min_counts 門檻決定是否移除。"
+            )
+            adata.obs["pct_counts_mt"] = adata.obs["pct_counts_mt"].fillna(0)
+
         # [新增] Complexity Score: log10(Genes) / log10(Counts)
         # 用於衡量單細胞測序內容的豐富度，協助剔除低多樣性噪音
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -86,6 +96,7 @@ class Preprocessor:
             adata.obs['complexity'] = adata.obs['complexity'].replace([np.inf, -np.inf], 0).fillna(0)
 
         logger.info(f"  - 粒線體基因數: {adata.var['mt'].sum()}")
+        logger.info(f"  - 空細胞（total_counts=0）: {n_empty:,}")
         logger.info(f"  - 平均 UMI/細胞: {adata.obs['total_counts'].mean():.1f}")
         logger.info(f"  - 平均基因/細胞: {adata.obs['n_genes_by_counts'].mean():.1f}")
         logger.info(f"  - 平均複雜度 (Complexity): {adata.obs['complexity'].mean():.3f}")
