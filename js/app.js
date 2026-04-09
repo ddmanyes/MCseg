@@ -303,7 +303,7 @@ function bindExports() {
       setStatus('Generating mask PNG…');
       const url = await state.engine.exportMaskPNG();
       downloadURL(url, 'MCseg_mask.png');
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
       setStatus('Mask exported.');
     } catch (err) {
       setStatus(`Export error: ${err.message}`);
@@ -316,7 +316,7 @@ function bindExports() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url  = URL.createObjectURL(blob);
     downloadURL(url, 'MCseg_cells.csv');
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
     setStatus(`Exported ${state.engine.cells.length.toLocaleString()} cells.`);
   });
 }
