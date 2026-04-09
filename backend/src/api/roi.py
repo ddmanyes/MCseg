@@ -17,6 +17,7 @@ logger = logging.getLogger("pipeline.api.roi")
 
 # 任務狀態追蹤
 _task_status = {"status": "idle", "progress": 0.0, "message": ""}
+_extract_lock = asyncio.Lock()
 
 # DZI tile server singleton（避免重複開啟 BTF）
 _tile_server = None
@@ -99,7 +100,7 @@ async def get_overview():
         return {"status": "ok", "data": data}
     except Exception as e:
         logger.error(f"取得 overview 失敗：{e}")
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": "取得 overview 失敗，請檢查資料路徑設定"}
 
 
 async def _run_extract(config: dict):
@@ -109,19 +110,24 @@ async def _run_extract(config: dict):
     try:
         from backend.src.roi.extractor import RoiExtractor
         extractor = RoiExtractor(config)
-        await asyncio.get_event_loop().run_in_executor(None, extractor.run_all)
+        await asyncio.get_running_loop().run_in_executor(None, extractor.run_all)
         _task_status = {"status": "done", "progress": 1.0, "message": "裁切完成"}
     except Exception as e:
         logger.error(f"ROI 裁切失敗：{e}")
-        _task_status = {"status": "error", "progress": 0.0, "message": str(e)}
+        _task_status = {"status": "error", "progress": 0.0, "message": "ROI 裁切失敗，請查閱 log"}
 
 
 @router.post("/extract")
 async def run_extract(background_tasks: BackgroundTasks):
-    if _task_status["status"] == "running":
-        return {"status": "error", "message": "任務執行中"}
-    config = load_config()
-    background_tasks.add_task(_run_extract, config)
+    global _task_status
+    async with _extract_lock:
+        if _task_status["status"] == "running":
+            return {"status": "error", "message": "任務執行中"}
+        config = load_config()
+        _task_status["status"] = "running"
+        _task_status["progress"] = 0.0
+        _task_status["message"] = "準備裁切..."
+        background_tasks.add_task(_run_extract, config)
     return {"status": "ok", "message": "ROI 裁切已啟動"}
 
 
@@ -135,7 +141,7 @@ async def roi_dzi():
         return FastAPIResponse(content=ts.get_dzi(), media_type='application/xml')
     except Exception as e:
         logger.error(f"DZI descriptor 失敗：{e}")
-        return FastAPIResponse(content=f"<error>{e}</error>", status_code=500,
+        return FastAPIResponse(content="<error>DZI descriptor 產生失敗</error>", status_code=500,
                                media_type='application/xml')
 
 

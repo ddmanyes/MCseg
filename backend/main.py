@@ -32,6 +32,8 @@ from backend.src.api import (
 
 logger = logging.getLogger("pipeline.main")
 
+VALID_STAGES = frozenset({"global", "roi", "segmentation", "count", "analysis", "export"})
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -77,9 +79,14 @@ async def health():
 @app.get("/api/config")
 async def get_config():
     try:
-        return {"status": "ok", "data": load_config()}
+        cfg = load_config()
+        # Sanitize: strip internal filesystem paths before returning
+        paths = cfg.get("paths", {})
+        safe_paths = {k: str(v) for k, v in paths.items()} if paths else {}
+        return {"status": "ok", "data": {**cfg, "paths": safe_paths}}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        logger.error(f"Failed to load config: {e}")
+        return {"status": "error", "message": "設定載入失敗"}
 
 
 # ── WebSocket Log 串流 ───────────────────────────────────────
@@ -89,6 +96,9 @@ async def websocket_log(websocket: WebSocket, stage: str):
     前端連接此端點以接收指定 stage 的即時 log。
     stage 可為：global | roi | segmentation | count | analysis | export
     """
+    if stage not in VALID_STAGES:
+        await websocket.close(code=1008)  # Policy violation
+        return
     await websocket.accept()
     queue: asyncio.Queue = asyncio.Queue(maxsize=500)
     register_ws_queue(stage, queue)

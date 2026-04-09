@@ -122,22 +122,31 @@ def merge_masks_fast(base_mask: np.ndarray, new_mask: np.ndarray,
     """
     將 new_mask 中不重疊的細胞併入 base_mask（原地修改）。
     回傳 (base_mask, n_added)。
+
+    使用 regionprops 取 bounding box，在小 patch 上做 overlap 計算，
+    避免舊版 O(n_cells × H×W) 全圖布林掃描。
     """
+    from skimage.measure import regionprops
+
     next_id = int(base_mask.max()) + 1
     added = 0
     base_occupied = base_mask > 0
 
-    for nid in np.unique(new_mask)[1:]:   # skip 0
-        new_pixels = new_mask == nid
-        pixel_count = int(new_pixels.sum())
+    for prop in regionprops(new_mask):
+        pixel_count = prop.area
         if pixel_count < min_size:
             continue
-        overlap = int((base_occupied & new_pixels).sum())
+        r0, c0, r1, c1 = prop.bbox
+        nid = prop.label
+        crop_new  = new_mask[r0:r1, c0:c1] == nid
+        crop_base = base_occupied[r0:r1, c0:c1]
+        overlap = int((crop_base & crop_new).sum())
         if overlap / pixel_count < max_overlap_ratio:
-            empty = new_pixels & (~base_occupied)
+            empty = crop_new & ~crop_base
             if int(empty.sum()) >= min_size:
-                base_mask[empty] = next_id
-                base_occupied[empty] = True
+                rows_e, cols_e = np.where(empty)
+                base_mask[rows_e + r0, cols_e + c0] = next_id
+                base_occupied[rows_e + r0, cols_e + c0] = True
                 next_id += 1
                 added += 1
 

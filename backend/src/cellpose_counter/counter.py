@@ -121,12 +121,15 @@ def count_rna_per_cell(
     unique_cells = np.unique(seg_mask[seg_mask > 0])
     n_cells = len(unique_cells)
     logger.info(f"  Cellpose 細胞數：{n_cells}")
-    cell_id_to_row = {int(cid): i for i, cid in enumerate(unique_cells)}
+
+    # 向量化 LUT：O(max_id) 建立，O(n_assigned) 查詢，比 Python dict O(n) 快 10-100x
+    lut = np.zeros(int(unique_cells.max()) + 1, dtype=np.int32)
+    lut[unique_cells] = np.arange(n_cells, dtype=np.int32)
 
     # ── 6. 建立分配矩陣 A（n_cells × n_bins），稀疏 ──────────────────────
     assigned_bin_idx = np.where(in_cell_mask)[0]
-    assigned_cell_ids = bin_cell_ids[in_cell_mask]
-    row_idx = np.array([cell_id_to_row[int(cid)] for cid in assigned_cell_ids], dtype=np.int32)
+    assigned_cell_ids = bin_cell_ids[in_cell_mask].astype(np.int32)
+    row_idx = lut[assigned_cell_ids]
 
     A = sp.csr_matrix(
         (np.ones(len(row_idx), dtype=np.float32), (row_idx, assigned_bin_idx)),

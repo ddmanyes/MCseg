@@ -50,41 +50,38 @@ def _mask_to_geojson(
     將 segmentation_masks.npy 轉換為 GeoJSON FeatureCollection。
 
     座標：ROI 局部 µm（原點 = ROI 左上角），與 cellpose_cells.h5ad obsm['spatial'] 一致。
+    使用 regionprops 取 bounding box 後在小 patch 上做輪廓偵測，
+    避免 O(n_cells × H×W) 的全圖掃描。
     """
     import numpy as np
     from skimage import measure
 
     seg_mask = np.load(str(mask_path))
-    unique_ids = np.unique(seg_mask)
-    unique_ids = unique_ids[unique_ids > 0]   # 去掉背景 0
 
     features = []
-    for cid in unique_ids:
-        cell_mask = (seg_mask == cid).astype(np.uint8)
-        if cell_mask.sum() < min_area_px:
+    # regionprops 一次性計算 bounding box + area，避免逐細胞全圖掃描
+    for prop in measure.regionprops(seg_mask):
+        if prop.area < min_area_px:
             continue
+        cid = prop.label
+        r0, c0, r1, c1 = prop.bbox
 
-        # 找輪廓（skimage：row/col，padded 以捕捉邊緣細胞）
-        padded = np.pad(cell_mask, 1, mode="constant")
+        # 在 bounding box patch 上找輪廓（比全圖快數個量級）
+        cell_crop = (seg_mask[r0:r1, c0:c1] == cid).astype(np.uint8)
+        padded = np.pad(cell_crop, 1, mode="constant")
         contours = measure.find_contours(padded, 0.5)
         if not contours:
             continue
 
-        # 取最大輪廓
         contour = max(contours, key=len)
-        # 還原 padding offset，再轉成 (x, y) µm
-        # skimage contour = (row, col)，去掉 pad 偏移 1
+        # 還原 padding(1) + bounding box offset，再轉成 (x, y) µm
         xy_um = np.column_stack([
-            (contour[:, 1] - 1) * pixel_size_um,   # col → x
-            (contour[:, 0] - 1) * pixel_size_um,   # row → y
+            (contour[:, 1] - 1 + c0) * pixel_size_um,   # col → x
+            (contour[:, 0] - 1 + r0) * pixel_size_um,   # row → y
         ])
 
-        # 確保多邊形閉合
         if not np.allclose(xy_um[0], xy_um[-1]):
             xy_um = np.vstack([xy_um, xy_um[0]])
-
-        # 移除過度的點取樣簡化，保留原始精度以利 Xenium Explorer 顯示
-        xy_um = xy_um
 
         features.append({
             "type": "Feature",
@@ -267,8 +264,8 @@ async def _run_xenium(config: dict, req: ExportRequest):
         )
         _xenium_status = {"status": "done", "progress": 1.0, "message": "Xenium 匯出完成"}
     except Exception as e:
-        logger.error(f"Xenium 匯出失敗：{e}")
-        _xenium_status = {"status": "error", "progress": 0.0, "message": str(e)}
+        logger.error(f"Xenium 匯出失敗：{e}", exc_info=True)
+        _xenium_status = {"status": "error", "progress": 0.0, "message": "Xenium 匯出失敗，請查閱 log"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -398,27 +395,31 @@ async def _run_loupe(config: dict, req: ExportRequest):
         )
         _loupe_status = {"status": "done", "progress": 1.0, "message": "Loupe 匯出完成"}
     except Exception as e:
-        logger.error(f"Loupe 匯出失敗：{e}")
-        _loupe_status = {"status": "error", "progress": 0.0, "message": str(e)}
+        logger.error(f"Loupe 匯出失敗：{e}", exc_info=True)
+        _loupe_status = {"status": "error", "progress": 0.0, "message": "Loupe 匯出失敗，請查閱 log"}
 
 
 @router.post("/xenium")
 async def export_xenium(req: ExportRequest, background_tasks: BackgroundTasks):
+    global _xenium_status
     async with _xenium_lock:
         if _xenium_status["status"] == "running":
             return {"status": "error", "message": "任務執行中"}
-    config = load_config()
-    background_tasks.add_task(_run_xenium, config, req)
+        config = load_config()
+        _xenium_status = {"status": "running", "progress": 0.0, "message": "準備匯出..."}
+        background_tasks.add_task(_run_xenium, config, req)
     return {"status": "ok", "message": "Xenium 匯出已啟動"}
 
 
 @router.post("/loupe")
 async def export_loupe(req: ExportRequest, background_tasks: BackgroundTasks):
+    global _loupe_status
     async with _loupe_lock:
         if _loupe_status["status"] == "running":
             return {"status": "error", "message": "任務執行中"}
-    config = load_config()
-    background_tasks.add_task(_run_loupe, config, req)
+        config = load_config()
+        _loupe_status = {"status": "running", "progress": 0.0, "message": "準備匯出..."}
+        background_tasks.add_task(_run_loupe, config, req)
     return {"status": "ok", "message": "Loupe 匯出已啟動"}
 
 
@@ -534,8 +535,8 @@ async def get_result_images():
             if loaded:
                 _result_images = loaded
                 _result_status = {"status": "done", "progress": 1.0, "message": "已從磁碟載入結果圖"}
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"從磁碟載入結果圖失敗：{e}")
     if not _result_images:
         return {"status": "error", "message": "結果圖尚未產生，請先執行「生成結果圖」"}
     return {"status": "ok", "data": _result_images}
@@ -544,30 +545,30 @@ async def get_result_images():
 @router.post("/generate_result")
 async def generate_result(background_tasks: BackgroundTasks):
     global _result_status
-    if _result_status.get("status") == "running":
-        return {"status": "running", "message": "已在執行中"}
-    _result_status = {"status": "running", "progress": 0.0, "message": "生成結果視覺化中..."}
-    config = load_config()
-    background_tasks.add_task(_run_generate_result, config)
+    async with _result_lock:
+        if _result_status.get("status") == "running":
+            return {"status": "running", "message": "已在執行中"}
+        config = load_config()
+        _result_status = {"status": "running", "progress": 0.0, "message": "生成結果視覺化中..."}
+        background_tasks.add_task(_run_generate_result, config)
     return {"status": "started"}
 
 
 async def _run_generate_result(config: dict):
     global _result_status, _result_images
-    async with _result_lock:
-        set_current_stage("export")
-        try:
-            from backend.src.analysis.pipeline import run_result_visualizations
-            result = await asyncio.get_running_loop().run_in_executor(
-                None, run_result_visualizations, config
-            )
-            _result_images = result
-            _result_status = {
-                "status": "done",
-                "progress": 1.0,
-                "message": f"結果圖生成完成（{len(result)} 張）",
-            }
-        except Exception as e:
-            import traceback
-            logger.error(f"結果視覺化失敗：{e!r}\n{traceback.format_exc()}")
-            _result_status = {"status": "error", "progress": 0.0, "message": str(e)}
+    set_current_stage("export")
+    try:
+        from backend.src.analysis.pipeline import run_result_visualizations
+        result = await asyncio.get_running_loop().run_in_executor(
+            None, run_result_visualizations, config
+        )
+        _result_images = result
+        _result_status = {
+            "status": "done",
+            "progress": 1.0,
+            "message": f"結果圖生成完成（{len(result)} 張）",
+        }
+    except Exception as e:
+        import traceback
+        logger.error(f"結果視覺化失敗：{e!r}\n{traceback.format_exc()}")
+        _result_status = {"status": "error", "progress": 0.0, "message": "結果視覺化失敗，請查閱 log"}

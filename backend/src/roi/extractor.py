@@ -126,11 +126,13 @@ def read_btf_crop(
                                 (tx - tx0) * TW:(tx - tx0 + 1) * TW,
                             ] = raw.reshape(TH, TW, 3)
         else:
-            # 普通 TIFF：使用 tifffile 讀取（較慢但通用）
-            full = page.asarray()
-            if full.ndim == 2:
-                full = np.stack([full, full, full], axis=-1)
-            canvas[: (fy1 - fy0), : (fx1 - fx0)] = full[fy0:fy1, fx0:fx1, :3]
+            # 普通 TIFF 無 TileOffsets tag，無法做 tile-based 讀取
+            # 全圖載入（page.asarray()）可能導致 OOM（10-80 GB 檔案）
+            raise NotImplementedError(
+                f"TIFF 檔 '{btf_path}' 沒有 TileOffsets tag，無法進行 tile-based 讀取。\n"
+                "請將影像轉換為 BigTIFF tiled 格式：\n"
+                "  tifffile.imwrite(out, img, bigtiff=True, tile=(512, 512), compression='zlib')"
+            )
 
         # 精確裁切
         cx0 = fx0 - tx0 * TW
