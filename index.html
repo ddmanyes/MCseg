@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCseg — Visium HD Segmentation Platform</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ── Header ──────────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="logo-icon">⬡</div>
+      <div class="brand-text">
+        <h1>MCseg</h1>
+        <p>No-code Visium&nbsp;HD Segmentation</p>
+      </div>
+    </div>
+    <nav class="header-nav">
+      <button id="themeToggle" class="icon-btn" title="Toggle theme" aria-label="Toggle dark/light theme">🌙</button>
+    </nav>
+  </header>
+
+  <!-- ── App layout ──────────────────────────────────────────── -->
+  <div class="app-layout">
+
+    <!-- ── Sidebar ───────────────────────────────────────────── -->
+    <aside class="sidebar" aria-label="Control panel">
+
+      <!-- Step 1 -->
+      <section class="panel">
+        <h2 class="panel-title"><span class="step">1</span> Upload Data</h2>
+
+        <div class="upload-zone" id="imageUpload" role="button" tabindex="0"
+             aria-label="Upload H&E tissue image">
+          <div class="upload-icon">🔬</div>
+          <p class="upload-label" id="imageLabel">H&amp;E Tissue Image</p>
+          <p class="upload-hint">PNG · JPEG · TIFF</p>
+          <input type="file" id="imageFile" accept=".png,.jpg,.jpeg,.tif,.tiff"
+                 aria-hidden="true">
+        </div>
+
+        <div class="upload-zone" id="spatialUpload" role="button" tabindex="0"
+             aria-label="Upload spatial barcode CSV (optional)">
+          <div class="upload-icon">📍</div>
+          <p class="upload-label" id="spatialLabel">Spatial Barcodes</p>
+          <p class="upload-hint">CSV — optional</p>
+          <input type="file" id="spatialFile" accept=".csv,.tsv"
+                 aria-hidden="true">
+        </div>
+      </section>
+
+      <!-- Step 2 -->
+      <section class="panel">
+        <h2 class="panel-title"><span class="step">2</span> Parameters</h2>
+
+        <div class="param-group">
+          <label class="param-label" for="minArea">
+            <span class="param-name">Min Nucleus Area</span>
+            <span class="param-unit">px²</span>
+          </label>
+          <div class="slider-row">
+            <input type="range" id="minArea" min="10" max="500" value="50">
+            <output class="param-val" id="minAreaVal">50</output>
+          </div>
+        </div>
+
+        <div class="param-group">
+          <label class="param-label" for="maxArea">
+            <span class="param-name">Max Nucleus Area</span>
+            <span class="param-unit">px²</span>
+          </label>
+          <div class="slider-row">
+            <input type="range" id="maxArea" min="100" max="5000" value="2000">
+            <output class="param-val" id="maxAreaVal">2000</output>
+          </div>
+        </div>
+
+        <div class="param-group">
+          <label class="param-label" for="expansion">
+            <span class="param-name">Cell Expansion</span>
+            <span class="param-unit">px</span>
+          </label>
+          <div class="slider-row">
+            <input type="range" id="expansion" min="2" max="30" value="8">
+            <output class="param-val" id="expansionVal">8</output>
+          </div>
+        </div>
+
+        <div class="param-group">
+          <label class="param-label" for="sensitivity">
+            <span class="param-name">Nucleus Sensitivity</span>
+            <span class="param-unit"></span>
+          </label>
+          <div class="slider-row">
+            <input type="range" id="sensitivity" min="0" max="100" value="50">
+            <output class="param-val" id="sensitivityVal">50</output>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 3 -->
+      <section class="panel">
+        <h2 class="panel-title"><span class="step">3</span> Run Segmentation</h2>
+
+        <button id="runBtn" class="run-btn" disabled>
+          <span class="run-icon">▶</span> Run MCseg
+        </button>
+
+        <div id="progressContainer" class="progress-container hidden" aria-live="polite">
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFill" role="progressbar"
+                 aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+          </div>
+          <p class="progress-label" id="progressLabel">Processing…</p>
+        </div>
+      </section>
+
+      <!-- Step 4 -->
+      <section class="panel">
+        <h2 class="panel-title"><span class="step">4</span> Results</h2>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-value" id="cellCount">–</span>
+            <span class="stat-label">Cells</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="avgArea">–</span>
+            <span class="stat-label">Avg Area</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="barcodeCount">–</span>
+            <span class="stat-label">Barcodes</span>
+          </div>
+        </div>
+
+        <div class="export-row">
+          <button id="exportMaskBtn" class="export-btn" disabled>⬇ Mask PNG</button>
+          <button id="exportCsvBtn"  class="export-btn" disabled>⬇ Cells CSV</button>
+        </div>
+      </section>
+
+    </aside>
+
+    <!-- ── Main canvas area ──────────────────────────────────── -->
+    <main class="canvas-area">
+
+      <!-- Toolbar -->
+      <div class="toolbar" role="toolbar" aria-label="View controls">
+        <div class="view-btns">
+          <button class="view-btn active" id="viewOriginal">Original</button>
+          <button class="view-btn" id="viewOverlay">Overlay</button>
+          <button class="view-btn" id="viewBorders">Borders</button>
+          <button class="view-btn" id="viewMask">Mask</button>
+        </div>
+        <div class="zoom-btns">
+          <button class="zoom-btn" id="zoomIn"  title="Zoom in"  aria-label="Zoom in">+</button>
+          <button class="zoom-btn" id="zoomOut" title="Zoom out" aria-label="Zoom out">−</button>
+          <button class="zoom-btn" id="zoomFit" title="Fit view" aria-label="Fit to view">⊡</button>
+        </div>
+      </div>
+
+      <!-- Canvas -->
+      <div class="canvas-container" id="canvasContainer">
+        <canvas id="mainCanvas" aria-label="Tissue image viewer"></canvas>
+        <div class="empty-state" id="emptyState" aria-hidden="false">
+          <div class="empty-icon">🔬</div>
+          <p class="empty-title">Upload an H&amp;E image to begin</p>
+          <p class="empty-hint">Drag &amp; drop or click the upload zone</p>
+        </div>
+      </div>
+
+      <!-- Status bar -->
+      <div class="status-bar" aria-live="polite">
+        <span id="cursorPos">x: –  y: –</span>
+        <span id="zoomLevelDisp">100%</span>
+        <span id="statusMsg" class="status-msg">Ready</span>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="js/utils.js"></script>
+  <script src="js/segmentation.js"></script>
+  <script src="js/visualization.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
