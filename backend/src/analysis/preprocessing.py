@@ -123,11 +123,11 @@ class Preprocessor:
 
         # 最大基因數過濾 (排除 doublets)
         if max_genes:
-            adata = adata[adata.obs["n_genes_by_counts"] < max_genes, :].copy()
+            adata = adata[adata.obs["n_genes_by_counts"] <= max_genes, :].copy()
 
         # 粒線體過濾
         if "pct_counts_mt" in adata.obs.columns:
-            adata = adata[adata.obs["pct_counts_mt"] < max_pct_mito, :].copy()
+            adata = adata[adata.obs["pct_counts_mt"] <= max_pct_mito, :].copy()
 
         # 複雜度過濾
         if min_complexity > 0 and "complexity" in adata.obs.columns:
