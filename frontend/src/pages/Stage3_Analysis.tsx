@@ -230,7 +230,7 @@ export default function Stage4_Analysis() {
     min_genes: 10, max_genes: 8000,
     min_counts: 5, min_cells: 3,
     max_pct_mito: 80.0, n_top_genes: 2000, n_pcs: 30,
-    min_complexity: 0.8,
+    min_complexity: 0.0,
   })
 
   // ── UMAP 參數 ──
@@ -794,7 +794,7 @@ export default function Stage4_Analysis() {
           <NumberField label={t('stage3.qc.max_pct_mito')} value={qcParams.max_pct_mito}
             onChange={v => setQcParams(p => ({ ...p, max_pct_mito: v }))} step={0.5} min={0} />
           <NumberField label={t('stage3.qc.min_complexity')} value={qcParams.min_complexity}
-            onChange={v => setQcParams(p => ({ ...p, min_complexity: v }))} step={0.01} min={0} hint="建議 0.8 以上" />
+            onChange={v => setQcParams(p => ({ ...p, min_complexity: v }))} step={0.01} min={0} hint="Spatial 建議 0（關閉）；scRNA-seq 建議 0.8" />
           <NumberField label={t('stage3.qc.n_top_genes')} value={qcParams.n_top_genes}
             onChange={v => setQcParams(p => ({ ...p, n_top_genes: v }))} min={100} />
           <NumberField label={t('stage3.qc.n_pcs')} value={qcParams.n_pcs}

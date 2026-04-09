@@ -58,7 +58,7 @@ analysis:
       max_genes: 8000
       min_cells: 5
       max_pct_mito: 80.0
-      min_complexity: 0.8          # [新增] 剔除低多樣性噪音 (log10 Genes / log10 Counts)
+      min_complexity: 0.0          # Spatial 資料預設關閉（0.0=不過濾）；scRNA-seq 建議 0.8
       mito_prefix: MT-
       min_counts: 5
     normalization:

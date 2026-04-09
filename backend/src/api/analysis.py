@@ -36,6 +36,7 @@ class QCParams(BaseModel):
     max_genes: Optional[int] = None
     min_cells: Optional[int] = None
     max_pct_mito: Optional[float] = None
+    min_complexity: Optional[float] = None   # 0.0 = 關閉；Spatial 資料建議 0.0
     n_top_genes: Optional[int] = None
     n_pcs: Optional[int] = None
     merge_rois: Optional[bool] = None    # None = 使用 config 預設
@@ -642,11 +643,12 @@ def _patch_config_from_qc_params(config: dict, params: QCParams):
     cfg = config.setdefault("analysis", {})
     pre = cfg.setdefault("preprocessing", {})
     cellular = pre.setdefault("cellular", {})
-    if params.min_genes is not None:     cellular["min_genes"] = params.min_genes
-    if params.min_counts is not None:    cellular["min_counts"] = params.min_counts
-    if params.max_genes is not None:     cellular["max_genes"] = params.max_genes
-    if params.min_cells is not None:     cellular["min_cells"] = params.min_cells
-    if params.max_pct_mito is not None:  cellular["max_pct_mito"] = params.max_pct_mito
+    if params.min_genes is not None:      cellular["min_genes"] = params.min_genes
+    if params.min_counts is not None:     cellular["min_counts"] = params.min_counts
+    if params.max_genes is not None:      cellular["max_genes"] = params.max_genes
+    if params.min_cells is not None:      cellular["min_cells"] = params.min_cells
+    if params.max_pct_mito is not None:   cellular["max_pct_mito"] = params.max_pct_mito
+    if params.min_complexity is not None: cellular["min_complexity"] = params.min_complexity
     hvg = pre.setdefault("hvg", {})
     if params.n_top_genes is not None:   hvg["n_top_genes"] = params.n_top_genes
     clus = cfg.setdefault("clustering", {})
