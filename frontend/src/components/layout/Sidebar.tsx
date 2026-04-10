@@ -34,7 +34,7 @@ export default function Sidebar() {
   return (
     <aside className="w-52 bg-surface-card border-r border-surface-border flex flex-col py-4">
       <div className="px-4 mb-6">
-        <h1 className="text-sm font-bold text-primary leading-tight">MSseg</h1>
+        <h1 className="text-sm font-bold text-primary leading-tight">MCseg</h1>
         <p className="text-xs text-gray-400">MCseg v2</p>
       </div>
       <nav className="flex-1 space-y-1 px-2">

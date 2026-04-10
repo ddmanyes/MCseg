@@ -4,7 +4,7 @@ type TransDict = Record<string, Record<Lang, string>>
 
 export const translations: TransDict = {
   // ── TopNav ──────────────────────────────────────────────────────────────
-  'nav.title':          { zh: 'MSseg',   en: 'MSseg' },
+  'nav.title':          { zh: 'MCseg',   en: 'MCseg' },
   'nav.settings':       { zh: '設定',    en: 'Settings' },
   'nav.lang.zh':        { zh: '中文',    en: '中文' },
   'nav.lang.en':        { zh: 'English', en: 'English' },

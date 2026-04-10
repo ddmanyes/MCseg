@@ -14,7 +14,7 @@ export default function Header() {
   return (
     <header className="h-12 border-b border-surface-border flex items-center px-6 bg-surface-card flex-shrink-0">
       <h2 className="text-sm font-semibold text-gray-200">
-        {TITLES[pathname] ?? 'MSseg'}
+        {TITLES[pathname] ?? 'MCseg'}
       </h2>
     </header>
   )
