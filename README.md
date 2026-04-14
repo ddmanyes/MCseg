@@ -27,9 +27,23 @@ analysis/
 │   ├── analysis/     # Core analysis pipeline (01–08)
 │   └── figures/      # Figure generation scripts (fig1–fig4, suppfigs)
 ├── data/             # Per-ROI metrics CSV files
-├── supplementary/    # Supplementary Note 1, Table S1, Table S2
-└── manuscript/       # Manuscript source (manuscript.md)
+└── supplementary/    # Supplementary Note 1, Table S1, Table S2
 ```
+
+> **Manuscript**: The full manuscript will be linked here upon publication. Preprint / DOI to be added.
+
+### AI-Autonomous Discovery (AutoResearch)
+
+MCseg v2 was developed by running an AI agent loop over ~80 overnight cycles. The agent iteratively proposed, implemented, and scored segmentation architectures against Xenium ground truth—converging on the multi-model ensemble without human intervention.
+
+Templates for adapting this paradigm to your own segmentation problem are provided in [`docs/autoResearch/`](docs/autoResearch/):
+
+| File | Description |
+|------|-------------|
+| [`README.md`](docs/autoResearch/README.md) | Overview and adaptation guide |
+| [`program.md`](docs/autoResearch/program.md) | Agent task specification template |
+| [`segment_template.py`](docs/autoResearch/segment_template.py) | Sandbox starter script (MCseg v2 helpers included) |
+| [`run_agent.py`](docs/autoResearch/run_agent.py) | Agent runner using the Anthropic API |
 
 ### Data Availability
 
