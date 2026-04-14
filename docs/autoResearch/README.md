@@ -2,7 +2,7 @@
 
 This directory contains the prompt template, agent runner, and starter script used to develop **MCseg v2** via AI-autonomous architecture search, as described in:
 
-> *MCseg: High-Fidelity Visium HD Cell Segmentation via AI-Autonomous Pipeline Discovery*
+> *MCseg: End-to-End Visium HD Analysis with AI-Optimised Ensemble Cell Segmentation*
 
 ## Overview
 
@@ -73,7 +73,8 @@ export ANTHROPIC_API_KEY=your_key_here
 If you use this framework in your work, please cite:
 
 ```
-[manuscript citation TBD upon acceptance]
+Chan, C.-R. (詹麒儒), et al. MCseg: End-to-End Visium HD Analysis with
+AI-Optimised Ensemble Cell Segmentation. Bioinformatics (under review), 2026.
 ```
 
 And the original AutoResearch concept:
