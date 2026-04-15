@@ -166,50 +166,121 @@ async def _run_xenium(config: dict, req: ExportRequest):
         active_roi = adata_head.uns.get("active_roi", None) if "active_roi" in adata_head.uns else None
         del adata_head # Release backed file handle
 
-        combined_poly_path: "Path | None" = None
-
         if is_merged_mode:
-            logger.info(f"合併模式（{len(rois)} 個 ROI），根據 h5ad 的 obs_names 判定")
-            all_features: list = []
-            for roi in rois:
+            # ── 多 ROI 模式：每個 ROI 獨立輸出一個 Xenium bundle ──────────────
+            # 使用各 ROI 的 he_crop.tif（已裁切，座標從 (0,0) 開始），
+            # 避免全域座標偏移的複雜性，確保影像與多邊形對齊。
+            logger.info(f"合併模式（{len(rois)} 個 ROI）：每個 ROI 獨立匯出 Xenium bundle")
+            import scanpy as sc
+
+            adata_full = sc.read_h5ad(str(h5ad_path))
+            logger.info(f"載入完整 h5ad：{len(adata_full)} 個細胞")
+
+            exported_dirs: list[str] = []
+            n_rois = len(rois)
+
+            for roi_idx, roi in enumerate(rois):
                 rn = roi.get("name", "")
                 if not rn:
                     continue
                 roi_out_dir   = output_dir_base / "roi" / rn
-                mask_path   = roi_out_dir / "segmentation_masks.npy"
+                mask_path     = roi_out_dir / "segmentation_masks.npy"
                 pixel_size_um = float(roi.get("pixel_size_um", VISIUM_UM_PX))
 
-                if mask_path.exists():
-                    logger.info(f"  [{rn}] 使用 MCseg v2 遮罩生成多邊形")
-                    roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
-                else:
+                _xenium_status = {
+                    "status": "running",
+                    "progress": roi_idx / n_rois,
+                    "message": f"ROI {rn}（{roi_idx + 1}/{n_rois}）匯出中…",
+                }
+
+                if not mask_path.exists():
                     logger.warning(f"  [{rn}] 找不到 segmentation_masks.npy，跳過")
                     continue
 
-                # 加入全域座標偏移
-                roi_x_um = roi.get("x", 0) * roi.get("pixel_size_um", VISIUM_UM_PX)
-                roi_y_um = roi.get("y", 0) * roi.get("pixel_size_um", VISIUM_UM_PX)
-                for feat in roi_geo.get("features", []):
-                    orig_id = feat["properties"].get("full_id", "")
-                    feat["properties"]["full_id"] = f"{rn}__{orig_id}"
-                    _shift_geojson_coords(feat, roi_x_um, roi_y_um)
-                    all_features.append(feat)
+                # 1. 生成 ROI 局部 µm 的 GeoJSON（無全域偏移）
+                logger.info(f"  [{rn}] 生成多邊形…")
+                roi_geo = _mask_to_geojson(mask_path, pixel_size_um)
+                poly_path = roi_out_dir / "cellpose_polygons.json"
+                with open(poly_path, "w", encoding="utf-8") as f:
+                    json.dump(roi_geo, f)
                 logger.info(f"  [{rn}] {len(roi_geo['features'])} 個多邊形")
 
-            combined_poly_path = output_dir_base / "combined_cellpose_polygons.json"
-            with open(combined_poly_path, "w", encoding="utf-8") as f:
-                json.dump({"type": "FeatureCollection", "features": all_features}, f)
+                # 2. 生成 ROI 局部 µm 的轉錄點 CSV（無全域偏移）
+                tx_path = None
+                adata_002um_path = roi_out_dir / "adata_002um.h5ad"
+                if adata_002um_path.exists():
+                    tx_path = _generate_visiumhd_transcripts(
+                        adata_002um_path,
+                        roi,
+                        roi_out_dir / "transcripts_roi.csv",
+                        pixel_size_um,
+                    )
 
-            roi_pixel_size_um = rois[0].get("pixel_size_um", VISIUM_UM_PX) if rois else VISIUM_UM_PX
+                # 3. 從完整 h5ad 取出此 ROI 的子集，重命名 obs_names 為 "cell_N" 格式
+                #    以匹配 GeoJSON 的 full_id（mask 輸出為純數字 "N"）
+                roi_col = adata_full.obs.get("roi", adata_full.obs.get("roi_name", None))
+                if roi_col is not None:
+                    roi_mask_bool = roi_col.astype(str) == str(rn)
+                else:
+                    # fallback：透過 obs_names 前綴篩選
+                    roi_mask_bool = adata_full.obs_names.str.startswith(f"{rn}__")
+                adata_roi = adata_full[roi_mask_bool].copy()
 
-            he_image_path = resolve_path(paths.get("he_image", "")) if paths.get("he_image") else None
-            he_crop_bounds = None
-            if he_image_path and rois:
-                _x0 = min(r.get("x", 0) for r in rois)
-                _y0 = min(r.get("y", 0) for r in rois)
-                _x1 = max(r.get("x", 0) + r.get("width_px", 0) for r in rois)
-                _y1 = max(r.get("y", 0) + r.get("height_px", 0) for r in rois)
-                he_crop_bounds = (_x0, _y0, _x1, _y1)
+                if len(adata_roi) == 0:
+                    logger.warning(f"  [{rn}] h5ad 中無此 ROI 的細胞，跳過")
+                    continue
+
+                # 將 "1__cell_7" → "cell_7"，讓 exporter 的 "cell_N" fallback 對應上
+                renamed = []
+                for nm in adata_roi.obs_names:
+                    if "__cell_" in nm:
+                        renamed.append(f"cell_{nm.split('__cell_')[1]}")
+                    else:
+                        logger.warning(
+                            f"  [{rn}] obs_name '{nm}' 不含 '__cell_'，"
+                            f"保留原名（可能與 GeoJSON full_id 不符）"
+                        )
+                        renamed.append(nm)
+                adata_roi.obs_names = renamed
+                roi_h5ad_path = roi_out_dir / "export_subset.h5ad"
+                adata_roi.write_h5ad(str(roi_h5ad_path))
+                logger.info(f"  [{rn}] 子集 h5ad：{len(adata_roi)} 個細胞")
+
+                # 4. H&E 底圖：使用已裁切好的 he_crop.tif（座標從 (0,0) 開始）
+                he_path = roi_out_dir / "he_crop.tif"
+
+                # 5. 執行匯出，完成後清理臨時 h5ad
+                roi_xenium_dir = export_dir / "xenium" / f"roi_{rn}"
+                exporter = XeniumExporter(
+                    zarr_path=None,
+                    poly_json_path=poly_path if poly_path.exists() else None,
+                    transcripts_csv_path=tx_path if (tx_path and tx_path.exists()) else None,
+                    pixel_size_um=pixel_size_um,
+                    he_image_path=he_path if he_path.exists() else None,
+                    he_crop_bounds=None,  # he_crop.tif 已裁切，無需偏移
+                )
+                try:
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, exporter.export, roi_h5ad_path, roi_xenium_dir,
+                    )
+                    exported_dirs.append(str(roi_xenium_dir))
+                    logger.info(f"  [{rn}] Xenium bundle 完成：{roi_xenium_dir}")
+                except Exception as roi_exc:
+                    logger.error(f"  [{rn}] Xenium 匯出失敗，跳過此 ROI：{roi_exc}", exc_info=True)
+                finally:
+                    # 臨時子集 h5ad 無論成功或失敗均清除
+                    if roi_h5ad_path.exists():
+                        try:
+                            roi_h5ad_path.unlink()
+                        except OSError:
+                            pass
+
+            _xenium_status = {
+                "status": "done",
+                "progress": 1.0,
+                "message": f"Xenium 匯出完成（{len(exported_dirs)} 個 ROI bundle）",
+            }
+            return
 
         else:
             roi_name    = active_roi or (rois[-1].get("name", "") if rois else "")
@@ -246,15 +317,16 @@ async def _run_xenium(config: dict, req: ExportRequest):
             else:
                 logger.info("未找到 adata_002um.h5ad，不匯出 transcripts 層。")
 
+        # ── 單 ROI 模式：直接匯出 ──────────────────────────────────────────────
         if req.output_dir:
             out_dir = Path(req.output_dir)
         else:
-            out_dir = export_dir / "xenium" if is_merged_mode else roi_out_dir / "export_xenium"
+            out_dir = roi_out_dir / "export_xenium"
 
         exporter = XeniumExporter(
             zarr_path=None,
             poly_json_path=combined_poly_path if (combined_poly_path and combined_poly_path.exists()) else None,
-            transcripts_csv_path=transcripts_csv_path if not is_merged_mode else None,
+            transcripts_csv_path=transcripts_csv_path if (transcripts_csv_path and transcripts_csv_path.exists()) else None,
             pixel_size_um=roi_pixel_size_um,
             he_image_path=he_image_path,
             he_crop_bounds=he_crop_bounds,
@@ -479,6 +551,21 @@ def _generate_visiumhd_transcripts(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(str(out_path), index=False)
         logger.info(f"已寫出 {len(df):,} 個 Visium HD 轉錄點至 {out_path}")
+
+        # 診斷：確認轉錄點座標範圍與 ROI 一致
+        roi_w_um = roi_cfg.get("width_px", 0) * pixel_size_um
+        roi_h_um = roi_cfg.get("height_px", 0) * pixel_size_um
+        x_out = df["x"].values; y_out = df["y"].values
+        logger.info(
+            f"轉錄點座標範圍 x=[{x_out.min():.1f}, {x_out.max():.1f}] µm，"
+            f"y=[{y_out.min():.1f}, {y_out.max():.1f}] µm"
+        )
+        logger.info(f"ROI 物理尺寸 {roi_w_um:.1f} × {roi_h_um:.1f} µm")
+        if x_out.max() > roi_w_um * 1.1 or y_out.max() > roi_h_um * 1.1:
+            logger.warning(
+                "⚠️ 轉錄點超出 ROI 範圍！可能是 roi_x0/roi_y0 未正確套用，"
+                "請確認 adata_002um.h5ad 的 obsm['spatial'] 使用 global fullres px 座標"
+            )
         return out_path
 
     except Exception as exc:

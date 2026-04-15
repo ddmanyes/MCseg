@@ -332,8 +332,18 @@ class XeniumExporter:
             # (y, x, c) → (c, y, x)，只取 RGB
             raw = da.transpose(raw, (2, 0, 1))[:3]
 
-            # Transform：scale pixel→µm
-            transform = Scale([self.pixel_size_um, self.pixel_size_um], axes=("y", "x"))
+            # Transform：Sequence([Scale, Translation])
+            # Scale: image pixel → µm
+            # Translation: 加上 crop 左上角的全域偏移（µm），確保影像原點對齊多邊形全域座標
+            ps = self.pixel_size_um
+            from spatialdata.transformations import Sequence, Translation
+            if x0 != 0 or y0 != 0:
+                transform = Sequence([
+                    Scale([ps, ps], axes=("y", "x")),
+                    Translation([y0 * ps, x0 * ps], axes=("y", "x")),
+                ])
+            else:
+                transform = Scale([ps, ps], axes=("y", "x"))
 
             sd_image = Image2DModel.parse(
                 raw,
@@ -342,8 +352,8 @@ class XeniumExporter:
             )
             logger.info(
                 f"  H&E 影像載入完成，crop={crop_w}×{crop_h} px，"
-                f"pixel_size={self.pixel_size_um:.4f} µm/px，"
-                f"offset=({x0 * self.pixel_size_um:.1f}, {y0 * self.pixel_size_um:.1f}) µm"
+                f"pixel_size={ps:.4f} µm/px，"
+                f"全域偏移=({x0 * ps:.1f}, {y0 * ps:.1f}) µm"
             )
             return sd_image
 
@@ -397,8 +407,8 @@ class XeniumExporter:
         if "cell_id" in adata.obs.columns:
             for obs_name, cid in zip(adata.obs_names, adata.obs["cell_id"]):
                 id_to_obs[str(int(cid))] = obs_name
-        
-        # 處理 'cell_N' 格式的對應
+
+        # 處理 'cell_N' 格式的對應（單 ROI）
         for name in adata.obs_names:
             if name.startswith("cell_"):
                 try:
@@ -406,6 +416,14 @@ class XeniumExporter:
                     id_to_obs[num_id] = name
                 except Exception:
                     pass
+
+        # Merge 模式：obs_names 為 "{roi}__cell_{N}"，GeoJSON full_id 為 "{roi}__{N}"
+        # 補上 "{roi}__{N}" → "{roi}__cell_{N}" 的映射
+        for name in adata.obs_names:
+            if "__cell_" in name:
+                parts = name.split("__cell_", 1)
+                if len(parts) == 2:
+                    id_to_obs[f"{parts[0]}__{parts[1]}"] = name
 
         features = geo_data.get("features", [])
         polygons: list = []
@@ -434,7 +452,7 @@ class XeniumExporter:
                         if f_id in id_to_obs: full_id = id_to_obs[f_id]
                         elif f"cell_{f_id}" in obs_set: full_id = f"cell_{f_id}"
                         else: continue
-                    except: continue
+                    except Exception: continue
             else:
                 full_id = id_to_obs[str_id]
 
@@ -625,12 +643,16 @@ class XeniumExporter:
         from spatialdata.transformations import Scale
 
         # 從多邊形邊界框推算影像範圍（µm → pixel）
+        ps = self.pixel_size_um
+        margin_um = 50.0
         if sd_shapes is not None and len(sd_shapes) > 0:
             bounds = sd_shapes.total_bounds  # (minx, miny, maxx, maxy) in µm
-            margin_um = 50.0
-            width_px = max(1, int((bounds[2] - bounds[0] + 2 * margin_um) / self.pixel_size_um))
-            height_px = max(1, int((bounds[3] - bounds[1] + 2 * margin_um) / self.pixel_size_um))
+            x0_um = bounds[0] - margin_um
+            y0_um = bounds[1] - margin_um
+            width_px = max(1, int((bounds[2] - bounds[0] + 2 * margin_um) / ps))
+            height_px = max(1, int((bounds[3] - bounds[1] + 2 * margin_um) / ps))
         else:
+            x0_um, y0_um = 0.0, 0.0
             width_px, height_px = 512, 512
 
         # 限制最大大小避免 OOM（超大影像區域用稀疏表示即可）
@@ -639,15 +661,25 @@ class XeniumExporter:
         height_px = min(height_px, MAX_PX)
 
         logger.info(
-            f"建立佔位影像（{height_px}×{width_px} px，pixel_size={self.pixel_size_um} µm/px）"
+            f"建立佔位影像（{height_px}×{width_px} px，pixel_size={ps} µm/px，"
+            f"全域偏移=({x0_um:.1f}, {y0_um:.1f}) µm）"
         )
         dummy = da.zeros((1, height_px, width_px), dtype=np.uint8, chunks=(1, 2048, 2048))
+
+        # 加入 Translation 讓佔位影像與多邊形全域座標對齊
+        from spatialdata.transformations import Sequence, Translation
+        if x0_um != 0.0 or y0_um != 0.0:
+            transform = Sequence([
+                Scale([ps, ps], axes=("y", "x")),
+                Translation([y0_um, x0_um], axes=("y", "x")),
+            ])
+        else:
+            transform = Scale([ps, ps], axes=("y", "x"))
+
         return Image2DModel.parse(
             dummy,
             dims=("c", "y", "x"),
-            transformations={
-                "global": Scale([self.pixel_size_um, self.pixel_size_um], axes=("y", "x"))
-            },
+            transformations={"global": transform},
         )
 
     def _patch_experiment_xenium(self, out_xenium_dir: Path, pixel_size: float) -> None:
@@ -682,6 +714,202 @@ class XeniumExporter:
             )
         except Exception as exc:
             logger.error(f"修補 experiment.xenium 失敗：{exc}")
+
+    @staticmethod
+    def _patch_cell_summary_centroids(out_xenium_dir: Path) -> None:
+        """
+        修補 cells.zarr.zip 中的 cell_summary 中心點欄位。
+
+        spatialdata_xenium_explorer 寫出的 cell_summary 僅填入 cell_area（col 2），
+        cell_centroid_x（col 0）與 cell_centroid_y（col 1）均為 0。
+        從 polygon_vertices（interleaved x,y 格式）計算真實中心點並寫回，
+        讓 Xenium Explorer 能正確顯示細胞位置與 annotation 群組對應。
+
+        polygon_vertices 格式：shape=(2, n_cells, n_coords)
+          - dim 0: z_level（2D 時兩層相同）
+          - dim 1: cell index
+          - dim 2: interleaved (x0, y0, x1, y1, ...) 座標，單位為影像局部 µm
+        polygon_num_vertices 格式：shape=(2, n_cells)，每個 cell 的實際頂點數
+
+        採用 copy_store + MemoryStore 策略：
+        1. 將整個 ZipStore 複製到 MemoryStore（zarr.convenience.copy_store 複製原始 chunk bytes，
+           完整保留 spatialdata_xenium_explorer 寫出的分塊配置與壓縮格式）
+        2. 在 MemoryStore 上修改 cell_summary（zarr 以原分塊重新編碼，不改變其他陣列）
+        3. 將 MemoryStore 複製至同目錄臨時 ZipStore，再以 os.replace 原地取代
+
+        不使用 ZipStore append 模式（會產生重複 entry）；
+        不直接以 zarr.array() 重建（會改變分塊大小導致 Xenium Explorer 無法讀取）。
+        """
+        import os
+        import zarr
+        import zarr.convenience
+        import numpy as np
+        from zarr.storage import MemoryStore
+
+        cells_zarr_path = out_xenium_dir / "cells.zarr.zip"
+        if not cells_zarr_path.exists():
+            logger.warning("找不到 cells.zarr.zip，跳過中心點修補。")
+            return
+
+        tmp_path = cells_zarr_path.parent / "_cells_centroid_patch.zarr.zip"
+        store_r = store_w = None
+
+        # 1. 將 ZipStore 完整複製到 MemoryStore（保留原始 chunk 結構）
+        mem_store = MemoryStore()
+        try:
+            store_r = zarr.storage.ZipStore(str(cells_zarr_path), mode="r")
+            zarr.convenience.copy_store(store_r, mem_store)
+        finally:
+            if store_r is not None:
+                store_r.close()
+
+        # 2. 在 MemoryStore 上計算中心點並寫回 cell_summary
+        mem_root  = zarr.open(mem_store, mode="r+")
+        verts     = mem_root["polygon_vertices"][:]     # (2, n_cells, n_coords)
+        num_verts = mem_root["polygon_num_vertices"][:] # (2, n_cells)
+
+        coords = verts[0]
+        n_arr  = num_verts[0]
+        x_vals = coords[:, 0::2]
+        y_vals = coords[:, 1::2]
+
+        x_centroids = np.array(
+            [x_vals[i, :int(n_arr[i])].mean() if n_arr[i] > 0 else 0.0
+             for i in range(len(n_arr))],
+            dtype=np.float64,
+        )
+        y_centroids = np.array(
+            [y_vals[i, :int(n_arr[i])].mean() if n_arr[i] > 0 else 0.0
+             for i in range(len(n_arr))],
+            dtype=np.float64,
+        )
+
+        cs = mem_root["cell_summary"][:]
+        cs[:, 0] = x_centroids
+        cs[:, 1] = y_centroids
+        cs[:, 3] = x_centroids   # nucleus centroid（無核分割，與 cell centroid 相同）
+        cs[:, 4] = y_centroids
+        mem_root["cell_summary"][:] = cs   # zarr 以原始分塊與壓縮格式重新編碼
+
+        # 3. 將 MemoryStore 複製至乾淨的臨時 ZipStore（同目錄，同 filesystem）
+        try:
+            store_w = zarr.storage.ZipStore(str(tmp_path), mode="w")
+            zarr.convenience.copy_store(mem_store, store_w)
+        finally:
+            if store_w is not None:
+                store_w.close()
+
+        # 4. 原地取代
+        try:
+            os.replace(str(tmp_path), str(cells_zarr_path))
+        except OSError as exc:
+            logger.warning(f"cell_summary 修補後取代原始檔案失敗：{exc}")
+            raise
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+
+        logger.info(
+            f"cell_summary 中心點修補完成："
+            f"x=[{x_centroids.min():.1f}, {x_centroids.max():.1f}] µm，"
+            f"y=[{y_centroids.min():.1f}, {y_centroids.max():.1f}] µm"
+        )
+
+    @staticmethod
+    def _patch_analysis_indptr(out_xenium_dir: Path) -> None:
+        """
+        修補 analysis.zarr.zip 中每個 cell_groups 的 indptr（CSR 格式缺少結尾 entry）。
+
+        spatialdata_xenium_explorer bug：每個 grouping 的 indptr 只寫 N 個值，
+        標準 CSR 格式需要 N+1 個（最後一個值 = len(indices)），
+        否則 Xenium Explorer 無法解析最後一個群組，annotation 完全不顯示。
+
+        修補策略：重建 analysis.zarr.zip，對每個 grouping 追加 indptr 結尾值。
+        使用同一目錄下的臨時檔案，以 os.replace 原地取代，避免跨 filesystem 複製風險。
+        """
+        import os
+        import zarr
+        import numpy as np
+
+        analysis_path = out_xenium_dir / "analysis.zarr.zip"
+        if not analysis_path.exists():
+            logger.warning("找不到 analysis.zarr.zip，跳過 indptr 修補。")
+            return
+
+        # 臨時檔案放在與 analysis.zarr.zip 相同的目錄（同一 filesystem），
+        # 讓 os.replace 可在同一 ExFAT volume 上原地替換，避免跨 filesystem 複製。
+        tmp_path = analysis_path.parent / "_analysis_indptr_patch.zarr.zip"
+        store_r = store_w = store_v = None
+        try:
+            # 1. 讀取現有資料
+            store_r = zarr.storage.ZipStore(str(analysis_path), mode="r")
+            root_r  = zarr.open(store_r, mode="r")
+            cg_attrs    = dict(root_r["cell_groups"].attrs)
+            n_groupings = cg_attrs["number_groupings"]
+            group_names = cg_attrs["group_names"]   # List[List[str]]
+
+            groupings_data: list[dict] = []
+            for i in range(n_groupings):
+                grp     = root_r["cell_groups"][str(i)]
+                indices = grp["indices"][:]
+                indptr  = grp["indptr"][:]
+                # 若 indptr 少了結尾 entry（N 個而非 N+1 個），補上 len(indices)
+                if len(indptr) == len(group_names[i]):
+                    indptr = np.append(indptr, len(indices))
+                groupings_data.append({"indices": indices, "indptr": indptr})
+
+        finally:
+            if store_r is not None:
+                store_r.close()
+
+        try:
+            # 2. 重建 zarr 至臨時檔案（同目錄，同 filesystem）
+            store_w = zarr.storage.ZipStore(str(tmp_path), mode="w")
+            root_w  = zarr.open(store_w, mode="w")
+            root_w.require_group("cell_groups")
+            root_w["cell_groups"].attrs.update(cg_attrs)
+            for i, gd in enumerate(groupings_data):
+                grp_w = root_w["cell_groups"].require_group(str(i))
+                grp_w.array("indices", gd["indices"], dtype=gd["indices"].dtype, overwrite=True)
+                grp_w.array("indptr",  gd["indptr"],  dtype=gd["indptr"].dtype,  overwrite=True)
+        finally:
+            if store_w is not None:
+                store_w.close()
+
+        # 3. 原地取代（ExFAT 同目錄，盡可能原子性）
+        try:
+            os.replace(str(tmp_path), str(analysis_path))
+        except OSError as exc:
+            logger.warning(f"analysis.zarr.zip 取代原始檔案失敗：{exc}")
+            raise
+        finally:
+            # 若 os.replace 失敗，tmp_path 尚存；成功則已消耗
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+
+        # 4. 驗證
+        store_v = None
+        try:
+            store_v = zarr.storage.ZipStore(str(analysis_path), mode="r")
+            root_v  = zarr.open(store_v, mode="r")
+            gn_key  = "grouping_names"
+            fixed = [
+                f"{cg_attrs.get(gn_key, ['?'] * n_groupings)[i]}({len(group_names[i])}g,"
+                f"indptr={len(root_v['cell_groups'][str(i)]['indptr'])})"
+                for i in range(n_groupings)
+            ]
+            logger.info(f"analysis.zarr.zip indptr 修補完成：{', '.join(fixed)}")
+        except Exception as exc:
+            logger.warning(f"indptr 修補後驗證失敗（不影響主要結果）：{exc}")
+        finally:
+            if store_v is not None:
+                store_v.close()
 
     def _write_xenium_bundle(
         self,
@@ -749,6 +977,17 @@ class XeniumExporter:
         # pixel_size 可能不正確（不等於傳入的 pixel_size 參數）。
         # 強制覆寫確保 Xenium Explorer 使用正確比例。
         self._patch_experiment_xenium(out_xenium_dir, out_pixel_size)
+
+        # 7. 修補 cell_summary 中心點
+        # spatialdata_xenium_explorer 不計算細胞中心點，僅填入 0。
+        # 從 polygon_vertices 重新計算並寫回，讓 Xenium Explorer 正確顯示細胞位置與 annotation。
+        self._patch_cell_summary_centroids(out_xenium_dir)
+
+        # 8. 修補 analysis.zarr.zip 的 indptr（CSR 格式少一個結尾 entry）
+        # spatialdata_xenium_explorer bug：每個 grouping 的 indptr 只寫 N 個值，
+        # 標準 CSR 格式需要 N+1 個（最後一個指向 len(indices)）。
+        # Xenium Explorer 因此無法解析最後一個群組，annotation 不顯示。
+        self._patch_analysis_indptr(out_xenium_dir)
 
 
 def generate_combined_geojson(
