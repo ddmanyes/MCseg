@@ -201,6 +201,14 @@ class LoupeExporter:
         original_id_to_barcode = {
             orig: bc for orig, bc in zip(adata.obs_names, barcodes)
         }
+        # Merge 模式：obs_names 為 "{roi}__cell_{N}"，GeoJSON full_id 為 "{roi}__{N}"
+        # 補上別名映射確保 GeoJSON 能正確對應條碼
+        for orig, bc in list(original_id_to_barcode.items()):
+            if "__cell_" in orig:
+                parts = orig.split("__cell_", 1)
+                if len(parts) == 2:
+                    alias = f"{parts[0]}__{parts[1]}"
+                    original_id_to_barcode.setdefault(alias, bc)
         return barcodes, original_id_to_barcode
 
     @staticmethod

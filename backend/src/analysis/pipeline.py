@@ -896,6 +896,21 @@ def run_umap_step(
         plt.close(fig_single)
         figures[str(res)] = _encode_image(single_path)
 
+    # ── ROI 上色圖（merge 模式才有 roi 欄位）──
+    if "roi" in adata.obs.columns and adata.obs["roi"].nunique() > 1:
+        fig_roi, ax_roi = plt.subplots(figsize=(7, 6))
+        sc.pl.umap(
+            adata, color="roi", ax=ax_roi, show=False,
+            title=f"ROI  ({adata.obs['roi'].nunique()} regions)",
+            frameon=False, legend_loc="on data",
+            legend_fontsize=10, legend_fontoutline=2, size=15, alpha=0.8
+        )
+        plt.tight_layout()
+        roi_path = fig_dir / "umap_roi.png"
+        fig_roi.savefig(str(roi_path), dpi=150, bbox_inches="tight")
+        plt.close(fig_roi)
+        figures["roi"] = _encode_image(roi_path)
+
     # ── 合併 Grid 圖 ──
     n = len(resolutions)
     ncols = min(3, n)
@@ -1445,10 +1460,11 @@ def _run_result_visualizations_for_roi(
             he = he[..., :3]
         H, W = seg_mask.shape
 
-        # 只取屬於此 ROI 的細胞（obs_name 含 ROI 標識）
-        roi_mask_obs = np.array([
-            (f"__{rn}__" in name or rn == "") for name in adata.obs_names
-        ]) if rn else np.ones(len(adata.obs_names), dtype=bool)
+        # 只取屬於此 ROI 的細胞（obs_name 以 "{rn}__" 為前綴）
+        roi_mask_obs = (
+            np.array([name.startswith(f"{rn}__") for name in adata.obs_names])
+            if rn else np.ones(len(adata.obs_names), dtype=bool)
+        )
         roi_cell_types = cell_types[roi_mask_obs] if roi_mask_obs.any() else cell_types
 
         # 建立 cell_id → RGB LUT（僅此 ROI 的細胞）

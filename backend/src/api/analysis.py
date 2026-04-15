@@ -49,6 +49,7 @@ class UMAPExploreParams(BaseModel):
     n_neighbors: Optional[int] = None
     min_dist: Optional[float] = None
     resolutions: list[float] = [0.3, 0.5, 0.8]
+    merge_rois: Optional[bool] = None    # None = 使用 config 預設
 
 
 class HeatmapParams(BaseModel):
@@ -376,14 +377,15 @@ async def run_qc(background_tasks: BackgroundTasks, params: Optional[QCParams] =
     config = load_config()
     if params:
         _patch_config_from_qc_params(config, params)
-        save_state({"analysis": config.get("analysis", {})})
-        # 分析來源選擇（in-memory 覆寫，不寫回 state）
+        # merge_rois / input_source 需先寫入 config，再一起存進 state.json
+        # 讓後續所有 load_config() 步驟（heatmap、annotation 等）都能讀到正確路徑模式
         if params.merge_rois is not None:
             config.setdefault("analysis", {})["merge_rois"] = params.merge_rois
         if params.input_source is not None:
             config.setdefault("analysis", {})["input_source"] = params.input_source
+        save_state({"analysis": config.get("analysis", {})})
         if params.roi_name is not None and not params.merge_rois:
-            # 將指定 ROI 移至列表第一位，供 run_qc_step 的 rois[0] 讀取
+            # 將指定 ROI 移至列表第一位，供 run_qc_step 的 rois[0] 讀取（不需儲存）
             rois = config.get("rois", [])
             target = next((r for r in rois if r.get("name") == params.roi_name), None)
             if target:
@@ -447,7 +449,10 @@ async def get_umap_images():
         try:
             fig_dir = _get_fig_dir()
             # 掃描所有 umap_res*.png
-            disk_imgs = _load_disk_images([("grid", fig_dir / "umap_grid.png")])
+            disk_imgs = _load_disk_images([
+                ("grid", fig_dir / "umap_grid.png"),
+                ("roi",  fig_dir / "umap_roi.png"),
+            ])
             for p in sorted(fig_dir.glob("umap_res*.png")):
                 key = p.stem.replace("umap_res", "")  # e.g. "0.5"
                 disk_imgs[key] = base64.b64encode(p.read_bytes()).decode()
@@ -521,11 +526,16 @@ async def run_umap_explore(background_tasks: BackgroundTasks, params: Optional[U
     config = load_config()
 
     # 更新 UMAP 參數至設定
-    clus = config.setdefault("analysis", {}).setdefault("clustering", {})
+    analysis = config.setdefault("analysis", {})
+    clus = analysis.setdefault("clustering", {})
     if p.n_pcs is not None:       clus["n_pcs"] = p.n_pcs
     if p.n_neighbors is not None: clus["n_neighbors"] = p.n_neighbors
     if p.min_dist is not None:    clus["min_dist"] = p.min_dist
-    save_state({"analysis": {"clustering": clus}})
+    state_analysis: dict = {"clustering": clus}
+    if p.merge_rois is not None:
+        analysis["merge_rois"] = p.merge_rois
+        state_analysis["merge_rois"] = p.merge_rois
+    save_state({"analysis": state_analysis})
 
     background_tasks.add_task(_run_umap, config, p)
     return {"status": "ok", "message": "UMAP 探索已啟動"}

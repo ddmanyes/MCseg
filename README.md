@@ -5,56 +5,21 @@
 
 **MCseg** is a no-code, end-to-end analysis platform for 10x Genomics **Visium HD** (2 µm resolution) spatial transcriptomics data. Its core segmentation engine, **MCseg v2**, uses a multi-pass ensemble (cyto3 at three diameters + optional hematoxylin and cpsam passes, up to 7 passes) with adaptive Voronoi boundary expansion to achieve high-fidelity cell segmentation. GPU is optional; CPU fallback is supported.
 
-> MCseg v2 achieves PQ = 0.554 ± 0.064 on LUAD tissue (vs 0.432 ± 0.037 for single-model Cellpose baseline, +28% relative improvement), validated against Xenium Prime ground-truth masks.
+> MCseg v2 achieves **PQ = 0.554 ± 0.064** on LUAD tissue (vs 0.432 ± 0.037 for single-model Cellpose baseline, **+28% relative improvement**), validated against Xenium Prime ground-truth masks.
+
+<p align="center">
+  <img src="docs/fig1a_pipeline.png" width="820" alt="MCseg v2 pipeline overview">
+</p>
 
 ---
 
-## Citation
+## Contents
 
-If you use MCseg in your research, please cite:
-
-> Chan, C.-R. (詹麒儒), et al. MCseg: End-to-End Visium HD Analysis with AI-Optimised Ensemble Cell Segmentation. *Bioinformatics* (under review), 2026.
+[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-v2-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
 
 ---
 
-## Reproducibility
-
-Analysis scripts and data for the paper are provided in the [`analysis/`](analysis/) directory:
-
-```text
-analysis/
-├── scripts/
-│   ├── analysis/     # Core analysis pipeline (01–08)
-│   └── figures/      # Figure generation scripts (fig1–fig4, suppfigs)
-├── data/             # Per-ROI metrics CSV files
-└── supplementary/    # Supplementary Note 1, Table S1, Table S2
-```
-
-> **Manuscript**: The full manuscript will be linked here upon publication. Preprint / DOI to be added.
-
-### AI-Autonomous Discovery (AutoResearch)
-
-MCseg v2 was developed by running an AI agent loop over ~80 overnight cycles. The agent iteratively proposed, implemented, and scored segmentation architectures against Xenium ground truth—converging on the multi-model ensemble without human intervention.
-
-Templates for adapting this paradigm to your own segmentation problem are provided in [`docs/autoResearch/`](docs/autoResearch/):
-
-| File | Description |
-|------|-------------|
-| [`README.md`](docs/autoResearch/README.md) | Overview and adaptation guide |
-| [`program.md`](docs/autoResearch/program.md) | Agent task specification template |
-| [`segment_template.py`](docs/autoResearch/segment_template.py) | Sandbox starter script (MCseg v2 helpers included) |
-| [`run_agent.py`](docs/autoResearch/run_agent.py) | Agent runner using the Anthropic API |
-
-### Data Availability
-
-| Dataset | Source |
-|---------|--------|
-| LUAD (6 ROIs) | 10x Genomics public demo data + Xenium Prime co-registration |
-| CRC (15 ROIs) | 10x Genomics + GEO [GSE280318](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE280318) |
-
----
-
-## Installation
+## Quick Start
 
 ### System Requirements
 
@@ -72,8 +37,6 @@ Templates for adapting this paradigm to your own segmentation problem are provid
 
 ### Prerequisites
 
-Before running the Quick Start, ensure the following are installed:
-
 **macOS (Homebrew recommended):**
 ```bash
 # Install Homebrew if not present
@@ -89,7 +52,7 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
 ```
 
-### Quick Start
+### Installation
 
 ```bash
 # 1. Install uv (Python package manager)
@@ -126,6 +89,100 @@ Open **<http://localhost:3000>** in your browser.
 | Stage 3: Analysis | QC → Normalise → PCA → UMAP → Leiden | `umap_computed.h5ad` |
 | Stage 3.5: Explorer | Interactive spatial gene expression viewer | PNG export |
 | Stage 4: Export | Xenium Explorer / Loupe Browser format | GeoJSON, CSV |
+
+---
+
+## Interface Tour
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/sample/Operation%20interface/stage1_steup.png" width="400" alt="Data Setup"><br>
+      <sub><b>① Data Setup</b> — scan BTF + binned matrices, set output dir</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/sample/Operation%20interface/stage2_ROI.png" width="400" alt="ROI Definition"><br>
+      <sub><b>② ROI Definition</b> — draw regions on H&E overview</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/sample/Operation%20interface/stage3_seg.png" width="400" alt="MCseg v2 Segmentation"><br>
+      <sub><b>③ MCseg v2 Segmentation</b> — multi-pass ensemble + preview</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/sample/Operation%20interface/stage4_count.png" width="400" alt="RNA Counting"><br>
+      <sub><b>④ RNA Counting</b> — assign Visium HD bins to cells</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/sample/Operation%20interface/stage5_umap.png" width="400" alt="UMAP Analysis"><br>
+      <sub><b>⑤ UMAP / Leiden</b> — multi-resolution cluster explorer</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/sample/Operation%20interface/stage5_annotation.png" width="400" alt="Cell-type Annotation"><br>
+      <sub><b>⑥ Cell-type Annotation</b> — Celltypist auto-labelling</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/sample/Operation%20interface/stage6_explore.png" width="400" alt="Spatial Explorer"><br>
+      <sub><b>⑦ Spatial Explorer</b> — interactive gene expression viewer</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/sample/Operation%20interface/stage7_output.png" width="400" alt="Export"><br>
+      <sub><b>⑧ Export</b> — Xenium Explorer / Loupe Browser formats</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
+## Example Results
+
+### Cell-type mapping on Visium HD (LUAD, Tumor Boundary ROI)
+
+<p align="center">
+  <img src="docs/fig_celltype_map.png" width="700" alt="Cell-type map — ROI1 tumor boundary, n=5,021 cells, Xenium GT validated">
+</p>
+
+> 7 cell types resolved by MCseg v2 + Celltypist, validated against Xenium Prime ground-truth (n = 5,021 cells, ROI 1).
+
+### Spatial AT2 Pneumocyte detection overlaid on H&E
+
+<p align="center">
+  <img src="docs/fig_spatial_at2.png" width="500" alt="AT2 Pneumocyte (blue outlines, n=326, 30%) on H&E">
+</p>
+
+> AT2 Pneumocytes (SFTPC+, blue outlines, n = 326, 30%) detected directly on the H&E image — no GPU required.
+
+### QC filtering (Stage 3)
+
+<p align="center">
+  <img src="docs/sample/result/qc_violin.png" width="780" alt="QC violin plots: UMI, genes per cell, % mitochondrial">
+</p>
+
+> Violin plots showing per-cell QC metrics after MCseg v2 segmentation — dashed lines indicate configurable thresholds.
+
+### UMAP, marker genes and spatial cell-type map
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/sample/result/result_umap.png" width="260" alt="UMAP annotated"><br>
+      <sub>UMAP coloured by Celltypist annotation</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/sample/result/result_dotplot.png" width="260" alt="Marker gene dotplot"><br>
+      <sub>Marker gene dotplot per cluster</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/sample/result/result_spatial_filled_1.png" width="260" alt="Spatial cell-type map"><br>
+      <sub>Spatial cell-type map overlaid on H&E</sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -277,6 +334,51 @@ uv run pytest backend/tests/ -v
 | Fragmented small cells | `min_size` too low | Increase `min_size` (e.g., 50 px²) in Stage 1 UI |
 | Low bin assignment rate | Voronoi gaps not filled | Set `rna_counting.dilation_px: 6` in `pipeline.yaml` (default is 6) |
 | macOS `._*` file errors | ExFAT external drive | Pipeline auto-filters; manually: `find . -name "._*" -delete` |
+
+---
+
+## Citation
+
+If you use MCseg in your research, please cite:
+
+> Chan, C.-R. (詹麒儒), et al. MCseg: End-to-End Visium HD Analysis with AI-Optimised Ensemble Cell Segmentation. *Bioinformatics* (under review), 2026.
+
+---
+
+## Reproducibility
+
+Analysis scripts and data for the paper are provided in the [`analysis/`](analysis/) directory:
+
+```text
+analysis/
+├── scripts/
+│   ├── analysis/     # Core analysis pipeline (01–08)
+│   └── figures/      # Figure generation scripts (fig1–fig4, suppfigs)
+├── data/             # Per-ROI metrics CSV files
+└── supplementary/    # Supplementary Note 1, Table S1, Table S2
+```
+
+> **Manuscript**: The full manuscript will be linked here upon publication. Preprint / DOI to be added.
+
+### AI-Autonomous Discovery (AutoResearch)
+
+MCseg v2 was developed by running an AI agent loop over ~80 overnight cycles. The agent iteratively proposed, implemented, and scored segmentation architectures against Xenium ground truth—converging on the multi-model ensemble without human intervention.
+
+Templates for adapting this paradigm to your own segmentation problem are provided in [`docs/autoResearch/`](docs/autoResearch/):
+
+| File | Description |
+|------|-------------|
+| [`README.md`](docs/autoResearch/README.md) | Overview and adaptation guide |
+| [`program.md`](docs/autoResearch/program.md) | Agent task specification template |
+| [`segment_template.py`](docs/autoResearch/segment_template.py) | Sandbox starter script (MCseg v2 helpers included) |
+| [`run_agent.py`](docs/autoResearch/run_agent.py) | Agent runner using the Anthropic API |
+
+### Data Availability
+
+| Dataset | Source |
+|---------|--------|
+| LUAD (6 ROIs) | 10x Genomics public demo data + Xenium Prime co-registration |
+| CRC (15 ROIs) | 10x Genomics + GEO [GSE280318](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE280318) |
 
 ---
 

@@ -419,7 +419,7 @@ export default function Stage4_Analysis() {
   }, [annotSt?.status])
 
   // ── 可用的 resolution 列表（供 Heatmap / 標註下拉）——必須在用到它的 useEffect 之前宣告 ──
-  const availableResolutions = Object.keys(umapImages).filter(k => k !== 'grid').sort()
+  const availableResolutions = Object.keys(umapImages).filter(k => k !== 'grid' && k !== 'roi').sort()
 
   // UMAP 圖表載入後（availableResolutions 更新），自動設定 annotateRes 並載入 cluster 資訊
   useEffect(() => {
@@ -517,7 +517,8 @@ export default function Stage4_Analysis() {
     setUmapImages({})
     setHeatmapImages({})
     updateStage('analysis', { status: 'running', progress: 0, message: 'UMAP 計算中...' })
-    await runUMAPExplore({ ...umapParams, resolutions })
+    const mergeFlag = analysisMode === 'merge' && hasMultipleRois
+    await runUMAPExplore({ ...umapParams, resolutions, merge_rois: mergeFlag })
     refetchUmapSt()
   }
 
@@ -886,8 +887,9 @@ export default function Stage4_Analysis() {
 
         {/* UMAP 圖表:個別 + Grid */}
         {Object.keys(umapImages).length > 0 && (() => {
+          const roiTabs = 'roi' in umapImages ? [{ key: 'roi', label: 'ROI' }] : []
           const resTabs = availableResolutions.map(r => ({ key: r, label: `Res = ${r}` }))
-          const allTabs = [...resTabs, { key: 'grid', label: t('stage3.umap.grid_view') }]
+          const allTabs = [...roiTabs, ...resTabs, { key: 'grid', label: t('stage3.umap.grid_view') }]
           return (
             <ChartView images={umapImages} tabs={allTabs} fullWidthKeys={['grid']} />
           )
@@ -979,7 +981,8 @@ export default function Stage4_Analysis() {
             <button
               onClick={async () => {
                 setMarkerCsvError('')
-                const err = await downloadMarkerGenes(parseFloat(annotateRes), selectedRoi || undefined)
+                const mergeFlag = analysisMode === 'merge' && hasMultipleRois
+                const err = await downloadMarkerGenes(parseFloat(annotateRes), mergeFlag ? undefined : (selectedRoi || undefined))
                 if (err) setMarkerCsvError(err)
               }}
               disabled={!umapDone || !annotateRes}
