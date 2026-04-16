@@ -3,6 +3,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 
+✅ No-code web UI · ✅ Custom ROI from gigapixel BTF · ✅ End-to-end analysis (QC → UMAP → annotation) · ✅ Multi-ROI merge · ✅ Interactive spatial gene explorer · ✅ Xenium Explorer export · ✅ GPU optional
+
 **MCseg** is a no-code, end-to-end analysis platform for 10x Genomics **Visium HD** (2 µm resolution) spatial transcriptomics data. Starting from a raw gigapixel BTF image, MCseg covers the complete workflow: custom ROI cropping, high-fidelity cell segmentation, RNA counting, downstream analysis (QC → UMAP → cell-type annotation), and one-click export to Xenium Explorer or Loupe Browser — all through a web interface requiring no programming.
 
 Its core segmentation engine, **MCseg v2**, runs a multi-pass ensemble of cyto3 models at three diameters plus an optional hematoxylin pass, with adaptive Voronoi boundary expansion. This achieves **PQ = 0.554 ± 0.064** on LUAD tissue validated against Xenium Prime ground-truth masks — a **+28% improvement** over single-model Cellpose baseline (0.432 ± 0.037). GPU is optional; full CPU fallback is supported.
