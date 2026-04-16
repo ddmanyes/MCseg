@@ -169,10 +169,10 @@ Open **<http://localhost:3000>** in your browser.
 ### Cell-type mapping on Visium HD (LUAD, Tumor Boundary ROI)
 
 <p align="center">
-  <img src="docs/fig_celltype_map.png" width="700" alt="Cell-type map — ROI1 tumor boundary, n=5,021 cells, Xenium GT validated">
+  <img src="docs/fig2h.png" width="700" alt="Cell-type map — LUAD tumor boundary, MCseg v2 + Celltypist">
 </p>
 
-> 7 cell types resolved by MCseg v2 + Celltypist, validated against Xenium Prime ground-truth (n = 5,021 cells, ROI 1).
+> Cell types resolved by MCseg v2 + Celltypist on LUAD tumor boundary ROI — Macrophage, Club Epithelial, Plasma Cell, B Cell, SPP1⁺ Macrophage overlaid on H&E.
 
 ### Spatial AT2 Pneumocyte detection overlaid on H&E
 
