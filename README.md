@@ -135,7 +135,7 @@ Open **<http://localhost:3000>** in your browser.
     </td>
     <td align="center" width="50%">
       <img src="docs/sample/Operation%20interface/stage7_output.png" width="400" alt="Export"><br>
-      <sub><b>⑧ Export</b> — Xenium Explorer / Loupe Browser formats</sub>
+      <sub><b>⑧ Export</b> — spatial analysis results; Xenium Explorer / Loupe Browser export on same page</sub>
     </td>
   </tr>
 </table>
