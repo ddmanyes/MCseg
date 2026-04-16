@@ -1,11 +1,33 @@
-# MCseg — High-Fidelity Visium HD Cell Segmentation
+# MCseg: End-to-End Visium HD Analysis with AI-Optimised Ensemble Cell Segmentation
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 
+| Feature | Space Ranger HD | Cellpose (manual) | **MCseg** |
+|---------|:---:|:---:|:---:|
+| No-code web UI | ❌ (CLI) | ❌ | ✅ |
+| Custom ROI from gigapixel BTF | ❌ | ❌ | ✅ |
+| End-to-end analysis (QC → UMAP → annotation) | ❌ | ❌ | ✅ |
+| Multi-ROI merge analysis | ❌ | ❌ | ✅ |
+| Interactive spatial gene explorer | ❌ | ❌ | ✅ |
+| Xenium Explorer export | ❌ | ❌ | ✅ |
+| GPU required | ❌ | ✅ | ❌ (optional) |
+
 **MCseg** is a no-code, end-to-end analysis platform for 10x Genomics **Visium HD** (2 µm resolution) spatial transcriptomics data. Its core segmentation engine, **MCseg v2**, uses a multi-pass ensemble (cyto3 at three diameters + optional hematoxylin and cpsam passes, up to 7 passes) with adaptive Voronoi boundary expansion to achieve high-fidelity cell segmentation. GPU is optional; CPU fallback is supported.
 
 > MCseg v2 achieves **PQ = 0.554 ± 0.064** on LUAD tissue (vs 0.432 ± 0.037 for single-model Cellpose baseline, **+28% relative improvement**), validated against Xenium Prime ground-truth masks.
+
+| ROI | Tissue Region | MCseg v2 PQ | Cellpose PQ | Δ |
+|-----|--------------|:-----------:|:-----------:|:-:|
+| roi1 | Tumor boundary | **0.662** | — | — |
+| roi6 | Tumor core | **0.610** | — | — |
+| roi2 | Tumor stroma | **0.553** | — | — |
+| roi3 | Mixed tumor-stroma | **0.523** | — | — |
+| roi4 | Normal-tumor interface | **0.510** | — | — |
+| roi5 | Alveolar region | **0.468** | — | — |
+| **mean** | — | **0.554 ±0.064** | 0.432 ±0.037 | **+28%** |
+
+*Xenium Prime ground-truth masks; Cellpose per-ROI breakdown TBD.*
 
 <p align="center">
   <img src="docs/fig1a_pipeline.png" width="820" alt="MCseg v2 pipeline overview">
@@ -73,8 +95,11 @@ bash start.sh
 
 Open **<http://localhost:3000>** in your browser.
 
-> **Note for bash users:** replace `source ~/.zshrc` with `source ~/.bashrc`.  
-> **ExFAT / external drive users:** skip `uv sync` in step 2 and run `bash start.sh` directly — it creates `.venv` as a symlink to `~/.venvs/msseg` (APFS) before installing dependencies, avoiding resource-fork corruption.
+> [!NOTE]
+> **bash users:** replace `source ~/.zshrc` with `source ~/.bashrc`.
+
+> [!IMPORTANT]
+> **ExFAT / external drive users:** skip `uv sync` in step 2 and run `bash start.sh` directly — it creates `.venv` as a symlink to `~/.venvs/msseg` (APFS) before installing, avoiding resource-fork corruption.
 
 ---
 
@@ -88,7 +113,7 @@ Open **<http://localhost:3000>** in your browser.
 | Stage 2: RNA Count | Assign Visium HD bins to cells | `cellpose_cells.h5ad` |
 | Stage 3: Analysis | QC → Normalise → PCA → UMAP → Leiden | `umap_computed.h5ad` |
 | Stage 3.5: Explorer | Interactive spatial gene expression viewer | PNG export |
-| Stage 4: Export | Xenium Explorer / Loupe Browser format | GeoJSON, CSV |
+| Stage 4: Export | Xenium Explorer / Loupe Browser format | `experiment.xenium`, zarr archives |
 
 ---
 
@@ -169,26 +194,105 @@ Open **<http://localhost:3000>** in your browser.
 
 <table>
   <tr>
-    <td align="center" width="33%">
-      <img src="docs/sample/result/result_umap.png" width="260" alt="UMAP annotated"><br>
+    <td align="center" width="25%">
+      <img src="docs/sample/result/result_umap.png" width="200" alt="UMAP annotated"><br>
       <sub>UMAP coloured by Celltypist annotation</sub>
     </td>
-    <td align="center" width="33%">
-      <img src="docs/sample/result/result_dotplot.png" width="260" alt="Marker gene dotplot"><br>
+    <td align="center" width="25%">
+      <img src="docs/sample/result/result_dotplot.png" width="200" alt="Marker gene dotplot"><br>
       <sub>Marker gene dotplot per cluster</sub>
     </td>
-    <td align="center" width="33%">
-      <img src="docs/sample/result/result_spatial_filled_1.png" width="260" alt="Spatial cell-type map"><br>
+    <td align="center" width="25%">
+      <img src="docs/sample/result/result_heatmap.png" width="200" alt="Top marker gene heatmap"><br>
+      <sub>Top marker gene heatmap</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/sample/result/result_spatial_filled_1.png" width="200" alt="Spatial cell-type map"><br>
       <sub>Spatial cell-type map overlaid on H&E</sub>
     </td>
   </tr>
 </table>
+
+### Export to Xenium Explorer
+
+MCseg outputs a ready-to-load Xenium Explorer bundle (`experiment.xenium` + zarr archives). The screenshots below show CRC data loaded directly into Xenium Explorer 4.1.1 after MCseg export.
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/sample/result/xenium_capture/xenium_2.png" width="400" alt="H&E image with MCseg cell boundaries in Xenium Explorer"><br>
+      <sub>H&E image with MCseg cell boundaries</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/sample/result/xenium_capture/xenium_5.png" width="400" alt="Cell-type annotation groups in Xenium Explorer"><br>
+      <sub>Cell-type groups (Celltypist) — interactive cell info popup</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/sample/result/xenium_capture/xenium_3.png" width="400" alt="Transcript dot visualisation in Xenium Explorer"><br>
+      <sub>Transcript dot overlay (BPIFB1, MUC5B, PIGR, SCGB1A1…)</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/sample/result/xenium_capture/xenium_4.png" width="400" alt="Gene-specific transcript density in Xenium Explorer"><br>
+      <sub>Gene-specific transcript density (PIGR)</sub>
+    </td>
+  </tr>
+</table>
+
+> **Export bundle structure** (`<output_dir>/export/`):
+> ```
+> experiment.xenium
+> morphology.ome.tif
+> cells.zarr.zip
+> transcripts.zarr.zip
+> cell_feature_matrix.zarr.zip
+> analysis.zarr.zip
+> analysis_summary.html
+> ```
+
+---
+
+## Output Structure
+
+After a complete run, your output directory will contain:
+
+```text
+<output_dir>/
+├── analysis/
+│   ├── roi/
+│   │   └── {roi_name}/
+│   │       ├── he_crop.tif                  ← H&E crop (Stage 0)
+│   │       ├── adata_002um.h5ad             ← 2 µm bin matrix (Stage 0)
+│   │       ├── segmentation_masks.npy       ← MCseg v2 cell masks (Stage 1)
+│   │       ├── segmentation_masks.tif       ← Visualisation overlay (Stage 1)
+│   │       ├── cellpose_cells.h5ad          ← Cell × gene matrix (Stage 2)
+│   │       ├── cellpose_polygons.json       ← Cell boundary polygons (Stage 2)
+│   │       └── transcripts_roi.csv          ← Per-cell transcript table (Stage 2)
+│   ├── merged_all_rois.h5ad                 ← Multi-ROI merged AnnData (Stage 3, merge mode)
+│   ├── qc_preprocessed.h5ad                ← Post-QC AnnData (Stage 3)
+│   ├── umap_computed.h5ad                   ← UMAP + Leiden clusters (Stage 3)
+│   ├── combined_cellpose_polygons.json      ← Merged polygons (Stage 3, merge mode)
+│   └── combined_transcripts.csv            ← Merged transcripts (Stage 3, merge mode)
+└── export/
+    └── xenium/
+        └── {roi_name}/
+            ├── experiment.xenium            ← Load this in Xenium Explorer
+            ├── morphology.ome.tif
+            ├── cells.zarr.zip
+            ├── transcripts.zarr.zip
+            ├── cell_feature_matrix.zarr.zip
+            ├── analysis.zarr.zip
+            └── analysis_summary.html
+```
 
 ---
 
 ## Usage Guide
 
 After launching (`bash start.sh`), open **http://localhost:3000** and follow the steps below.
+
+> *Timings below are approximate, measured on **Apple M2 CPU, 16 GB RAM**, ROI ~1500 × 1200 px. GPU (Apple MPS or NVIDIA CUDA) reduces Stage 1 to ~2–3 min/ROI.*
 
 ### Step 1 — Data Setup
 
@@ -207,7 +311,7 @@ After launching (`bash start.sh`), open **http://localhost:3000** and follow the
 >     └── square_008um/filtered_feature_bc_matrix/
 > ```
 
-### Step 2 — Stage 0: ROI Extraction
+### Step 2 — Stage 0: ROI Extraction (~1 min/ROI)
 
 1. In the **Add ROI** form, fill in:
    - **Name** — a unique identifier (e.g. `roi1`)
@@ -216,7 +320,7 @@ After launching (`bash start.sh`), open **http://localhost:3000** and follow the
 2. Click **Add** to register the ROI; repeat for all regions of interest.
 3. Click **Run ROI Extraction** — MCseg tile-reads the BTF and crops `he_crop.tif` + `adata_002um.h5ad` per ROI.
 
-### Step 3 — Stage 1: MCseg v2 Segmentation
+### Step 3 — Stage 1: MCseg v2 Segmentation (~30 min/ROI on CPU · ~2–3 min with GPU)
 
 1. Review the default parameters (pre-filled from the tissue profile):
 
@@ -233,13 +337,13 @@ After launching (`bash start.sh`), open **http://localhost:3000** and follow the
 3. Click **Preview** on one ROI to verify cell outlines before committing to a full run.
 4. Click **Run All ROIs** — outputs `segmentation_masks.npy` per ROI.
 
-### Step 4 — Stage 2: RNA Counting
+### Step 4 — Stage 2: RNA Counting (~2–3 min/ROI)
 
 1. Check the ROI list — each row shows whether a segmentation mask and count result exist.
 2. Click **Run All** (or per-ROI **Run**) — each 2 µm bin is assigned to the nearest cell mask with a 6 px dilation.
 3. Output: `cellpose_cells.h5ad` (cells × genes sparse matrix).
 
-### Step 5 — Stage 3: Analysis
+### Step 5 — Stage 3: Analysis (~3–5 min)
 
 The analysis stage runs four sequential sub-steps:
 
@@ -261,7 +365,7 @@ Interactive spatial gene expression viewer — available after Stage 3 completes
 3. Switch between **Contour** (cell outlines) and **Set** (dot overlay) modes.
 4. Export the current view as PNG.
 
-### Step 7 — Stage 4: Export
+### Step 7 — Stage 4: Export (~2–5 min/ROI)
 
 The export page provides both result visualisation and format conversion:
 
@@ -278,8 +382,8 @@ The export page provides both result visualisation and format conversion:
 
 | Target | Output | Use for |
 |--------|--------|---------|
-| Xenium Explorer | GeoJSON cell boundaries + transcript CSV | Spatial visualisation |
-| Loupe Browser | Barcode CSV with cluster labels | 10x Genomics Loupe |
+| Xenium Explorer | Xenium-native bundle (`experiment.xenium` + zarr archives) | Load directly in Xenium Explorer 4+ |
+| Loupe Browser | `.cloupe` file + barcode CSV with cluster labels | 10x Genomics Loupe Browser |
 
 Files are saved to `<output_dir>/roi/<roi_name>/export/`.
 

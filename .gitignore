@@ -26,3 +26,6 @@ analysis/supplementary/SuppFig*.png
 
 # Runtime logs
 logs/
+
+# Xenium export data (large binary files — not for version control)
+docs/sample/xenium_export/
