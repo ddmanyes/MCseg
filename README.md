@@ -33,7 +33,7 @@ Its core segmentation engine, **MCseg v2**, runs a multi-pass ensemble of cyto3 
 | **Storage** | 15 GB free | 30 GB+ free | ~8 GB for Python env (torch, cellpose); remainder for data & results |
 | **Python** | 3.10 | 3.11 | Managed by `uv`; do not use system Python |
 | **Node.js** | v18 | v20 LTS | For frontend (Vite + React) |
-| **GPU** | — (CPU fallback) | Apple MPS or NVIDIA (CUDA 12.4) | GPU cuts segmentation from ~30 min (4-pass) / ~55 min (7-pass) to ~2–3 / ~5–8 min |
+| **GPU** | — (CPU fallback) | Apple MPS or NVIDIA (CUDA 12.4) | GPU reduces segmentation time: ~30 min (4-pass) / ~55 min (7-pass) on CPU → ~2–3 / ~5–8 min with MPS/CUDA |
 
 ### Prerequisites
 
