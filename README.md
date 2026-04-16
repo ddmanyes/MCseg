@@ -38,6 +38,7 @@ Its core segmentation engine, **MCseg v2**, runs a multi-pass ensemble of cyto3 
 ### Prerequisites
 
 **macOS (Homebrew recommended):**
+
 ```bash
 # Install Homebrew if not present
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -47,6 +48,7 @@ brew install node
 ```
 
 **Linux (Ubuntu/Debian):**
+
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
@@ -209,16 +211,17 @@ MCseg outputs a ready-to-load Xenium Explorer bundle (`experiment.xenium` + zarr
   <tr>
     <td align="center" width="50%">
       <img src="docs/sample/result/xenium_capture/xenium_3.png" width="400" alt="Transcript dot visualisation in Xenium Explorer"><br>
-      <sub>Transcript dot overlay (BPIFB1, MUC5B, PIGR, SCGB1A1…)</sub>
+      <sub>Transcript dot overlay ( SCGB1A1)</sub>
     </td>
     <td align="center" width="50%">
       <img src="docs/sample/result/xenium_capture/xenium_4.png" width="400" alt="Gene-specific transcript density in Xenium Explorer"><br>
-      <sub>Gene-specific transcript density (PIGR)</sub>
+      <sub>Gene-specific transcript density</sub>
     </td>
   </tr>
 </table>
 
 > **Export bundle structure** (`<output_dir>/export/`):
+>
 > ```
 > experiment.xenium
 > morphology.ome.tif
@@ -268,7 +271,7 @@ After a complete run, your output directory will contain:
 
 ## Usage Guide
 
-After launching (`bash start.sh`), open **http://localhost:3000** and follow the steps below.
+After launching (`bash start.sh`), open **<http://localhost:3000>** and follow the steps below.
 
 > *Timings below are approximate, measured on **Apple M2 CPU, 16 GB RAM**, ROI ~1500 × 1200 px. GPU (Apple MPS or NVIDIA CUDA) reduces Stage 1 to ~2–3 min/ROI.*
 
@@ -280,6 +283,7 @@ After launching (`bash start.sh`), open **http://localhost:3000** and follow the
 4. Set the **Output Directory** where results (`roi/`, `analysis/`) will be written, then click **Save**.
 
 > **Data layout expected:**
+>
 > ```
 > <sample>/
 > ├── spatial/
