@@ -3,31 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 
-| Feature | Space Ranger HD | Cellpose (manual) | **MCseg** |
-|---------|:---:|:---:|:---:|
-| No-code web UI | ❌ (CLI) | ❌ | ✅ |
-| Custom ROI from gigapixel BTF | ❌ | ❌ | ✅ |
-| End-to-end analysis (QC → UMAP → annotation) | ❌ | ❌ | ✅ |
-| Multi-ROI merge analysis | ❌ | ❌ | ✅ |
-| Interactive spatial gene explorer | ❌ | ❌ | ✅ |
-| Xenium Explorer export | ❌ | ❌ | ✅ |
-| GPU required | ❌ | ✅ | ❌ (optional) |
+**MCseg** is a no-code, end-to-end analysis platform for 10x Genomics **Visium HD** (2 µm resolution) spatial transcriptomics data. Starting from a raw gigapixel BTF image, MCseg covers the complete workflow: custom ROI cropping, high-fidelity cell segmentation, RNA counting, downstream analysis (QC → UMAP → cell-type annotation), and one-click export to Xenium Explorer or Loupe Browser — all through a web interface requiring no programming.
 
-**MCseg** is a no-code, end-to-end analysis platform for 10x Genomics **Visium HD** (2 µm resolution) spatial transcriptomics data. Its core segmentation engine, **MCseg v2**, uses a multi-pass ensemble (cyto3 at three diameters + optional hematoxylin and cpsam passes, up to 7 passes) with adaptive Voronoi boundary expansion to achieve high-fidelity cell segmentation. GPU is optional; CPU fallback is supported.
-
-> MCseg v2 achieves **PQ = 0.554 ± 0.064** on LUAD tissue (vs 0.432 ± 0.037 for single-model Cellpose baseline, **+28% relative improvement**), validated against Xenium Prime ground-truth masks.
-
-| ROI | Tissue Region | MCseg v2 PQ | Cellpose PQ | Δ |
-|-----|--------------|:-----------:|:-----------:|:-:|
-| roi1 | Tumor boundary | **0.662** | — | — |
-| roi6 | Tumor core | **0.610** | — | — |
-| roi2 | Tumor stroma | **0.553** | — | — |
-| roi3 | Mixed tumor-stroma | **0.523** | — | — |
-| roi4 | Normal-tumor interface | **0.510** | — | — |
-| roi5 | Alveolar region | **0.468** | — | — |
-| **mean** | — | **0.554 ±0.064** | 0.432 ±0.037 | **+28%** |
-
-*Xenium Prime ground-truth masks; Cellpose per-ROI breakdown TBD.*
+Its core segmentation engine, **MCseg v2**, runs a multi-pass ensemble of cyto3 models at three diameters plus an optional hematoxylin pass, with adaptive Voronoi boundary expansion. This achieves **PQ = 0.554 ± 0.064** on LUAD tissue validated against Xenium Prime ground-truth masks — a **+28% improvement** over single-model Cellpose baseline (0.432 ± 0.037). GPU is optional; full CPU fallback is supported.
 
 <p align="center">
   <img src="docs/fig1a_pipeline.png" width="820" alt="MCseg v2 pipeline overview">
