@@ -29,7 +29,7 @@ Its core segmentation engine, **MCseg v2**, runs a multi-pass ensemble of cyto3 
 |-----------|---------|-------------|-------|
 | **OS** | macOS 12 (Monterey) | macOS 13+ | Linux (Ubuntu 20.04+) also supported |
 | **CPU** | 4-core, any modern x86-64 or ARM | Apple Silicon (M1/M2/M3) | Apple Silicon provides MPS GPU acceleration |
-| **RAM** | 16 GB | 32 GB | Cellpose loads full ROI crops into memory; large BTFs need more |
+| **RAM** | 8 GB | 16 GB+ | Cellpose loads full ROI crops into memory; very large ROIs (>2000×2000 px) or multi-ROI runs benefit from 32 GB |
 | **Storage** | 15 GB free | 30 GB+ free | ~8 GB for Python env (torch, cellpose); remainder for data & results |
 | **Python** | 3.10 | 3.11 | Managed by `uv`; do not use system Python |
 | **Node.js** | v18 | v20 LTS | For frontend (Vite + React) |
