@@ -522,17 +522,28 @@ class XeniumExporter:
     @staticmethod
     def _smooth_polygon(poly: shapely.geometry.base.BaseGeometry) -> shapely.geometry.base.BaseGeometry:
         """
-        消除 Proseg watershed 分割產生的鋸齒邊緣。
+        消除 MCseg v2 分割產生的鋸齒邊緣，同時嚴格控制頂點數量。
 
         步驟：
-        1. simplify(0.4)  — 移除微小變異
-        2. buffer(+1.0)   — 對外膨脹，去除尖角
-        3. buffer(-1.0)   — 收縮回原大小，整平邊緣
+        1. simplify(0.4)       — 移除微小變異（去掉像素鋸齒）
+        2. buffer(+1.0, res=4) — 對外膨脹，去除尖角；resolution=4 避免插入過多曲線點
+        3. buffer(-1.0, res=4) — 收縮回原大小，整平邊緣
+        4. simplify(0.5)       — 最終壓縮，確保頂點數可被 Xenium Explorer 快速載入
+
+        注意：預設 resolution=16 會讓頂點數爆增（20 頂點 → 100+），
+        導致 cells.zarr.zip 極大，Xenium Explorer 「Loading cells...」卡住。
+        resolution=4 + 最終 simplify 可將頂點控制在 ~30 個以內。
         """
         try:
-            # 針對 µm 座標的平滑邏輯
             smooth = poly.simplify(0.4, preserve_topology=True)
-            smooth = smooth.buffer(1.0, join_style=1).buffer(-1.0, join_style=1)
+            # resolution=4：每 1/4 圓弧只插 4 個點（vs 預設 16 個），大幅減少頂點數
+            smooth = (
+                smooth
+                .buffer(1.0, join_style=1, resolution=4)
+                .buffer(-1.0, join_style=1, resolution=4)
+            )
+            # 最終再 simplify：壓縮殘留冗餘頂點，容差 0.5µm 對 Visium HD 影響可忽略
+            smooth = smooth.simplify(0.5, preserve_topology=True)
             if (
                 smooth.is_valid
                 and not smooth.is_empty
@@ -578,9 +589,9 @@ class XeniumExporter:
                 parse_kwargs["feature_key"] = "gene"
 
             sd_points = PointsModel.parse(
-                tx_dd, 
-                sort=True, 
-                transformations={"global": Identity()}, 
+                tx_dd,
+                sort=False,   # sort=True 會對大型 CSV 做全排序，速度極慢
+                transformations={"global": Identity()},
                 **parse_kwargs
             )
             logger.info("轉錄點 PointsModel 建立完成。")
@@ -616,7 +627,7 @@ class XeniumExporter:
 
             sd_points = PointsModel.parse(
                 tx_dd,
-                sort=True,
+                sort=False,   # sort=True 對大型 parquet 全排序，速度極慢
                 coordinates={"x": "x", "y": "y"},
                 feature_key="gene",
                 transformations={"global": Identity()},
@@ -712,37 +723,309 @@ class XeniumExporter:
             logger.info(
                 f"experiment.xenium pixel_size 修補完成：{old_ps} → {pixel_size} µm/px"
             )
+
+            # 補齊 Xenium Explorer 必要的影像檔案
+            # spatialdata_xenium_explorer 只寫出 morphology.ome.tif；
+            # Xenium Explorer 還需要 morphology_mip.ome.tif 與 morphology_focus.ome.tif，
+            # 缺少時會卡在 "Loading cells..." 等待這兩個檔案。
+            # 用 morphology.ome.tif 複製補齊，H&E 無 z-stack，三檔等同。
+            self._ensure_morphology_files(out_xenium_dir)
+
         except Exception as exc:
             logger.error(f"修補 experiment.xenium 失敗：{exc}")
 
     @staticmethod
+    def _ensure_morphology_files(out_xenium_dir: Path) -> None:
+        """
+        Xenium Explorer morphology 衍生檔處理。
+
+        Xenium Explorer 在 experiment.xenium 中引用 morphology_mip_filepath 與
+        morphology_focus_filepath，但找不到時會直接跳過（graceful skip）。
+
+        ⚠️ 不複製 morphology.ome.tif 作為 MIP/Focus：
+        morphology.ome.tif 是 3 通道 RGB H&E 影像；
+        Xenium Explorer 期望 MIP/Focus 為單通道 DAPI 灰階影像。
+        格式不符時 Xenium Explorer 會在載入階段卡住（Loading cells... 數分鐘）。
+
+        正確做法：讓 MIP/Focus 路徑不存在，Xenium Explorer 會自動跳過。
+        """
+        src = out_xenium_dir / "morphology.ome.tif"
+        if not src.exists():
+            logger.warning("morphology.ome.tif 不存在。")
+            return
+
+        # 若有舊版錯誤複製的 MIP/Focus 檔案，主動刪除以免卡住載入
+        for fname in ("morphology_mip.ome.tif", "morphology_focus.ome.tif"):
+            dst = out_xenium_dir / fname
+            if dst.exists():
+                try:
+                    dst.unlink()
+                    logger.info(f"移除格式錯誤的衍生影像：{fname}")
+                except Exception as exc:
+                    logger.warning(f"移除 {fname} 失敗（不影響主流程）：{exc}")
+
+    @staticmethod
+    def _rebuild_cells_zarr_v4(
+        out_xenium_dir: Path,
+        sd_shapes: "gpd.GeoDataFrame",
+        pixel_size_um: float,
+    ) -> None:
+        """
+        以 Xenium Explorer 4.x 新格式完整重建 cells.zarr.zip。
+
+        spatialdata_xenium_explorer v0.1.7 寫出的是舊格式（polygon_vertices），
+        Xenium Explorer 4.1.1 需要新格式：
+          - polygon_sets/{0,1}/vertices   shape [n_cells, 50] float32，µm 座標
+          - polygon_sets/{0,1}/num_vertices   shape [n_cells] int32
+          - polygon_sets/{0,1}/cell_index     shape [n_cells] int32（0-based）
+          - polygon_sets/{0,1}/method         shape [n_cells] uint32
+          - masks/{0,1}                   shape [H, W] uint32，tile-chunked
+          - masks/homogeneous_transform   4×4 float32，scale=1/pixel_size_um
+          - cell_summary                  [n_cells, 8] float64
+          - cell_id                       [n_cells, 2] uint32
+
+        多邊形座標以 µm 傳入（ROI-local，與 morphology.ome.tif 像素一一對應）。
+        mask 從 polygon 光柵化產生；chunks 為 256×256，避免單一大 chunk 阻塞載入。
+        """
+        import io
+        import os
+        import zipfile
+        import zarr
+        import numpy as np
+        import numcodecs
+        from zarr.storage import MemoryStore
+
+        N_VERTS_MAX = 25   # 每個多邊形最多頂點數（real Xenium 亦為 25）
+        MASK_CHUNK  = 256  # tile-based chunk size（避免單一 9MB+ chunk 阻塞 Xenium Explorer）
+        BLOSC_LZ4   = numcodecs.Blosc(cname="lz4",  clevel=5, shuffle=numcodecs.Blosc.SHUFFLE)
+        BLOSC_ZSTD  = numcodecs.Blosc(cname="zstd", clevel=1, shuffle=numcodecs.Blosc.SHUFFLE)
+
+        cells_zarr_path = out_xenium_dir / "cells.zarr.zip"
+        if not cells_zarr_path.exists():
+            logger.warning("找不到 cells.zarr.zip（spatialdata_xenium_explorer 未寫出），跳過格式轉換。")
+            return
+
+        # ── 取得 morphology 影像尺寸（決定 mask 大小）────────────────────────
+        morph_path = out_xenium_dir / "morphology.ome.tif"
+        H, W = 512, 512  # 預設
+        if morph_path.exists():
+            try:
+                import tifffile
+                tf = tifffile.TiffFile(str(morph_path))
+                page0 = tf.pages[0]
+                H, W = page0.shape[0], page0.shape[1]
+                tf.close()
+            except Exception as exc:
+                logger.warning(f"讀取 morphology.ome.tif 尺寸失敗：{exc}，使用預設 {H}×{W}")
+
+        n_cells = len(sd_shapes)
+        logger.info(f"重建 cells.zarr.zip：{n_cells} 個細胞，mask {H}×{W} px，tile={MASK_CHUNK}×{MASK_CHUNK}")
+
+        # ── 多邊形 → 頂點陣列 ────────────────────────────────────────────────
+        def _poly_to_verts(poly, n_max: int):
+            """將 shapely Polygon/MultiPolygon 化簡為 ≤n_max 頂點，回傳 flat float32 與計數。"""
+            import shapely
+            if poly.geom_type == "MultiPolygon":
+                poly = max(poly.geoms, key=lambda p: p.area)
+            coords = list(poly.exterior.coords)
+            if len(coords) > 1 and coords[0] == coords[-1]:
+                coords = coords[:-1]
+            # 化簡直到頂點數 ≤ n_max
+            tol = 0.1
+            while len(coords) > n_max and tol < 100:
+                s = poly.simplify(tol, preserve_topology=True)
+                if s.geom_type == "MultiPolygon":
+                    s = max(s.geoms, key=lambda p: p.area)
+                new_coords = list(s.exterior.coords)
+                if new_coords[0] == new_coords[-1]:
+                    new_coords = new_coords[:-1]
+                coords = new_coords
+                tol *= 2.0
+            coords = coords[:n_max]
+            flat = np.zeros(n_max * 2, dtype=np.float32)
+            for i, (x, y) in enumerate(coords):
+                flat[i * 2]     = float(x)
+                flat[i * 2 + 1] = float(y)
+            return flat, len(coords)
+
+        vertices   = np.zeros((n_cells, N_VERTS_MAX * 2), dtype=np.float32)
+        num_verts  = np.zeros(n_cells, dtype=np.int32)
+        cell_index = np.arange(n_cells, dtype=np.int32)
+        cx = np.zeros(n_cells, dtype=np.float64)
+        cy = np.zeros(n_cells, dtype=np.float64)
+        cell_area  = np.zeros(n_cells, dtype=np.float64)
+
+        for i, poly in enumerate(sd_shapes.geometry):
+            if poly is None or (hasattr(poly, "is_empty") and poly.is_empty):
+                continue
+            try:
+                flat, nv    = _poly_to_verts(poly, N_VERTS_MAX)
+                vertices[i] = flat
+                num_verts[i] = nv
+                cx[i]        = poly.centroid.x
+                cy[i]        = poly.centroid.y
+                cell_area[i] = poly.area
+            except Exception as exc:
+                logger.debug(f"細胞 {i} 頂點提取失敗：{exc}")
+
+        # ── 光柵化多邊形 → mask ────────────────────────────────────────────────
+        from skimage.draw import polygon as sk_polygon
+
+        mask = np.zeros((H, W), dtype=np.uint32)
+        scale = 1.0 / pixel_size_um   # µm → pixel
+        n_rasterized = 0
+        for i in range(n_cells):
+            if num_verts[i] == 0:
+                continue
+            xs = vertices[i, 0::2][:num_verts[i]] * scale   # column (x)
+            ys = vertices[i, 1::2][:num_verts[i]] * scale   # row    (y)
+            # 若 polygon 超出 mask 邊界則跳過
+            if xs.max() < 0 or xs.min() >= W or ys.max() < 0 or ys.min() >= H:
+                continue
+            try:
+                rr, cc = sk_polygon(ys, xs, shape=(H, W))
+                mask[rr, cc] = i + 1   # 1-indexed，0 = background
+                n_rasterized += 1
+            except Exception:
+                pass
+        logger.info(f"光柵化完成：{n_rasterized}/{n_cells} 個細胞")
+
+        # ── cell_summary（8 欄）────────────────────────────────────────────────
+        cell_summary = np.zeros((n_cells, 8), dtype=np.float64)
+        cell_summary[:, 0] = cx          # cell_centroid_x (µm)
+        cell_summary[:, 1] = cy          # cell_centroid_y (µm)
+        cell_summary[:, 2] = cell_area   # cell_area (µm²)
+        cell_summary[:, 3] = cx          # nucleus_centroid_x
+        cell_summary[:, 4] = cy          # nucleus_centroid_y
+        # [:, 5] nucleus_area = 0
+        # [:, 6] z_level = 0
+        cell_summary[:, 7] = 1.0         # nucleus_count
+
+        # ── homogeneous_transform：µm → mask pixel ─────────────────────────
+        transform = np.eye(4, dtype=np.float32)
+        transform[0, 0] = scale
+        transform[1, 1] = scale
+
+        # ── cell_id：[n_cells, 2]，第 2 欄為 z-level（1 = in-focus） ────────
+        # ⚠️ 必須 0-indexed（從 0 開始），與 cell_feature_matrix.zarr.zip 的 library 輸出一致。
+        # 若用 1-indexed，Xenium Explorer 點選 cell 時會無限旋轉（ID 對不上）。
+        cell_id_arr = np.zeros((n_cells, 2), dtype=np.uint32)
+        cell_id_arr[:, 0] = np.arange(0, n_cells, dtype=np.uint32)
+        cell_id_arr[:, 1] = 1
+
+        # ── 寫入 MemoryStore，再序列化成 ZIP ──────────────────────────────────
+        mem  = MemoryStore()
+        root = zarr.open(mem, mode="w")
+
+        # Root .zattrs — Xenium Explorer 4.x 必要 schema
+        # polygon_sets/0 = cell boundaries，polygon_sets/1 = cell boundaries（無獨立核分割）
+        root.attrs["major_version"]             = 6
+        root.attrs["minor_version"]             = 2
+        root.attrs["name"]                      = "CellSegmentationDataset"
+        root.attrs["number_cells"]              = n_cells
+        root.attrs["polygon_set_descriptions"]  = [
+            "H&E cell segmentation by MCseg v2",
+            "H&E cell segmentation by MCseg v2",
+        ]
+        root.attrs["polygon_set_display_names"] = ["Cell boundaries", "Cell boundaries"]
+        root.attrs["polygon_set_names"]         = ["cell", "cell"]
+        root.attrs["segmentation_methods"]      = ["MCseg v2 H&E cell segmentation"]
+        root.attrs["spatial_units"]             = "microns"
+
+        # cell_id
+        root.array(
+            "cell_id", cell_id_arr,
+            chunks=(n_cells, 1), dtype=np.uint32,
+            compressor=BLOSC_LZ4, overwrite=True,
+        )
+
+        # cell_summary + attrs
+        cs_arr = root.array(
+            "cell_summary", cell_summary,
+            chunks=(n_cells, 1), dtype=np.float64,
+            compressor=BLOSC_LZ4, overwrite=True,
+        )
+        cs_arr.attrs["column_names"] = [
+            "cell_centroid_x", "cell_centroid_y", "cell_area",
+            "nucleus_centroid_x", "nucleus_centroid_y",
+            "nucleus_area", "z_level", "nucleus_count",
+        ]
+        cs_arr.attrs["column_descriptions"] = [
+            "Cell centroid in X", "Cell centroid in Y", "Cell area",
+            "Nucleus centroid in X", "Nucleus centroid in Y",
+            "Nucleus area", "z_level", "Nucleus count",
+        ]
+
+        # masks
+        masks_grp = root.require_group("masks")
+        masks_grp.array(
+            "homogeneous_transform", transform,
+            chunks=(4, 4), dtype=np.float32,
+            compressor=BLOSC_LZ4, overwrite=True,
+        )
+        for set_idx in (0, 1):
+            masks_grp.array(
+                str(set_idx), mask,
+                chunks=(MASK_CHUNK, MASK_CHUNK), dtype=np.uint32,
+                compressor=BLOSC_ZSTD,
+                overwrite=True,
+            )
+
+        # polygon_sets
+        ps_grp = root.require_group("polygon_sets")
+        for set_idx in (0, 1):
+            grp = ps_grp.require_group(str(set_idx))
+            grp.array(
+                "vertices", vertices,
+                chunks=(n_cells, N_VERTS_MAX), dtype=np.float32,
+                compressor=BLOSC_LZ4, overwrite=True,
+            )
+            grp.array(
+                "num_vertices", num_verts,
+                chunks=(n_cells,), dtype=np.int32,
+                compressor=BLOSC_LZ4, overwrite=True,
+            )
+            grp.array(
+                "cell_index", cell_index,
+                chunks=(n_cells,), dtype=np.int32,
+                compressor=BLOSC_LZ4, overwrite=True,
+            )
+            method_val = 3 if set_idx == 0 else 0  # 3=cell boundary, 0=nucleus boundary
+            grp.array(
+                "method",
+                np.full(n_cells, method_val, dtype=np.uint32),
+                chunks=(n_cells,), dtype=np.uint32,
+                compressor=BLOSC_LZ4, overwrite=True,
+            )
+
+        # 序列化 MemoryStore → ZIP bytes
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zw:
+            for key, data in mem.items():
+                zw.writestr(key, bytes(data))
+
+        # 原地取代（同一 filesystem → os.replace 接近原子性）
+        tmp_path = cells_zarr_path.parent / "_cells_v4_rebuild.zarr.zip"
+        tmp_path.write_bytes(buf.getvalue())
+        os.replace(str(tmp_path), str(cells_zarr_path))
+        logger.info(
+            f"cells.zarr.zip 已重建為 Xenium Explorer 4.x 格式："
+            f"{n_cells} 個細胞，mask {H}×{W}，"
+            f"centroid_x=[{cx.min():.1f}, {cx.max():.1f}] µm"
+        )
+
+    # ── 保留舊方法作為備用（僅處理舊格式 polygon_vertices） ────────────────
+    @staticmethod
     def _patch_cell_summary_centroids(out_xenium_dir: Path) -> None:
         """
-        修補 cells.zarr.zip 中的 cell_summary 中心點欄位。
-
-        spatialdata_xenium_explorer 寫出的 cell_summary 僅填入 cell_area（col 2），
-        cell_centroid_x（col 0）與 cell_centroid_y（col 1）均為 0。
-        從 polygon_vertices（interleaved x,y 格式）計算真實中心點並寫回，
-        讓 Xenium Explorer 能正確顯示細胞位置與 annotation 群組對應。
-
-        polygon_vertices 格式：shape=(2, n_cells, n_coords)
-          - dim 0: z_level（2D 時兩層相同）
-          - dim 1: cell index
-          - dim 2: interleaved (x0, y0, x1, y1, ...) 座標，單位為影像局部 µm
-        polygon_num_vertices 格式：shape=(2, n_cells)，每個 cell 的實際頂點數
-
-        採用 copy_store + MemoryStore 策略：
-        1. 將整個 ZipStore 複製到 MemoryStore（zarr.convenience.copy_store 複製原始 chunk bytes，
-           完整保留 spatialdata_xenium_explorer 寫出的分塊配置與壓縮格式）
-        2. 在 MemoryStore 上修改 cell_summary（zarr 以原分塊重新編碼，不改變其他陣列）
-        3. 將 MemoryStore 複製至同目錄臨時 ZipStore，再以 os.replace 原地取代
-
-        不使用 ZipStore append 模式（會產生重複 entry）；
-        不直接以 zarr.array() 重建（會改變分塊大小導致 Xenium Explorer 無法讀取）。
+        （已棄用）修補舊格式 cells.zarr.zip 的 cell_summary 中心點。
+        新流程改用 _rebuild_cells_zarr_v4 直接寫出 Xenium Explorer 4.x 格式。
+        保留此方法供 legacy bundle 診斷使用。
         """
         import os
+        import json
+        import zipfile
         import zarr
-        import zarr.convenience
         import numpy as np
         from zarr.storage import MemoryStore
 
@@ -752,71 +1035,179 @@ class XeniumExporter:
             return
 
         tmp_path = cells_zarr_path.parent / "_cells_centroid_patch.zarr.zip"
-        store_r = store_w = None
 
-        # 1. 將 ZipStore 完整複製到 MemoryStore（保留原始 chunk 結構）
-        mem_store = MemoryStore()
         try:
+            with zipfile.ZipFile(cells_zarr_path, "r") as zr:
+                all_entries: dict[str, bytes] = {n: zr.read(n) for n in zr.namelist()}
+
+            # 舊格式才有 polygon_vertices
+            if "polygon_vertices/.zarray" not in all_entries:
+                logger.info("cells.zarr.zip 已為新格式（polygon_sets），跳過舊格式中心點修補。")
+                return
+
             store_r = zarr.storage.ZipStore(str(cells_zarr_path), mode="r")
-            zarr.convenience.copy_store(store_r, mem_store)
-        finally:
-            if store_r is not None:
-                store_r.close()
+            root_r  = zarr.open(store_r, mode="r")
+            verts     = root_r["polygon_vertices"][:]
+            num_verts = root_r["polygon_num_vertices"][:]
+            cs        = root_r["cell_summary"][:]
+            store_r.close()
 
-        # 2. 在 MemoryStore 上計算中心點並寫回 cell_summary
-        mem_root  = zarr.open(mem_store, mode="r+")
-        verts     = mem_root["polygon_vertices"][:]     # (2, n_cells, n_coords)
-        num_verts = mem_root["polygon_num_vertices"][:] # (2, n_cells)
+            coords = verts[0]
+            n_arr  = num_verts[0]
+            x_vals = coords[:, 0::2]
+            y_vals = coords[:, 1::2]
+            n_cells = len(n_arr)
+            x_c = np.array(
+                [x_vals[i, :int(n_arr[i])].mean() if n_arr[i] > 0 else 0.0
+                 for i in range(n_cells)], dtype=np.float64,
+            )
+            y_c = np.array(
+                [y_vals[i, :int(n_arr[i])].mean() if n_arr[i] > 0 else 0.0
+                 for i in range(n_cells)], dtype=np.float64,
+            )
+            cs8 = np.zeros((n_cells, 8), dtype=np.float64)
+            cs8[:, :cs.shape[1]] = cs
+            cs8[:, 0] = x_c
+            cs8[:, 1] = y_c
+            cs8[:, 3] = x_c
+            cs8[:, 4] = y_c
+            cs8[:, 7] = 1.0
 
-        coords = verts[0]
-        n_arr  = num_verts[0]
-        x_vals = coords[:, 0::2]
-        y_vals = coords[:, 1::2]
+            cs_zarray_key = "cell_summary/.zarray"
+            cs_zattrs_key = "cell_summary/.zattrs"
+            old_cs_meta   = json.loads(all_entries[cs_zarray_key])
+            new_cs_zarray = dict(old_cs_meta)
+            new_cs_zarray["shape"]  = [n_cells, 8]
+            new_cs_zarray["chunks"] = [n_cells, 1]
+            new_cs_zattrs = {
+                "column_names": [
+                    "cell_centroid_x", "cell_centroid_y", "cell_area",
+                    "nucleus_centroid_x", "nucleus_centroid_y",
+                    "nucleus_area", "z_level", "nucleus_count",
+                ],
+                "column_descriptions": [
+                    "Cell centroid in X", "Cell centroid in Y", "Cell area",
+                    "Nucleus centroid in X", "Nucleus centroid in Y",
+                    "Nucleus area", "z_level", "Nucleus count",
+                ],
+            }
 
-        x_centroids = np.array(
-            [x_vals[i, :int(n_arr[i])].mean() if n_arr[i] > 0 else 0.0
-             for i in range(len(n_arr))],
-            dtype=np.float64,
-        )
-        y_centroids = np.array(
-            [y_vals[i, :int(n_arr[i])].mean() if n_arr[i] > 0 else 0.0
-             for i in range(len(n_arr))],
-            dtype=np.float64,
-        )
+            import numcodecs as _nc
+            mem_store = MemoryStore()
+            comp = _nc.get_codec(new_cs_zarray["compressor"]) if new_cs_zarray.get("compressor") else None
+            cs_arr_mem = zarr.open_array(
+                mem_store, path="cell_summary", mode="w",
+                shape=(n_cells, 8), dtype=np.float64,
+                chunks=(n_cells, 1), compressor=comp, order="C",
+            )
+            cs_arr_mem[:] = cs8
 
-        cs = mem_root["cell_summary"][:]
-        cs[:, 0] = x_centroids
-        cs[:, 1] = y_centroids
-        cs[:, 3] = x_centroids   # nucleus centroid（無核分割，與 cell centroid 相同）
-        cs[:, 4] = y_centroids
-        mem_root["cell_summary"][:] = cs   # zarr 以原始分塊與壓縮格式重新編碼
+            cs_prefix = "cell_summary/"
+            new_chunks: dict[str, bytes] = {
+                k: bytes(v) for k, v in mem_store.items()
+                if k.startswith(cs_prefix) and not k.split("/")[-1].startswith(".")
+            }
+            old_cs_chunk_keys = {
+                k for k in all_entries
+                if k.startswith(cs_prefix) and not k.split("/")[-1].startswith(".")
+            }
 
-        # 3. 將 MemoryStore 複製至乾淨的臨時 ZipStore（同目錄，同 filesystem）
-        try:
-            store_w = zarr.storage.ZipStore(str(tmp_path), mode="w")
-            zarr.convenience.copy_store(mem_store, store_w)
-        finally:
-            if store_w is not None:
-                store_w.close()
+            with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_STORED) as zw:
+                for name, data in all_entries.items():
+                    if name == cs_zarray_key:
+                        zw.writestr(name, json.dumps(new_cs_zarray).encode())
+                    elif name == cs_zattrs_key:
+                        zw.writestr(name, json.dumps(new_cs_zattrs).encode())
+                    elif name in old_cs_chunk_keys:
+                        pass
+                    else:
+                        zw.writestr(name, data)
+                for k, v in new_chunks.items():
+                    zw.writestr(k, v)
 
-        # 4. 原地取代
-        try:
             os.replace(str(tmp_path), str(cells_zarr_path))
-        except OSError as exc:
-            logger.warning(f"cell_summary 修補後取代原始檔案失敗：{exc}")
-            raise
-        finally:
+            logger.info(
+                f"cell_summary 修補完成（8 欄）："
+                f"x=[{x_c.min():.1f}, {x_c.max():.1f}] µm，"
+                f"y=[{y_c.min():.1f}, {y_c.max():.1f}] µm"
+            )
+
+        except Exception as exc:
+            logger.warning(f"cell_summary centroid patch 失敗（繼續執行）：{exc}")
             if tmp_path.exists():
                 try:
                     tmp_path.unlink()
                 except OSError:
                     pass
 
-        logger.info(
-            f"cell_summary 中心點修補完成："
-            f"x=[{x_centroids.min():.1f}, {x_centroids.max():.1f}] µm，"
-            f"y=[{y_centroids.min():.1f}, {y_centroids.max():.1f}] µm"
-        )
+    @staticmethod
+    def _patch_seg_mask_value(out_xenium_dir: Path) -> None:
+        """
+        修補 cells.zarr.zip 的 seg_mask_value 為 0-indexed [0, 1, ..., N-1]。
+
+        spatialdata_xenium_explorer bug：寫出 1-indexed [1, 2, ..., N]，
+        而 cell_id 為 0-indexed [0, 1, ..., N-1]。兩者不一致會導致
+        Xenium Explorer "Loading cells..." 永遠卡住。
+        """
+        import os, json, zipfile
+        import numpy as np
+        import numcodecs
+
+        cells_path = out_xenium_dir / "cells.zarr.zip"
+        if not cells_path.exists():
+            logger.warning("找不到 cells.zarr.zip，跳過 seg_mask_value 修補。")
+            return
+
+        tmp_path = cells_path.parent / "_cells_seg_patch.zarr.zip"
+        try:
+            with zipfile.ZipFile(str(cells_path), "r") as zr:
+                all_entries: dict[str, bytes] = {n: zr.read(n) for n in zr.namelist()}
+
+            meta = json.loads(all_entries["seg_mask_value/.zarray"])
+            n_cells = meta["shape"][0]
+            chunk_size = meta["chunks"][0]
+            comp_info = meta.get("compressor")
+            comp = numcodecs.get_codec(comp_info) if comp_info else None
+
+            # 確認是否已是 0-indexed（避免重複修補）
+            first_chunk_raw = all_entries.get("seg_mask_value/0", b"")
+            if first_chunk_raw:
+                first_val = np.frombuffer(
+                    comp.decode(first_chunk_raw) if comp else first_chunk_raw, dtype=np.uint32
+                )[0]
+                if first_val == 0:
+                    logger.info("seg_mask_value 已為 0-indexed，跳過修補。")
+                    return
+
+            new_arr = np.arange(0, n_cells, dtype=np.uint32)
+            new_chunks: dict[str, bytes] = {}
+            for i in range(0, n_cells, chunk_size):
+                chunk_data = new_arr[i : i + chunk_size]
+                encoded = comp.encode(chunk_data.tobytes()) if comp else chunk_data.tobytes()
+                new_chunks[f"seg_mask_value/{i // chunk_size}"] = encoded
+
+            old_keys = {
+                k for k in all_entries
+                if k.startswith("seg_mask_value/") and not k.split("/")[-1].startswith(".")
+            }
+
+            with zipfile.ZipFile(str(tmp_path), "w", compression=zipfile.ZIP_STORED) as zw:
+                for name, data in all_entries.items():
+                    if name not in old_keys:
+                        zw.writestr(name, data)
+                for k, v in new_chunks.items():
+                    zw.writestr(k, v)
+
+            os.replace(str(tmp_path), str(cells_path))
+            logger.info(f"seg_mask_value 修補完成：[0..{n_cells - 1}]（0-indexed）")
+
+        except Exception as exc:
+            logger.warning(f"seg_mask_value patch 失敗（繼續執行）：{exc}")
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     @staticmethod
     def _patch_analysis_indptr(out_xenium_dir: Path) -> None:
@@ -857,8 +1248,10 @@ class XeniumExporter:
                 indices = grp["indices"][:]
                 indptr  = grp["indptr"][:]
                 # 若 indptr 少了結尾 entry（N 個而非 N+1 個），補上 len(indices)
+                # ⚠️ 必須保留原始 dtype（uint32），np.append 預設升型為 int64。
+                # Xenium Explorer 預期 uint32，讀到 int64 會永遠卡住 "Loading cells..."。
                 if len(indptr) == len(group_names[i]):
-                    indptr = np.append(indptr, len(indices))
+                    indptr = np.append(indptr, np.array([len(indices)], dtype=indptr.dtype))
                 groupings_data.append({"indices": indices, "indptr": indptr})
 
         finally:
@@ -978,16 +1371,33 @@ class XeniumExporter:
         # 強制覆寫確保 Xenium Explorer 使用正確比例。
         self._patch_experiment_xenium(out_xenium_dir, out_pixel_size)
 
-        # 7. 修補 cell_summary 中心點
-        # spatialdata_xenium_explorer 不計算細胞中心點，僅填入 0。
-        # 從 polygon_vertices 重新計算並寫回，讓 Xenium Explorer 正確顯示細胞位置與 annotation。
+        # 7. 修補 cells.zarr.zip 的 cell_summary 中心點 + seg_mask_value（0-indexed）
+        # spatialdata_xenium_explorer 寫出的是舊格式（major_version=5, polygon_vertices）。
+        # 此格式與 Xenium Explorer 4.1.1 相容（比 v6 新格式的 2D mask 載入快得多）。
+        # ⚠️ 不呼叫 _rebuild_cells_zarr_v4——新格式需載入整張 2D 遮罩，在 Xenium Explorer
+        #    4.1.1 中反而導致 "Loading cells..." 卡頓數分鐘。
+        # ⚠️ seg_mask_value 必須 0-indexed（與 cell_id 一致），否則 Xenium Explorer 卡住。
+        #    library 寫出 1-indexed [1..N]，此修補改為 [0..N-1]。
         self._patch_cell_summary_centroids(out_xenium_dir)
+        self._patch_seg_mask_value(out_xenium_dir)
 
-        # 8. 修補 analysis.zarr.zip 的 indptr（CSR 格式少一個結尾 entry）
-        # spatialdata_xenium_explorer bug：每個 grouping 的 indptr 只寫 N 個值，
-        # 標準 CSR 格式需要 N+1 個（最後一個指向 len(indices)）。
-        # Xenium Explorer 因此無法解析最後一個群組，annotation 不顯示。
-        self._patch_analysis_indptr(out_xenium_dir)
+        # 8. analysis.zarr.zip 的 indptr 格式說明（不需修補）
+        # Xenium Explorer 期待每個 grouping 的 indptr 有 N_groups 個 start positions：
+        #   indptr[i] = group i 在 indices 中的起始位置；最後一個 group 隱含到 len(indices)。
+        # spatialdata_xenium_explorer 的輸出格式正確（N_groups entries, dtype=uint32）。
+        # ⚠️ 不要呼叫 _patch_analysis_indptr——它原本是錯誤假設（以為需要 N+1 entries），
+        #    會多加一個 trailing entry 導致 annotation 完全不顯示。
+        # self._patch_analysis_indptr(out_xenium_dir)  # 已停用
+
+        # 9. 建立 analysis_summary.html（Xenium Explorer 4.x 要求此檔存在）
+        # 缺少時 Xenium Explorer 會持續等待，卡在 "Loading cells..." 畫面。
+        summary_html = out_xenium_dir / "analysis_summary.html"
+        if not summary_html.exists():
+            summary_html.write_text(
+                "<!DOCTYPE html><html><body><p>MCseg v2 Analysis</p></body></html>",
+                encoding="utf-8",
+            )
+            logger.info("analysis_summary.html 建立完成。")
 
 
 def generate_combined_geojson(

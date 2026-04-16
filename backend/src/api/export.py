@@ -548,6 +548,16 @@ def _generate_visiumhd_transcripts(
             "gene": gene_names[cols],
         })
 
+        # Xenium Explorer 載入 transcripts 層時無分頁，超過 ~500 萬行會卡很久。
+        # 隨機取樣至上限，保留空間分佈的代表性。
+        MAX_TX_ROWS = 5_000_000
+        if len(df) > MAX_TX_ROWS:
+            logger.warning(
+                f"轉錄點共 {len(df):,} 行，超過上限 {MAX_TX_ROWS:,}，"
+                f"隨機取樣（seed=42）以加快 Xenium Explorer 載入速度。"
+            )
+            df = df.sample(n=MAX_TX_ROWS, random_state=42).reset_index(drop=True)
+
         out_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(str(out_path), index=False)
         logger.info(f"已寫出 {len(df):,} 個 Visium HD 轉錄點至 {out_path}")
