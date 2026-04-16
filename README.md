@@ -37,7 +37,7 @@
 
 ## Contents
 
-[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-v2-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
+[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Output Structure](#output-structure) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-v2-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
 
 ---
 
@@ -53,9 +53,9 @@
 | **Storage** | 15 GB free | 30 GB+ free | ~8 GB for Python env (torch, cellpose); remainder for data & results |
 | **Python** | 3.10 | 3.11 | Managed by `uv`; do not use system Python |
 | **Node.js** | v18 | v20 LTS | For frontend (Vite + React) |
-| **GPU** | — (CPU fallback) | Apple MPS or NVIDIA (CUDA 12.4) | GPU cuts per-ROI segmentation from ~10 min to ~2 min |
+| **GPU** | — (CPU fallback) | Apple MPS or NVIDIA (CUDA 12.4) | GPU cuts per-ROI segmentation from ~30 min to ~2–3 min |
 
-> **No GPU?** CPU mode works but is slow for large ROIs. A single 1500 × 1200 px ROI takes ~8–12 min on an Apple M2 CPU vs ~2 min with MPS.
+> **No GPU?** CPU mode works but is slow for large ROIs. A single 1500 × 1200 px ROI takes ~30 min on an Apple M2 CPU vs ~2–3 min with MPS.
 
 ### Prerequisites
 
@@ -385,7 +385,7 @@ The export page provides both result visualisation and format conversion:
 | Xenium Explorer | Xenium-native bundle (`experiment.xenium` + zarr archives) | Load directly in Xenium Explorer 4+ |
 | Loupe Browser | `.cloupe` file + barcode CSV with cluster labels | 10x Genomics Loupe Browser |
 
-Files are saved to `<output_dir>/roi/<roi_name>/export/`.
+Files are saved to `<output_dir>/export/xenium/{roi_name}/`.
 
 ---
 
