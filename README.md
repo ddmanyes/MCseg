@@ -35,8 +35,6 @@ Its core segmentation engine, **MCseg v2**, runs a multi-pass ensemble of cyto3 
 | **Node.js** | v18 | v20 LTS | For frontend (Vite + React) |
 | **GPU** | — (CPU fallback) | Apple MPS or NVIDIA (CUDA 12.4) | GPU cuts segmentation from ~30 min (4-pass) / ~55 min (7-pass) to ~2–3 / ~5–8 min |
 
-> **No GPU?** CPU mode works but is slow. Default 4-pass config: ~30 min/ROI on Apple M2 CPU vs ~2–3 min with MPS. Full 7-pass (`use_cpsam=true`): ~55 min vs ~5–8 min.
-
 ### Prerequisites
 
 **macOS (Homebrew recommended):**
