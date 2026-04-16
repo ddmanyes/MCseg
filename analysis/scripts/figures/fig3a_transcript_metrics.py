@@ -1,16 +1,12 @@
 """
-27_fig3_revised.py
-==================
-Fig. 3 (fig4a_capture.png) — 6-panel combined, 2 rows × 3 cols:
-  a) FTC | b) UMI/cell | c) Genes/cell
-  d) UMI density | e) NED | f) Doublet rate (all boxplots, no panel titles)
-
-Supp. Fig. S8 (fig4d_roi_heatmap.png):
-  Per-ROI heatmap
+fig3a_transcript_metrics.py
+============================
+Fig. 3b — 6-panel boxplot (2 rows × 3 cols):
+  b) FTC | c) UMI/cell | d) Genes/cell
+  e) UMI density | f) NED | g) Doublet rate
 
 Output:
-  crc_transcript_attribution/results/figures/
-  manuscript/figures/04_crc_tas/
+  submission_bioinformatics/figures/fig3/fig3b.png
 """
 
 from __future__ import annotations
@@ -33,14 +29,14 @@ warnings.filterwarnings("ignore")
 
 # ── 路徑 ──────────────────────────────────────────────────────────────────
 
-ROOT       = Path(__file__).parent.parent
-cfg        = yaml.safe_load((ROOT / "config.yaml").read_text())
+_CRC_ROOT  = Path("/Volumes/SSD/plan_a/crc_transcript_attribution")
+cfg        = yaml.safe_load((_CRC_ROOT / "config.yaml").read_text())
 PATHS      = cfg["paths"]
 DATA       = cfg["data"]
 PLT_CFG    = cfg["plotting"]
 
-METRICS_DIR    = ROOT / PATHS["metrics_dir"]
-FIGURES_DIR    = ROOT / PATHS["figures_dir"]
+METRICS_DIR    = _CRC_ROOT / PATHS["metrics_dir"]
+FIGURES_DIR    = Path(__file__).parents[2] / "figures" / "fig3"
 MANUSCRIPT_FIG_DIR  = Path("/Volumes/SSD/plan_a/manuscript/figures/04_crc_tas")
 MANUSCRIPT_SUPP_DIR = Path("/Volumes/SSD/plan_a/manuscript/supplementary")
 
@@ -51,9 +47,9 @@ METHOD_COLORS = PLT_CFG["method_colors"]
 DPI           = PLT_CFG["dpi"]
 
 METHOD_LABELS = {
-    "v12": "MCseg v2",
+    "v12": "MCseg",
     "sr":  "SR",
-    "p3":  "MCseg v1",
+    "p3":  "2Cseg",
     "nuc": "NUC",
 }
 
@@ -298,14 +294,16 @@ def fig3_combined(df_ac: pd.DataFrame):
     dens_range = max(all_dens) - min(all_dens) if all_dens else 5
     wt_d       = _whisker_tops(bp_d_data)
 
-    if idx_sr is not None and idx_v12 is not None:
-        p = _wilcoxon_p(bp_d_data[idx_sr], bp_d_data[idx_v12])
-        _add_box_bracket(ax_d, idx_sr, idx_v12,
-                         max(wt_d) + dens_range * 0.18, p, dens_range)
+    b_base_d = max(wt_d) + dens_range * 0.18
+    gap_d    = dens_range * 0.18
+    for k, (ii, jj) in enumerate([(idx_sr, idx_v12), (idx_sr, idx_p3)]):
+        if ii is None or jj is None: continue
+        p = _wilcoxon_p(bp_d_data[ii], bp_d_data[jj])
+        _add_box_bracket(ax_d, ii, jj, b_base_d + k * gap_d, p, dens_range)
 
     ax_d.set_xticks(range(n_meth)); ax_d.set_xticklabels([""] * n_meth)
     ax_d.set_ylabel("UMI density (UMI/µm²)", fontsize=8)
-    ax_d.set_ylim(0, max(all_dens) * 1.55 if all_dens else 20)
+    ax_d.set_ylim(0, b_base_d + 2 * gap_d + dens_range * 0.15 if all_dens else 20)
     ax_d.annotate("FTC Paradox →", xy=(0.97, 0.95), xycoords="axes fraction",
                   ha="right", va="top", fontsize=6, color="#e74c3c", style="italic")
     clean_ax(ax_d)
@@ -366,17 +364,9 @@ def fig3_combined(df_ac: pd.DataFrame):
         _add_box_bracket(ax_f, idx_sr, idx_v12,
                          max(wt_f) + dr_range * 0.18, p, dr_range)
 
-    for i, method in enumerate(mord):
-        mean_f = np.mean(bp_f_data[i]) if bp_f_data[i] else np.nan
-        if not np.isnan(mean_f):
-            ax_f.text(i, max(all_dr) * 1.25, f"{mean_f:.2f}%",
-                      ha="center", va="top", fontsize=6,
-                      color="#444", fontweight="bold",
-                      bbox=dict(boxstyle="round,pad=0.1", fc="white", ec="none", alpha=0.85))
-
     ax_f.set_xticks(range(n_meth)); ax_f.set_xticklabels([""] * n_meth)
     ax_f.set_ylabel("Doublet rate (%)", fontsize=8)
-    ax_f.set_ylim(0, max(all_dr) * 1.65 if all_dr else 5)
+    ax_f.set_ylim(0, max(wt_f) + dr_range * 0.5 if all_dr else 5)
     ax_f.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.2f}%"))
     ax_f.annotate("↓ better", xy=(0.97, 0.95), xycoords="axes fraction",
                   ha="right", va="top", fontsize=6.5, color="#555")
@@ -391,7 +381,7 @@ def fig3_combined(df_ac: pd.DataFrame):
                ncol=n_meth, bbox_to_anchor=(0.5, -0.03),
                frameon=False, fontsize=7.5)
 
-    save_fig(fig, "fig4a_capture.png")
+    save_fig(fig, "fig3b.png")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

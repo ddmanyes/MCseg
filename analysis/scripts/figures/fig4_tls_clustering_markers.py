@@ -33,8 +33,28 @@ ROOT     = Path("/Volumes/SSD/plan_a/crc_transcript_attribution")
 HE_DIR   = Path("/Volumes/SSD/plan_a/crc_he_seg/results/rois")
 MASK_DIR = ROOT / "results/masks"
 AD_DIR   = ROOT / "results/anndata"
-OUT_DIR  = Path("/Volumes/SSD/plan_a/manuscript/figures/05_validation")
+OUT_DIR      = Path("/Volumes/SSD/plan_a/manuscript/figures/05_validation")
+OUT_DIR_SUB  = Path("/Volumes/SSD/plan_a/submission_bioinformatics/figures/fig4")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+OUT_DIR_SUB.mkdir(parents=True, exist_ok=True)
+
+PIXEL_SIZE_UM = 0.2738   # CRC VisiumHD H&E: 0.2738 µm/px
+SCALE_UM      = 50
+
+def add_scale_bar(ax, h: int, w: int) -> None:
+    """White 50 µm scale bar at bottom-right corner."""
+    scale_px = SCALE_UM / PIXEL_SIZE_UM   # ≈ 183 px
+    margin_x = w * 0.05
+    margin_y = h * 0.06
+    bar_y  = h - margin_y
+    bar_x1 = w - margin_x
+    bar_x0 = bar_x1 - scale_px
+    ax.plot([bar_x0, bar_x1], [bar_y, bar_y],
+            color="white", linewidth=3, solid_capstyle="butt", zorder=10)
+    ax.text((bar_x0 + bar_x1) / 2, bar_y - h * 0.025,
+            f"{SCALE_UM} µm",
+            color="white", ha="center", va="bottom",
+            fontsize=9, fontweight="bold", zorder=10)
 
 ROI = "roi15"
 
@@ -210,6 +230,7 @@ def main():
     axes[0].imshow(he_v12, alpha=0.95)
     axes[0].set_title("H&E", fontweight="bold", fontsize=12)
     axes[0].axis("off")
+    add_scale_bar(axes[0], he_v12.shape[0], he_v12.shape[1])
 
     # V12 panel — colour by cell type (same palette as SR for direct comparison)
     axes[1].imshow(he_v12, alpha=0.70)
@@ -225,8 +246,9 @@ def main():
     edge_v12 = np.zeros((*v12_mask.shape, 4))
     edge_v12[bounds_v12] = [0, 0, 0, 0.70]
     axes[1].imshow(edge_v12)
-    axes[1].set_title("MCseg v2", fontweight="bold", fontsize=12)
+    axes[1].set_title("MCseg", fontweight="bold", fontsize=12)
     axes[1].axis("off")
+    add_scale_bar(axes[1], he_v12.shape[0], he_v12.shape[1])
     v12_ct_counts = v12_ad.obs["cell_type"].value_counts()
     v12_handles = [
         mpatches.Patch(color=V12_COLORS.get(ct, "#808080"), label=f"{ct} (n={n})")
@@ -261,6 +283,7 @@ def main():
     axes[2].imshow(edge_sr)
     axes[2].set_title("SR", fontweight="bold", fontsize=12)
     axes[2].axis("off")
+    add_scale_bar(axes[2], he_sr.shape[0], he_sr.shape[1])
     sr_ct_counts = sr_ad.obs["cell_type"].value_counts()
     sr_handles = [
         mpatches.Patch(color=V12_COLORS.get(ct, "#808080"),
@@ -278,8 +301,11 @@ def main():
 
     out_d = OUT_DIR / "fig4a_tls_clustering.png"
     plt.savefig(out_d, dpi=350, bbox_inches="tight")
+    out_sub = OUT_DIR_SUB / "fig4a.png"
+    plt.savefig(out_sub, dpi=350, bbox_inches="tight")
     plt.close(fig)
     print(f"✓ Saved: {out_d}")
+    print(f"✓ Saved: {out_sub}")
 
     # ── Fig E_markers (仿 fig5e) ─────────────────────────────────────────────
     from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec

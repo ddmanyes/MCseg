@@ -20,7 +20,7 @@ from pathlib import Path
 
 HE_DIR   = Path("/Volumes/SSD/plan_a/crc_he_seg/results/rois")
 MASK_DIR = Path("/Volumes/SSD/plan_a/crc_transcript_attribution/results/masks")
-OUT_PATH = Path("/Volumes/SSD/plan_a/manuscript/figures/04_crc_tas/fig3a_crc_comparison.png")
+OUT_PATH = Path("/Volumes/SSD/plan_a/submission_bioinformatics/figures/fig3/fig3a.png")
 
 SELECTED_ROIS = ["roi2", "roi4"]
 
@@ -68,6 +68,26 @@ def blend(base: np.ndarray, over: np.ndarray) -> np.ndarray:
     return np.clip((fg * a + bg * (1.0 - a)) * 255, 0, 255).astype(np.uint8)
 
 
+# Scale bar: 50 µm @ 0.2738 µm/px ≈ 183 px
+_PIXEL_SIZE_UM = 0.2738
+_SCALE_UM      = 50
+_SCALE_PX      = _SCALE_UM / _PIXEL_SIZE_UM   # ≈ 183 px
+
+def add_scale_bar(ax: plt.Axes, img_h: int, img_w: int) -> None:
+    """White 50 µm scale bar at bottom-right corner."""
+    margin_x = img_w * 0.05
+    margin_y = img_h * 0.06
+    bar_y  = img_h - margin_y
+    bar_x1 = img_w - margin_x
+    bar_x0 = bar_x1 - _SCALE_PX
+    ax.plot([bar_x0, bar_x1], [bar_y, bar_y],
+            color="white", linewidth=2.5, solid_capstyle="butt", zorder=10)
+    ax.text((bar_x0 + bar_x1) / 2, bar_y - img_h * 0.025,
+            f"{_SCALE_UM} µm",
+            color="white", ha="center", va="bottom",
+            fontsize=7, fontweight="bold", zorder=10)
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -79,7 +99,7 @@ def main() -> None:
                              dpi=200)
     plt.subplots_adjust(hspace=0.04, wspace=0.03)
 
-    col_titles = ["H&E", "MCseg v2", "MCseg v1", "SR"]
+    col_titles = ["H&E", "MCseg", "2Cseg", "SR"]
     col_colors = ["black", "#2196F3", "#4CAF50", "#FF5722"]
 
     for i, roi in enumerate(SELECTED_ROIS):
@@ -94,15 +114,18 @@ def main() -> None:
         sr  = np.load(MASK_DIR / f"sr_{roi}.npy")
 
         # composite images
-        img_v2 = blend(he_raw, mask_to_rgba_overlay(v2, COLOR_V2))
-        img_v1  = blend(he_raw, mask_to_rgba_overlay(v1,  COLOR_V1))
+        img_v2 = blend(he_raw, mask_to_rgba_overlay(v12, COLOR_V2))
+        img_v1  = blend(he_raw, mask_to_rgba_overlay(p3,  COLOR_V1))
         img_sr  = blend(he_raw, mask_to_rgba_overlay(sr,  COLOR_SR))
 
         imgs = [he_raw, img_v2, img_v1, img_sr]
 
+        h_px, w_px = he_raw.shape[:2]
+
         for j, (img, ax) in enumerate(zip(imgs, axes[i])):
             ax.imshow(img, origin="upper", interpolation="antialiased")
             ax.set_xticks([]); ax.set_yticks([])
+            add_scale_bar(ax, h_px, w_px)
 
             # column title (first row only)
             if i == 0:

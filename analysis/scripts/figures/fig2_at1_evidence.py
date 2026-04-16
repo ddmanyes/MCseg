@@ -44,7 +44,7 @@ BTF_PATH     = (Path("/Volumes/SSD/plan_a/tissue sample/LUAD/visium") /
                 "Visium_HD_Human_Lung_Cancer_post_Xenium_Prime_5K_Experiment2_tissue_image.btf")
 MASK_DIR     = PROJECT_ROOT / "results" / "masks"
 H5AD_DIR     = PROJECT_ROOT / "results" / "visiumhd" / "visiumhd_cells"
-OUT_FIG2E    = Path("/Volumes/SSD/plan_a/manuscript/figures/fig2/fig2e.png")  # spatial overlay
+OUT_FIG2E    = Path("/Volumes/SSD/plan_a/submission_bioinformatics/figures/fig2/fig2e.png")  # spatial overlay
 OUT_FIG2F    = Path("/Volumes/SSD/plan_a/manuscript/figures/fig2/fig2f.png")  # rate chart
 
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -193,11 +193,26 @@ def make_spatial_overlay(ax, at1_binary, mcg_mask):
         mpatches.Patch(facecolor="#00C2CC", edgecolor="none",
                        label="Xenium GT  AT1 cells"),
         mpatches.Patch(facecolor="white", edgecolor="#262626", linewidth=1.5,
-                       label="MCseg v2  cell boundaries"),
+                       label="MCseg  cell boundaries"),
     ]
     ax.legend(handles=handles, fontsize=6.5, loc="lower right",
               framealpha=0.90, edgecolor="#bbb",
               handlelength=1.2, borderpad=0.5, labelspacing=0.3)
+
+    # Scale bar (bottom-left): 100 µm @ 0.2737 µm/px
+    H, W = ROI10_H, ROI10_W
+    scale_px  = 50 / 0.2737        # ≈ 183 px
+    margin_x  = W * 0.04
+    margin_y  = H * 0.05
+    bar_y     = H - margin_y
+    bar_x0    = margin_x
+    bar_x1    = bar_x0 + scale_px
+    ax.plot([bar_x0, bar_x1], [bar_y, bar_y],
+            color="#111111", linewidth=3, solid_capstyle="butt", zorder=10)
+    ax.text((bar_x0 + bar_x1) / 2, bar_y - H * 0.025,
+            "50 µm",
+            color="#111111", ha="center", va="bottom",
+            fontsize=7, fontweight="bold", zorder=10)
 
 
 # ── Panel B: waterfall chart ───────────────────────────────────────────────────

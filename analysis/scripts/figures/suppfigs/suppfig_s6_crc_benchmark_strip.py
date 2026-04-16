@@ -21,9 +21,13 @@ from pathlib import Path
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 
-HE_DIR   = Path("/Volumes/SSD/plan_a/crc_he_seg/results/rois")
-MASK_DIR = Path("/Volumes/SSD/plan_a/crc_transcript_attribution/results/masks")
-OUT_DIR  = Path("/Volumes/SSD/plan_a/manuscript/supplementary")
+HE_DIR       = Path("/Volumes/SSD/plan_a/crc_he_seg/results/rois")
+MASK_DIR     = Path("/Volumes/SSD/plan_a/crc_transcript_attribution/results/masks")
+OUT_DIR      = Path("/Volumes/SSD/plan_a/manuscript/supplementary")
+OUT_DIR_SUB  = Path("/Volumes/SSD/plan_a/submission_bioinformatics/supplementary")
+
+PIXEL_SIZE_UM = 0.2738   # CRC VisiumHD H&E µm/px
+SCALE_UM      = 50        # scale bar length in µm
 
 ROIS = ["roi1", "roi2", "roi3", "roi4", "roi5", "roi6", "roi7"]
 
@@ -41,7 +45,7 @@ plt.rcParams.update({
     "savefig.facecolor": "white",
 })
 
-COL_TITLES  = ["H&E", "V12", "P3", "SR"]
+COL_TITLES  = ["H&E", "MCseg", "2Cseg", "SR"]
 COL_COLORS  = ["black", "#2196F3", "#4CAF50", "#FF5722"]
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -116,8 +120,8 @@ def make_no_zoom():
 
     # legend
     handles = [
-        mpatches.Patch(color=COL_COLORS[1], label="V12 (this work)"),
-        mpatches.Patch(color=COL_COLORS[2], label="P3 (visiumHD_pipeline_3)"),
+        mpatches.Patch(color=COL_COLORS[1], label="MCseg"),
+        mpatches.Patch(color=COL_COLORS[2], label="2Cseg"),
         mpatches.Patch(color=COL_COLORS[3], label="SR (Space Ranger reference)"),
     ]
     fig.legend(handles=handles, loc="lower center", ncol=3,
@@ -133,6 +137,22 @@ def make_no_zoom():
 
 ZOOM_SZ = 200   # px crop size for inset
 ZOOM_POS = (350, 350)  # (y, x) top-left of crop in 1000×1000 image
+
+def add_scale_bar(ax, img_h: int, img_w: int) -> None:
+    """White 50 µm scale bar at bottom-right corner."""
+    scale_px = SCALE_UM / PIXEL_SIZE_UM
+    margin_x = img_w * 0.05
+    margin_y = img_h * 0.06
+    bar_y  = img_h - margin_y
+    bar_x1 = img_w - margin_x
+    bar_x0 = bar_x1 - scale_px
+    ax.plot([bar_x0, bar_x1], [bar_y, bar_y],
+            color="white", linewidth=3, solid_capstyle="butt", zorder=10)
+    ax.text((bar_x0 + bar_x1) / 2, bar_y - img_h * 0.025,
+            f"{SCALE_UM} µm",
+            color="white", ha="center", va="bottom",
+            fontsize=8, fontweight="bold", zorder=10)
+
 
 def add_zoom_inset(ax, img: np.ndarray, y0: int, x0: int, sz: int):
     crop = img[y0:y0+sz, x0:x0+sz]
@@ -165,9 +185,11 @@ def make_zoom():
         imgs = [he, img_v12, img_p3, img_sr]
 
         for j, (img, ax) in enumerate(zip(imgs, axes[i])):
+            h_img, w_img = img.shape[:2]
             ax.imshow(img, origin="upper", interpolation="antialiased")
             ax.set_xticks([]); ax.set_yticks([])
             add_zoom_inset(ax, img, ZOOM_POS[0], ZOOM_POS[1], ZOOM_SZ)
+            add_scale_bar(ax, h_img, w_img)
 
             if i == 0:
                 ax.set_title(COL_TITLES[j], fontsize=11, fontweight="bold",
@@ -177,8 +199,8 @@ def make_zoom():
                               rotation=0, labelpad=34, va="center")
 
     handles = [
-        mpatches.Patch(color=COL_COLORS[1], label="V12 (this work)"),
-        mpatches.Patch(color=COL_COLORS[2], label="P3 (visiumHD_pipeline_3)"),
+        mpatches.Patch(color=COL_COLORS[1], label="MCseg"),
+        mpatches.Patch(color=COL_COLORS[2], label="2Cseg"),
         mpatches.Patch(color=COL_COLORS[3], label="SR (Space Ranger reference)"),
     ]
     fig.legend(handles=handles, loc="lower center", ncol=3,
@@ -186,8 +208,12 @@ def make_zoom():
 
     out = OUT_DIR / "SuppFigS6.png"
     fig.savefig(out, dpi=300, bbox_inches="tight", facecolor="white")
+    OUT_DIR_SUB.mkdir(parents=True, exist_ok=True)
+    out_sub = OUT_DIR_SUB / "SuppFigS6.png"
+    fig.savefig(out_sub, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"✓ Saved: {out}")
+    print(f"✓ Saved: {out_sub}")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────

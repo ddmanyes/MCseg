@@ -612,9 +612,7 @@ def make_fig2f():
                                              top=0.95, bottom=0.005))
     ax.imshow(comp_img, aspect="auto", interpolation="bilinear")
     ax.axis("off")
-    ax.set_title(f"ROI9 — Leiden Clustering  (res=0.3, {n_cl} clusters)\n"
-                 f"Pigmented Macrophage Zone, MCseg v2, n=8,393",
-                 fontsize=8, fontweight="bold", pad=3)
+    ax.set_title("")
 
     leg_handles = [
         mpatches.Patch(color=cmap_cl(ci / max(n_cl - 1, 1)),
@@ -626,7 +624,22 @@ def make_fig2f():
     ax.text(-0.005, 1.03, "f", transform=ax.transAxes,
             fontsize=12, fontweight="bold", va="top", ha="right")
 
-    out = OUT_DIR / "fig2f.png"
+    # Scale bar (bottom-left): 100 µm @ 0.2737 µm/px
+    scale_px = 50 / 0.2737           # ≈ 183 px
+    margin_x = w_px * 0.04
+    margin_y = h_px * 0.04
+    bar_y    = h_px - margin_y
+    bar_x0   = margin_x
+    bar_x1   = bar_x0 + scale_px
+    ax.plot([bar_x0, bar_x1], [bar_y, bar_y],
+            color="white", linewidth=4, solid_capstyle="butt", zorder=10)
+    ax.text((bar_x0 + bar_x1) / 2, bar_y - h_px * 0.02,
+            "50 µm",
+            color="white", ha="center", va="bottom",
+            fontsize=8, fontweight="bold", zorder=10)
+
+    out = Path("/Volumes/SSD/plan_a/submission_bioinformatics/figures/fig2/fig2h.png")
+    out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  ✅ Saved: {out}")
