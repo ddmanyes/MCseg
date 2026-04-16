@@ -53,9 +53,9 @@
 | **Storage** | 15 GB free | 30 GB+ free | ~8 GB for Python env (torch, cellpose); remainder for data & results |
 | **Python** | 3.10 | 3.11 | Managed by `uv`; do not use system Python |
 | **Node.js** | v18 | v20 LTS | For frontend (Vite + React) |
-| **GPU** | — (CPU fallback) | Apple MPS or NVIDIA (CUDA 12.4) | GPU cuts per-ROI segmentation from ~30 min to ~2–3 min |
+| **GPU** | — (CPU fallback) | Apple MPS or NVIDIA (CUDA 12.4) | GPU cuts segmentation from ~30 min (4-pass) / ~55 min (7-pass) to ~2–3 / ~5–8 min |
 
-> **No GPU?** CPU mode works but is slow for large ROIs. A single 1500 × 1200 px ROI takes ~30 min on an Apple M2 CPU vs ~2–3 min with MPS.
+> **No GPU?** CPU mode works but is slow. Default 4-pass config: ~30 min/ROI on Apple M2 CPU vs ~2–3 min with MPS. Full 7-pass (`use_cpsam=true`): ~55 min vs ~5–8 min.
 
 ### Prerequisites
 
@@ -320,7 +320,7 @@ After launching (`bash start.sh`), open **http://localhost:3000** and follow the
 2. Click **Add** to register the ROI; repeat for all regions of interest.
 3. Click **Run ROI Extraction** — MCseg tile-reads the BTF and crops `he_crop.tif` + `adata_002um.h5ad` per ROI.
 
-### Step 3 — Stage 1: MCseg v2 Segmentation (~30 min/ROI on CPU · ~2–3 min with GPU)
+### Step 3 — Stage 1: MCseg v2 Segmentation (~30 min/ROI on CPU · ~2–3 min with GPU · default 4-pass config)
 
 1. Review the default parameters (pre-filled from the tissue profile):
 
@@ -329,7 +329,7 @@ After launching (`bash start.sh`), open **http://localhost:3000** and follow the
    | `dia_small / mid / large` | 13 / 17 / 22 px | cyto3 cell diameter sweep |
    | `voronoi_distance` | 9 px | Voronoi expansion cap |
    | `use_hematoxylin` | true | adds H-channel passes |
-   | `use_cpsam` | false | enable for complex/dense tissue |
+   | `use_cpsam` | false | enable for complex/dense tissue (+3 passes, ~50–60 min on CPU) |
    | `use_transcript_rescue` | true | fills in cells missed by morphology |
    | `use_gpu` | true | MPS / CUDA; falls back to CPU |
 
