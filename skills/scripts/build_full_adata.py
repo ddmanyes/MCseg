@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import gc
 import json
 import logging
 from pathlib import Path
@@ -14,7 +15,15 @@ import numpy as np
 import pandas as pd
 import yaml
 
-ROOT   = Path(__file__).parent.parent
+
+def _find_root(start: Path) -> Path:
+    for p in [start, start.parent, start.parent.parent]:
+        if (p / "pyproject.toml").exists():
+            return p
+    return start
+
+
+ROOT   = _find_root(Path(__file__).resolve().parent)
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +85,7 @@ def build_adata(
 
         a.obs["roi_name"] = name
         adatas.append(a)
+        gc.collect()
 
     if not adatas:
         raise RuntimeError("所有 ROI 均失敗，無法建立 AnnData")
@@ -85,7 +95,7 @@ def build_adata(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     combined.write(out_path)
-    print(f"✅ AnnData 已儲存：{out_path}  ({combined.n_obs} cells × {combined.n_vars} genes)")
+    print(f"[OK] AnnData saved: {out_path}  ({combined.n_obs} cells x {combined.n_vars} genes)")
     return combined
 
 
