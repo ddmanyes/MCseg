@@ -187,41 +187,31 @@ class TestSegQuality:
 # ─── A3: qc_metrics ──────────────────────────────────────────────────────────
 
 class TestQcMetrics:
-    def test_qc_metrics_columns(self, tmp_project, fake_adata, monkeypatch):
+    def test_qc_metrics_columns(self, tmp_project, fake_masks, fake_adata):
         """qc_metrics 應輸出含正確欄位的 CSV，NED 介於 0–1"""
-        import importlib.util, yaml
+        from scripts.qc_metrics import compute_metrics
 
         adata, adata_path = fake_adata
 
-        # 建立假 qc_rois.json
-        rois_data = {
+        rois_json = tmp_project / "results" / "qc_rois.json"
+        rois_json.write_text(json.dumps({
             "rois": [
                 {"name": "qc_roi_1", "x": 0, "y": 0, "width_px": 100, "height_px": 100, "pixel_size_um": 0.2737},
                 {"name": "qc_roi_2", "x": 0, "y": 0, "width_px": 100, "height_px": 100, "pixel_size_um": 0.2737},
             ],
-            "threshold_used": 0.6,
-            "timestamp": "2026-01-01T00:00:00",
-        }
-        (tmp_project / "results" / "qc_rois.json").write_text(json.dumps(rois_data))
+            "threshold_used": 0.6, "timestamp": "2026-01-01T00:00:00",
+        }), encoding="utf-8")
 
-        cfg = {
-            "global": {"tissue_profile": "crc"},
-            "paths": {"binned_002": str(adata_path.parent)},
-        }
-        (tmp_project / "config" / "pipeline.yaml").write_text(yaml.dump(cfg))
-
-        monkeypatch.chdir(tmp_project)
-
-        spec = importlib.util.spec_from_file_location(
-            "qc_metrics", ROOT / "scripts" / "qc_metrics.py"
+        out_csv = tmp_project / "results" / "qc_metrics.csv"
+        df = compute_metrics(
+            rois_json=rois_json,
+            binned_dir=adata_path.parent,
+            qc_dir=tmp_project / "results" / "qc",
+            out_csv=out_csv,
+            tissue_profile="crc",
         )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
 
-        csv_path = tmp_project / "results" / "qc_metrics.csv"
-        assert csv_path.exists(), "qc_metrics.csv 不存在"
-        df = pd.read_csv(csv_path)
-
+        assert out_csv.exists(), "qc_metrics.csv 不存在"
         required_cols = {"roi", "method", "n_cells", "ftc", "ned", "coexp_rate"}
         assert required_cols.issubset(df.columns), f"缺少欄位：{required_cols - set(df.columns)}"
         assert df["ned"].between(0, 1).all(), "NED 超出 [0,1] 範圍"
