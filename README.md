@@ -7,10 +7,10 @@
 
 **MCseg** is a no-code, end-to-end analysis platform for 10x Genomics **Visium HD** (2 µm resolution) spatial transcriptomics data. Starting from a raw gigapixel BTF image, MCseg covers the complete workflow: custom ROI cropping, high-fidelity cell segmentation, RNA counting, downstream analysis (QC → UMAP → cell-type annotation), and one-click export to Xenium Explorer or Loupe Browser — all through a web interface requiring no programming.
 
-Its core segmentation engine, **MCseg v2**, runs a multi-pass ensemble of cyto3 models at three diameters plus an optional hematoxylin pass, with adaptive Voronoi boundary expansion. This achieves **PQ = 0.554 ± 0.064** on LUAD tissue validated against Xenium Prime ground-truth masks — a **+28% improvement** over single-model Cellpose baseline (0.432 ± 0.037). GPU is optional; full CPU fallback is supported.
+Its core segmentation engine, **MCseg**, runs a multi-pass ensemble of cyto3 models at three diameters plus an optional hematoxylin pass, with adaptive Voronoi boundary expansion. This achieves **PQ = 0.554 ± 0.064** on LUAD tissue validated against Xenium Prime ground-truth masks — a **+28% improvement** over single-model Cellpose baseline (0.432 ± 0.037). GPU is optional; full CPU fallback is supported.
 
 <p align="center">
-  <img src="docs/fig1a_pipeline.png" width="820" alt="MCseg v2 pipeline overview">
+  <img src="docs/fig1a_pipeline.png" width="820" alt="MCseg pipeline overview">
 </p>
 
 ---
@@ -25,15 +25,15 @@ Its core segmentation engine, **MCseg v2**, runs a multi-pass ensemble of cyto3 
 
 ### System Requirements
 
-| Component | Minimum | Recommended | Notes |
-|-----------|---------|-------------|-------|
-| **OS** | macOS 12 (Monterey) | macOS 13+ | Linux (Ubuntu 20.04+) also supported |
-| **CPU** | 4-core, any modern x86-64 or ARM | Apple Silicon (M1/M2/M3) | Apple Silicon provides MPS GPU acceleration |
-| **RAM** | 8 GB | 16 GB+ | Cellpose loads full ROI crops into memory; very large ROIs (>2000×2000 px) or multi-ROI runs benefit from 32 GB |
-| **Storage** | 15 GB free | 30 GB+ free | ~8 GB for Python env (torch, cellpose); remainder for data & results |
-| **Python** | 3.10 | 3.11 | Managed by `uv`; do not use system Python |
-| **Node.js** | v18 | v20 LTS | For frontend (Vite + React) |
-| **GPU** | — (CPU fallback) | Apple MPS or NVIDIA (CUDA 12.4) | GPU reduces segmentation time: ~30 min (4-pass) / ~55 min (7-pass) on CPU → ~2–3 / ~5–8 min with MPS/CUDA |
+| Component         | Minimum                          | Recommended                     | Notes                                                                                                            |
+| ----------------- | -------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **OS**      | macOS 12 (Monterey)              | macOS 13+                       | Linux (Ubuntu 20.04+) also supported                                                                             |
+| **CPU**     | 4-core, any modern x86-64 or ARM | Apple Silicon (M1/M2/M3)        | Apple Silicon provides MPS GPU acceleration                                                                      |
+| **RAM**     | 8 GB                             | 16 GB+                          | Cellpose loads full ROI crops into memory; very large ROIs (>2000×2000 px) or multi-ROI runs benefit from 32 GB |
+| **Storage** | 15 GB free                       | 30 GB+ free                     | ~8 GB for Python env (torch, cellpose); remainder for data & results                                             |
+| **Python**  | 3.10                             | 3.11                            | Managed by `uv`; do not use system Python                                                                      |
+| **Node.js** | v18                              | v20 LTS                         | For frontend (Vite + React)                                                                                      |
+| **GPU**     | — (CPU fallback)                | Apple MPS or NVIDIA (CUDA 12.4) | GPU reduces segmentation time: ~30 min (4-pass) / ~55 min (7-pass) on CPU → ~2–3 / ~5–8 min with MPS/CUDA     |
 
 ### Prerequisites
 
@@ -73,7 +73,7 @@ cd frontend && npm install && cd ..
 bash start.sh
 ```
 
-Open **<http://localhost:3000>** in your browser.
+Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 
 > [!NOTE]
 > **bash users:** replace `source ~/.zshrc` with `source ~/.bashrc`.
@@ -85,15 +85,15 @@ Open **<http://localhost:3000>** in your browser.
 
 ## Pipeline Overview
 
-| Stage | Function | Key Output |
-|-------|----------|------------|
-| Data Setup | Auto-scan and validate raw data | `state.json` |
-| Stage 0: ROI Extract | Crop ROI from Gigapixel BTF | `he_crop.tif`, `adata_002um.h5ad` |
-| Stage 1: MCseg v2 | Multi-pass ensemble segmentation (4–7 passes) + Voronoi expansion | `segmentation_masks.npy` |
-| Stage 2: RNA Count | Assign Visium HD bins to cells | `cellpose_cells.h5ad` |
-| Stage 3: Analysis | QC → Normalise → PCA → UMAP → Leiden | `umap_computed.h5ad` |
-| Stage 3.5: Explorer | Interactive spatial gene expression viewer | PNG export |
-| Stage 4: Export | Xenium Explorer / Loupe Browser format | `experiment.xenium`, zarr archives |
+| Stage                | Function                                                           | Key Output                            |
+| -------------------- | ------------------------------------------------------------------ | ------------------------------------- |
+| Data Setup           | Auto-scan and validate raw data                                    | `state.json`                        |
+| Stage 0: ROI Extract | Crop ROI from Gigapixel BTF                                        | `he_crop.tif`, `adata_002um.h5ad` |
+| Stage 1: MCseg    | Multi-pass ensemble segmentation (4–7 passes) + Voronoi expansion | `segmentation_masks.npy`            |
+| Stage 2: RNA Count   | Assign Visium HD bins to cells                                     | `cellpose_cells.h5ad`               |
+| Stage 3: Analysis    | QC → Normalise → PCA → UMAP → Leiden                           | `umap_computed.h5ad`                |
+| Stage 3.5: Explorer  | Interactive spatial gene expression viewer                         | PNG export                            |
+| Stage 4: Export      | Xenium Explorer / Loupe Browser format                             | `experiment.xenium`, zarr archives  |
 
 ---
 
@@ -112,8 +112,8 @@ Open **<http://localhost:3000>** in your browser.
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="docs/sample/Operation%20interface/stage3_seg.png" width="400" alt="MCseg v2 Segmentation"><br>
-      <sub><b>③ MCseg v2 Segmentation</b> — multi-pass ensemble + preview</sub>
+      <img src="docs/sample/Operation%20interface/stage3_seg.png" width="400" alt="MCseg Segmentation"><br>
+      <sub><b>③ MCseg Segmentation</b> — multi-pass ensemble + preview</sub>
     </td>
     <td align="center" width="50%">
       <img src="docs/sample/Operation%20interface/stage4_count.png" width="400" alt="RNA Counting"><br>
@@ -149,10 +149,10 @@ Open **<http://localhost:3000>** in your browser.
 ### Cell-type mapping on Visium HD (LUAD, Tumor Boundary ROI)
 
 <p align="center">
-  <img src="docs/fig2h.png" width="700" alt="Cell-type map — LUAD tumor boundary, MCseg v2 + Celltypist">
+  <img src="docs/fig2h.png" width="700" alt="Cell-type map — LUAD tumor boundary, MCseg + Celltypist">
 </p>
 
-> Cell types resolved by MCseg v2 + Celltypist on LUAD tumor boundary ROI — Macrophage, Club Epithelial, Plasma Cell, B Cell, SPP1⁺ Macrophage overlaid on H&E.
+> Cell types resolved by MCseg + Celltypist on LUAD tumor boundary ROI — Macrophage, Club Epithelial, Plasma Cell, B Cell, SPP1⁺ Macrophage overlaid on H&E.
 
 ### Spatial AT2 Pneumocyte detection overlaid on H&E
 
@@ -168,7 +168,7 @@ Open **<http://localhost:3000>** in your browser.
   <img src="docs/sample/result/qc_violin.png" width="780" alt="QC violin plots: UMI, genes per cell, % mitochondrial">
 </p>
 
-> Violin plots showing per-cell QC metrics after MCseg v2 segmentation — dashed lines indicate configurable thresholds.
+> Violin plots showing per-cell QC metrics after MCseg segmentation — dashed lines indicate configurable thresholds.
 
 ### UMAP, marker genes and spatial cell-type map
 
@@ -245,7 +245,7 @@ After a complete run, your output directory will contain:
 │   │   └── {roi_name}/
 │   │       ├── he_crop.tif                  ← H&E crop (Stage 0)
 │   │       ├── adata_002um.h5ad             ← 2 µm bin matrix (Stage 0)
-│   │       ├── segmentation_masks.npy       ← MCseg v2 cell masks (Stage 1)
+│   │       ├── segmentation_masks.npy       ← MCseg cell masks (Stage 1)
 │   │       ├── segmentation_masks.tif       ← Visualisation overlay (Stage 1)
 │   │       ├── cellpose_cells.h5ad          ← Cell × gene matrix (Stage 2)
 │   │       ├── cellpose_polygons.json       ← Cell boundary polygons (Stage 2)
@@ -271,7 +271,7 @@ After a complete run, your output directory will contain:
 
 ## Usage Guide
 
-After launching (`bash start.sh`), open **<http://localhost:3000>** and follow the steps below.
+After launching (`bash start.sh`), open **[http://localhost:3000](http://localhost:3000)** and follow the steps below.
 
 > *Timings below are approximate, measured on **Apple M2 CPU, 16 GB RAM**, ROI ~1500 × 1200 px. GPU (Apple MPS or NVIDIA CUDA) reduces Stage 1 to ~2–3 min/ROI.*
 
@@ -302,19 +302,17 @@ After launching (`bash start.sh`), open **<http://localhost:3000>** and follow t
 2. Click **Add** to register the ROI; repeat for all regions of interest.
 3. Click **Run ROI Extraction** — MCseg tile-reads the BTF and crops `he_crop.tif` + `adata_002um.h5ad` per ROI.
 
-### Step 3 — Stage 1: MCseg v2 Segmentation (~30 min/ROI on CPU · ~2–3 min with GPU · default 4-pass config)
+### Step 3 — Stage 1: MCseg Segmentation (~30 min/ROI on CPU · ~2–3 min with GPU · default 4-pass config)
 
 1. Review the default parameters (pre-filled from the tissue profile):
-
-   | Parameter | Default | Notes |
-   |-----------|---------|-------|
-   | `dia_small / mid / large` | 13 / 17 / 22 px | cyto3 cell diameter sweep |
-   | `voronoi_distance` | 9 px | Voronoi expansion cap |
-   | `use_hematoxylin` | true | adds H-channel passes |
-   | `use_cpsam` | false | enable for complex/dense tissue (+3 passes, ~50–60 min on CPU) |
-   | `use_transcript_rescue` | true | fills in cells missed by morphology |
-   | `use_gpu` | true | MPS / CUDA; falls back to CPU |
-
+   | Parameter                   | Default         | Notes                                                           |
+   | --------------------------- | --------------- | --------------------------------------------------------------- |
+   | `dia_small / mid / large` | 13 / 17 / 22 px | cyto3 cell diameter sweep                                       |
+   | `voronoi_distance`        | 9 px            | Voronoi expansion cap                                           |
+   | `use_hematoxylin`         | true            | adds H-channel passes                                           |
+   | `use_cpsam`               | false           | enable for complex/dense tissue (+3 passes, ~50–60 min on CPU) |
+   | `use_transcript_rescue`   | true            | fills in cells missed by morphology                             |
+   | `use_gpu`                 | true            | MPS / CUDA; falls back to CPU                                   |
 2. (Optional) Expand **ROI Overrides** to tune parameters per individual ROI.
 3. Click **Preview** on one ROI to verify cell outlines before committing to a full run.
 4. Click **Run All ROIs** — outputs `segmentation_masks.npy` per ROI.
@@ -329,12 +327,12 @@ After launching (`bash start.sh`), open **<http://localhost:3000>** and follow t
 
 The analysis stage runs four sequential sub-steps:
 
-| Sub-step | Button | Output |
-|----------|--------|--------|
-| 1. QC | **Run QC** | QC histograms; filtered cells |
-| 2. UMAP | **Run UMAP** | PCA → UMAP → Leiden clusters |
-| 3. Heatmap | **Run Heatmap** | Top marker gene heatmap |
-| 4. Annotate | **Run Annotate** (Celltypist) | Automated cell-type labels |
+| Sub-step    | Button                              | Output                         |
+| ----------- | ----------------------------------- | ------------------------------ |
+| 1. QC       | **Run QC**                    | QC histograms; filtered cells  |
+| 2. UMAP     | **Run UMAP**                  | PCA → UMAP → Leiden clusters |
+| 3. Heatmap  | **Run Heatmap**               | Top marker gene heatmap        |
+| 4. Annotate | **Run Annotate** (Celltypist) | Automated cell-type labels     |
 
 Run each sub-step in order; results are visualised inline. Click **Apply Labels** after annotation to write cluster names back to the h5ad.
 
@@ -353,25 +351,25 @@ The export page provides both result visualisation and format conversion:
 
 **Visualisation tabs** (review before exporting):
 
-| Tab | Content |
-|-----|---------|
+| Tab     | Content                                  |
+| ------- | ---------------------------------------- |
 | Spatial | Colour-coded cluster map overlaid on H&E |
-| UMAP | Dimensionality reduction plot |
-| Dotplot | Marker gene expression per cluster |
-| Heatmap | Top gene heatmap |
+| UMAP    | Dimensionality reduction plot            |
+| Dotplot | Marker gene expression per cluster       |
+| Heatmap | Top gene heatmap                         |
 
 **Export formats:**
 
-| Target | Output | Use for |
-|--------|--------|---------|
+| Target          | Output                                                       | Use for                             |
+| --------------- | ------------------------------------------------------------ | ----------------------------------- |
 | Xenium Explorer | Xenium-native bundle (`experiment.xenium` + zarr archives) | Load directly in Xenium Explorer 4+ |
-| Loupe Browser | `.cloupe` file + barcode CSV with cluster labels | 10x Genomics Loupe Browser |
+| Loupe Browser   | `.cloupe` file + barcode CSV with cluster labels           | 10x Genomics Loupe Browser          |
 
 Files are saved to `<output_dir>/export/xenium/{roi_name}/`.
 
 ---
 
-## MCseg v2 Algorithm
+## MCseg Algorithm
 
 ```text
 1. CLAHE preprocessing (clip=3.0, tile=8×8) + Hematoxylin extraction
@@ -409,17 +407,17 @@ uv run pytest backend/tests/ -v
 
 ## Troubleshooting
 
-| Issue | Cause | Solution |
-| ----- | ----- | -------- |
-| `uv: command not found` after install | Shell profile not reloaded | Run `source ~/.zshrc` (zsh) or `source ~/.bashrc` (bash), or restart terminal |
-| Backend fails to start (`address in use`) | Previous process still running | `start.sh` auto-kills ports 8001/3000; or run `lsof -ti:8001,3000 \| xargs kill -9` manually |
-| `uv sync` fails on ExFAT drive | Resource-fork file corruption | `start.sh` handles this automatically; if running manually: `rm -rf .venv && mkdir -p ~/.venvs/msseg && ln -s ~/.venvs/msseg .venv && uv sync` |
-| Out-of-memory during segmentation | ROI too large for available RAM | Reduce ROI size, or decrease `batch_size` (default 4 → try 2 or 1) |
-| Slow segmentation | CPU mode | Enable GPU: set `use_gpu: true` in Stage 1 UI or `pipeline.yaml` |
-| Too few cells detected | `cellprob_threshold` too high | Lower to `-2.0` or `-3.0` in Stage 1 UI |
-| Fragmented small cells | `min_size` too low | Increase `min_size` (e.g., 50 px²) in Stage 1 UI |
-| Low bin assignment rate | Voronoi gaps not filled | Set `rna_counting.dilation_px: 6` in `pipeline.yaml` (default is 6) |
-| macOS `._*` file errors | ExFAT external drive | Pipeline auto-filters; manually: `find . -name "._*" -delete` |
+| Issue                                       | Cause                           | Solution                                                                                                                                           |
+| ------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `uv: command not found` after install     | Shell profile not reloaded      | Run `source ~/.zshrc` (zsh) or `source ~/.bashrc` (bash), or restart terminal                                                                  |
+| Backend fails to start (`address in use`) | Previous process still running  | `start.sh` auto-kills ports 8001/3000; or run `lsof -ti:8001,3000 \| xargs kill -9` manually                                                    |
+| `uv sync` fails on ExFAT drive            | Resource-fork file corruption   | `start.sh` handles this automatically; if running manually: `rm -rf .venv && mkdir -p ~/.venvs/msseg && ln -s ~/.venvs/msseg .venv && uv sync` |
+| Out-of-memory during segmentation           | ROI too large for available RAM | Reduce ROI size, or decrease `batch_size` (default 4 → try 2 or 1)                                                                              |
+| Slow segmentation                           | CPU mode                        | Enable GPU: set `use_gpu: true` in Stage 1 UI or `pipeline.yaml`                                                                               |
+| Too few cells detected                      | `cellprob_threshold` too high | Lower to `-2.0` or `-3.0` in Stage 1 UI                                                                                                        |
+| Fragmented small cells                      | `min_size` too low            | Increase `min_size` (e.g., 50 px²) in Stage 1 UI                                                                                                |
+| Low bin assignment rate                     | Voronoi gaps not filled         | Set `rna_counting.dilation_px: 6` in `pipeline.yaml` (default is 6)                                                                            |
+| macOS `._*` file errors                   | ExFAT external drive            | Pipeline auto-filters; manually:`find . -name "._*" -delete`                                                                                     |
 
 ---
 
@@ -448,23 +446,23 @@ analysis/
 
 ### AI-Autonomous Discovery (AutoResearch)
 
-MCseg v2 was developed by running an AI agent loop over ~80 overnight cycles. The agent iteratively proposed, implemented, and scored segmentation architectures against Xenium ground truth—converging on the multi-model ensemble without human intervention.
+MCseg was developed by running an AI agent loop over ~80 overnight cycles. The agent iteratively proposed, implemented, and scored segmentation architectures against Xenium ground truth—converging on the multi-model ensemble without human intervention.
 
 Templates for adapting this paradigm to your own segmentation problem are provided in [`docs/autoResearch/`](docs/autoResearch/):
 
-| File | Description |
-|------|-------------|
-| [`README.md`](docs/autoResearch/README.md) | Overview and adaptation guide |
-| [`program.md`](docs/autoResearch/program.md) | Agent task specification template |
-| [`segment_template.py`](docs/autoResearch/segment_template.py) | Sandbox starter script (MCseg v2 helpers included) |
-| [`run_agent.py`](docs/autoResearch/run_agent.py) | Agent runner using the Anthropic API |
+| File                                                          | Description                                        |
+| ------------------------------------------------------------- | -------------------------------------------------- |
+| [`README.md`](docs/autoResearch/README.md)                     | Overview and adaptation guide                      |
+| [`program.md`](docs/autoResearch/program.md)                   | Agent task specification template                  |
+| [`segment_template.py`](docs/autoResearch/segment_template.py) | Sandbox starter script (MCseg helpers included) |
+| [`run_agent.py`](docs/autoResearch/run_agent.py)               | Agent runner using the Anthropic API               |
 
 ### Data Availability
 
-| Dataset | Source |
-|---------|--------|
-| LUAD (6 ROIs) | 10x Genomics public demo data + Xenium Prime co-registration |
-| CRC (15 ROIs) | 10x Genomics + GEO [GSE280318](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE280318) |
+| Dataset       | Source                                                                                   |
+| ------------- | ---------------------------------------------------------------------------------------- |
+| LUAD (6 ROIs) | 10x Genomics public demo data + Xenium Prime co-registration                             |
+| CRC (15 ROIs) | 10x Genomics + GEO[GSE280318](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE280318) |
 
 ---
 
