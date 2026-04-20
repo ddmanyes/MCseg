@@ -1,4 +1,4 @@
-# MCseg: End-to-End Visium HD Analysis with AI-Optimised Ensemble Cell Segmentation
+# MCseg: End-to-End Visium HD Spatial Transcriptomics Analysis with AI-Optimised Ensemble-Based Cell Segmentation
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -7,7 +7,7 @@
 
 **MCseg** is a no-code, end-to-end analysis platform for 10x Genomics **Visium HD** (2 µm resolution) spatial transcriptomics data. Starting from a raw gigapixel BTF image, MCseg covers the complete workflow: custom ROI cropping, high-fidelity cell segmentation, RNA counting, downstream analysis (QC → UMAP → cell-type annotation), and one-click export to Xenium Explorer or Loupe Browser — all through a web interface requiring no programming.
 
-Its core segmentation engine, **MCseg**, runs a multi-pass ensemble of cyto3 models at three diameters plus an optional hematoxylin pass, with adaptive Voronoi boundary expansion. This achieves **PQ = 0.554 ± 0.064** on LUAD tissue validated against Xenium Prime ground-truth masks — a **+28% improvement** over single-model Cellpose baseline (0.432 ± 0.037). GPU is optional; full CPU fallback is supported.
+Its core segmentation engine, **MCseg**, was developed through the **AutoResearch** paradigm — an AI-autonomous architecture search over ~80 evaluation cycles — yielding a seven-pass multi-model Cellpose ensemble with Voronoi-constrained boundary expansion. Against Xenium Prime ground truth in LUAD tissue, MCseg achieves **PQ = 0.554 ± 0.064** — a **+28% improvement** over the optimised dual-diameter baseline **2Cseg** (PQ 0.432 ± 0.037). In CRC, MCseg matches Space Ranger's transcript capture (UMI density 11.6 vs 11.7 UMI/µm²) while maintaining higher transcriptional boundary purity (NED 0.727 vs 0.712, p = 0.026). GPU is optional; full CPU fallback is supported.
 
 <p align="center">
   <img src="docs/fig1a_pipeline.png" width="820" alt="MCseg pipeline overview">
@@ -17,7 +17,7 @@ Its core segmentation engine, **MCseg**, runs a multi-pass ensemble of cyto3 mod
 
 ## Contents
 
-[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Output Structure](#output-structure) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-v2-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
+[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Output Structure](#output-structure) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
 
 ---
 
@@ -161,6 +161,10 @@ Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 </p>
 
 > AT2 Pneumocytes (SFTPC+, blue outlines, n = 326, 30%) detected directly on the H&E image — no GPU required.
+
+### Transcript attribution in CRC
+
+> In CRC (15 ROIs), MCseg matches Space Ranger's per-cell RNA capture (UMI density 11.6 vs 11.7 UMI/µm²) while achieving higher transcriptional boundary purity (NED 0.727 vs 0.712, p = 0.026). In a tertiary lymphoid structure, MCseg resolved **four** functional immune populations vs **three** with Space Ranger, with 44% more cells (636 vs 440).
 
 ### QC filtering (Stage 3)
 
@@ -425,7 +429,7 @@ uv run pytest backend/tests/ -v
 
 If you use MCseg in your research, please cite:
 
-> Chan, C.-R. (詹麒儒), et al. MCseg: End-to-End Visium HD Analysis with AI-Optimised Ensemble Cell Segmentation. *Bioinformatics* (under review), 2026.
+> Chan, C.-R.\*, Chang, N.-W.\*, Wang, C.-Y., Tan, H.-Y.†, Lin, S.-J.† MCseg: End-to-end Visium HD spatial transcriptomics analysis with AI-optimised ensemble-based cell segmentation. *Bioinformatics* (under review), 2026.
 
 ---
 
@@ -446,7 +450,7 @@ analysis/
 
 ### AI-Autonomous Discovery (AutoResearch)
 
-MCseg was developed by running an AI agent loop over ~80 overnight cycles. The agent iteratively proposed, implemented, and scored segmentation architectures against Xenium ground truth—converging on the multi-model ensemble without human intervention.
+MCseg was developed using the **AutoResearch** paradigm ([Karpathy, 2026](https://github.com/karpathy/autoresearch)) — an AI-autonomous architecture search framework in which an agent iteratively proposed, implemented, and scored complete segmentation pipelines against Xenium ground truth over ~80 cycles, converging on the multi-model ensemble without human intervention. Candidate architectures were evaluated using the Anthropic Claude API (`claude-sonnet-4-5`). To our knowledge, MCseg is the first cell-segmentation method developed through AI-autonomous architecture search.
 
 Templates for adapting this paradigm to your own segmentation problem are provided in [`docs/autoResearch/`](docs/autoResearch/):
 
