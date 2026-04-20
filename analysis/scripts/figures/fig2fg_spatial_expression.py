@@ -35,7 +35,7 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.neighbors import NearestNeighbors
 from skimage.measure import regionprops
 from skimage.segmentation import find_boundaries
-from scipy import ndimage as ndi
+
 import leidenalg
 import igraph
 
@@ -262,15 +262,16 @@ def get_expr_dense(X_log: np.ndarray, gene: str,
     return X_log[:, idx]
 
 
-# ROI9 cluster → cell type annotation (Leiden res=0.3, n=5 clusters)
-# Cross-validated against Xenium celltype_summary.csv (ROI9)
-# C0 CD74+FTH1+APOE+VIM          → Macrophage         (FTH1=0.80, APOE=0.24)
-# C1 SCGB1A1+++BPIFB1+KRT8+EPCAM → Club Epithelial    (SCGB1A1=5.87)
-# C2 IGKC+IGHG1+++JCHAIN+         → Plasma Cell        (IGKC=7.05, IGHG1=6.09)
-# C3 IGKC+MS4A1+IGHA1+IGHM+       → B Cell             (MS4A1=0.34, PAX5+)
-# C4 SPP1+FTH1(2.48)+CSF1R+LGMN   → SPP1+ Macrophage   (n=248 ≈ VHD 4.12% SPP1+Mac)
+# ROI9 cluster → cell type annotation (Leiden res=0.5, n=5 clusters)
+# Validated by top discriminating genes (fold-change vs rest):
+# C0 TRAC+TRBC2+IL7R+MS4A1+CXCR4 → T/B Lymphocyte    (TCR chains confirm T cell identity;
+#    MS4A1+ subset are B cells; mixed lymphocyte cluster due to Visium HD sparsity)
+# C1 SCGB1A1+++BPIFB1+WFDC2       → Club Epithelial   (SCGB1A1=5.87)
+# C2 IGKC+IGHG1+++JCHAIN+          → Plasma Cell       (IGKC=7.05, IGHG1=6.09)
+# C3 IGKC+MS4A1+IGHM+CD79A         → B Cell            (MS4A1=0.34, IGHM=0.74)
+# C4 SPP1+FTH1(2.48)+CSF1R+TREM2   → SPP1+ Macrophage  (n=248, ~3%; consistent w/ Xenium 4.1%)
 ROI9_CLUSTER_NAMES = {
-    0: "Macrophage",
+    0: "T/B Lymphocyte",
     1: "Club Epithelial",
     2: "Plasma Cell",
     3: "B Cell",
@@ -278,19 +279,17 @@ ROI9_CLUSTER_NAMES = {
 }
 
 # Curated marker genes per cluster (literature-based, ordered for dotplot display)
-# C0: canonical macrophage markers detectable in Visium HD
-#   CD74 (MHC-II invariant chain, antigen presentation), VIM (mesenchymal, macrophage-expressed),
-#   CXCR4 (chemokine receptor, monocyte/macrophage homing)
+# C0: TCR chains (TRAC/TRBC2) confirm T cells; IL7R=T cell survival; MS4A1=B cell subset
 # C1: airway secretory / Club cell markers (highly specific)
 # C2: plasma cell immunoglobulin chains (IGHG1 distinguishes from B cells)
 # C3: B cell markers (MS4A1=CD20, IGHM=IgM naive marker, CD79A=B cell receptor)
-# C4: SPP1+ macrophage (SPP1=osteopontin, FTH1=ferritin heavy chain/iron-laden 55% in C4,
-#     CD68=lysosomal marker, TREM2=immunomodulatory receptor 12x enriched in C4 vs background)
+# C4: SPP1+ macrophage (SPP1=osteopontin, FTH1=ferritin, CSF1R=M-CSF receptor,
+#     TREM2=immunomodulatory receptor 12x enriched in C4 vs background)
 ROI9_CURATED_GENES = {
-    0: ["CD74",    "VIM",    "CXCR4"  ],   # Macrophage
-    1: ["SCGB1A1", "BPIFB1", "WFDC2"  ],   # Club Epithelial
-    2: ["IGHG1",   "IGKC",   "JCHAIN" ],   # Plasma Cell
-    3: ["MS4A1",   "IGHM",   "CD79A"  ],   # B Cell
+    0: ["TRAC",   "IL7R",   "MS4A1"  ],   # T/B Lymphocyte
+    1: ["SCGB1A1", "BPIFB1", "WFDC2" ],   # Club Epithelial
+    2: ["IGHG1",   "IGKC",   "JCHAIN"],   # Plasma Cell
+    3: ["MS4A1",   "IGHM",   "CD79A" ],   # B Cell
     4: ["SPP1",    "FTH1",   "CD68",  "TREM2"],  # SPP1+ Macrophage
 }
 
@@ -547,8 +546,8 @@ def _load_roi9_data():
     print("  Normalizing...")
     X_log = normalize_log1p(adata)
 
-    print("  Leiden clustering (res=0.3)...")
-    labels   = leiden_cluster(X_log, resolution=0.3, seed=42)
+    print("  Leiden clustering (res=0.5)...")
+    labels   = leiden_cluster(X_log, resolution=0.5, seed=42)
     clusters = sorted(np.unique(labels), key=int)
     n_cl     = len(clusters)
     print(f"  {n_cl} clusters")
@@ -664,7 +663,7 @@ def make_fig2g():
         curated_cl_gene_map[int(cl)] = genes
         curated_selected.extend(genes)
 
-    n_genes   = len(curated_selected)
+
     pct_arr, mean_arr = build_dotplot_arrays(X_log, labels, curated_selected, gene_names)
     vmax_g    = max(mean_arr.max(), 0.1)
 
