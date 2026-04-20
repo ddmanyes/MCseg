@@ -33,7 +33,7 @@ Its core segmentation engine, **MCseg**, was developed through the **AutoResearc
 | **Storage** | 15 GB free                       | 30 GB+ free                     | ~8 GB for Python env (torch, cellpose); remainder for data & results                                             |
 | **Python**  | 3.10                             | 3.11                            | Managed by `uv`; do not use system Python                                                                      |
 | **Node.js** | v18                              | v20 LTS                         | For frontend (Vite + React)                                                                                      |
-| **GPU**     | — (CPU fallback)                | Apple MPS or NVIDIA (CUDA 12.4) | GPU reduces segmentation time: ~30 min (4-pass) / ~55 min (7-pass) on CPU → ~2–3 / ~5–8 min with MPS/CUDA     |
+| **GPU**     | — (CPU fallback)                | Apple MPS or NVIDIA (CUDA 12.x) | GPU reduces segmentation time: ~30 min (4-pass) / ~55 min (7-pass) on CPU → ~2–3 / ~5–8 min with MPS/CUDA     |
 
 ### Prerequisites
 
@@ -152,7 +152,7 @@ Open **[http://localhost:3000](http://localhost:3000)** in your browser.
   <img src="docs/fig2h.png" width="700" alt="Cell-type map — LUAD tumor boundary, MCseg + Celltypist">
 </p>
 
-> Cell types resolved by MCseg + Celltypist on LUAD tumor boundary ROI — Macrophage, Club Epithelial, Plasma Cell, B Cell, SPP1⁺ Macrophage overlaid on H&E.
+> Cell types resolved by MCseg + Celltypist on LUAD tumor boundary ROI — T/B Lymphocyte, Club Epithelial, Plasma Cell, B Cell, SPP1⁺ Macrophage overlaid on H&E.
 
 ### Spatial AT2 Pneumocyte detection overlaid on H&E
 
