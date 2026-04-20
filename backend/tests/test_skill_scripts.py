@@ -257,9 +257,9 @@ class TestWriteHandoff:
 # ─── B1: build_full_adata ────────────────────────────────────────────────────
 
 class TestBuildFullAdata:
-    def test_build_adata_shape(self, tmp_project, fake_adata, monkeypatch):
-        """build_full_adata 應產出 n_obs=5（細胞數）的 h5ad"""
-        import importlib.util, yaml
+    def test_build_adata_shape(self, tmp_project, fake_adata):
+        """build_full_adata 應產出 n_obs>=1 的 h5ad"""
+        import yaml
 
         adata, adata_path = fake_adata
 
@@ -297,17 +297,16 @@ class TestBuildFullAdata:
         }
         (tmp_project / "config" / "pipeline.yaml").write_text(yaml.dump(cfg))
 
-        monkeypatch.chdir(tmp_project)
-
-        spec = importlib.util.spec_from_file_location(
-            "build_full_adata", ROOT / "scripts" / "build_full_adata.py"
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        from scripts.build_full_adata import build_adata
 
         out_path = tmp_project / "results" / "analysis" / "cellpose_cells.h5ad"
+        result = build_adata(
+            handoff_json=tmp_project / "results" / "handoff_report.json",
+            rois_json=tmp_project / "results" / "qc_rois.json",
+            out_path=out_path,
+        )
+
         assert out_path.exists(), "cellpose_cells.h5ad 不存在"
-        result = ad.read_h5ad(out_path)
         assert result.n_obs >= 1, "輸出 AnnData 沒有細胞"
         assert result.n_vars == 20, f"基因數應為 20，得到 {result.n_vars}"
 
