@@ -140,13 +140,14 @@ class TestRoiSampler:
 # ─── A2: seg_quality ─────────────────────────────────────────────────────────
 
 class TestSegQuality:
-    def test_seg_quality_creates_masks(self, tmp_project, monkeypatch):
+    def test_seg_quality_creates_masks(self, tmp_project):
         """seg_quality 對假影像應產出 _nuc.npy 與 _mcseg.npy"""
-        import importlib.util
-        import yaml
+        import tifffile
+        from scripts.seg_quality import run_seg_quality
 
-        # 建立假 qc_rois.json
         qc_dir = tmp_project / "results" / "qc"
+
+        # 假 qc_rois.json
         rois_data = {
             "rois": [{"name": "qc_roi_1", "x": 0, "y": 0,
                       "width_px": 64, "height_px": 64,
@@ -154,38 +155,30 @@ class TestSegQuality:
             "threshold_used": 0.6,
             "timestamp": "2026-01-01T00:00:00",
         }
-        (tmp_project / "results" / "qc_rois.json").write_text(json.dumps(rois_data))
+        rois_json = tmp_project / "results" / "qc_rois.json"
+        rois_json.write_text(json.dumps(rois_data), encoding="utf-8")
 
-        # 建立假 BTF（小 PNG 即可，tifffile 可讀）
-        import tifffile
+        # 假 TIFF（64×64 灰色影像）
         fake_img = np.ones((128, 128, 3), dtype=np.uint8) * 200
         btf_path = tmp_project / "fake.tif"
         tifffile.imwrite(str(btf_path), fake_img)
 
-        cfg = {
-            "global": {"tissue_profile": "crc"},
-            "paths": {"he_image": str(btf_path), "masks_dir": str(tmp_project / "results" / "masks")},
-            "segmentation": {"mcseg_v2": {
-                "use_gpu": False, "batch_size": 1,
-                "dia_small": 13.0, "dia_mid": 17.0, "dia_large": 22.0,
-                "use_hematoxylin": False, "use_cpsam": False,
-                "voronoi_distance": 0, "clahe_clip_limit": 1.0,
-                "min_size": 5, "max_size": 6000,
-                "flow_threshold": 0.4, "cellprob_threshold": -2.0,
-                "use_transcript_rescue": False,
-            }},
+        mcseg_cfg = {
+            "use_gpu": False, "batch_size": 1,
+            "dia_small": 13.0, "dia_mid": 17.0, "dia_large": 22.0,
+            "use_hematoxylin": False, "use_cpsam": False,
+            "voronoi_distance": 0, "clahe_clip_limit": 1.0,
+            "min_size": 5, "max_size": 6000,
+            "flow_threshold": 0.4, "cellprob_threshold": -2.0,
+            "use_transcript_rescue": False,
         }
-        cfg_path = tmp_project / "config" / "pipeline.yaml"
-        import yaml
-        cfg_path.write_text(yaml.dump(cfg))
 
-        monkeypatch.chdir(tmp_project)
-
-        spec = importlib.util.spec_from_file_location(
-            "seg_quality", ROOT / "scripts" / "seg_quality.py"
+        run_seg_quality(
+            rois_json=rois_json,
+            he_path=btf_path,
+            mcseg_cfg=mcseg_cfg,
+            out_dir=qc_dir,
         )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
 
         assert (qc_dir / "qc_roi_1_nuc.npy").exists(), "_nuc.npy 不存在"
         assert (qc_dir / "qc_roi_1_mcseg.npy").exists(), "_mcseg.npy 不存在"
