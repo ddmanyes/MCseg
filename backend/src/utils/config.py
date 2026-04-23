@@ -65,6 +65,10 @@ def _load_profile(profile_name: str) -> dict[str, Any]:
 
     若檔案不存在，回傳空字典並記錄警告。
     """
+    import re as _re
+    if not _re.match(r'^[\w\-]+$', str(profile_name)):
+        logger.warning(f"tissue_profile 名稱含非法字元，略過：{profile_name!r}")
+        return {}
     profile_path = _PROFILES_DIR / f"{profile_name}.yaml"
     if not profile_path.exists():
         logger.warning(f"找不到 tissue profile：{profile_path}，使用空 profile")

@@ -124,7 +124,11 @@ async def _run_xenium(config: dict, req: ExportRequest):
         if req.input_h5ad:
             p = Path(req.input_h5ad)
             if p.is_absolute():
-                h5ad_path = p
+                resolved = p.resolve()
+                allowed = [output_dir_base.resolve(), data_root_dir.resolve()]
+                if not any(str(resolved).startswith(str(r)) for r in allowed):
+                    raise ValueError("input_h5ad 路徑必須位於 output_dir 或 data_root 底下")
+                h5ad_path = resolved
             else:
                 # 嘗試從 output_dir 與 data_root 兩處查找
                 candidate_a = output_dir_base / p
@@ -134,7 +138,7 @@ async def _run_xenium(config: dict, req: ExportRequest):
                 elif candidate_b.exists():
                     h5ad_path = candidate_b
                 else:
-                    raise FileNotFoundError(f"找不到指定的 h5ad：{req.input_h5ad}\n搜尋位置：{candidate_a} 或 {candidate_b}")
+                    raise FileNotFoundError("找不到指定的 h5ad，請確認路徑正確")
         else:
             for candidate in ["umap_computed.h5ad", "qc_preprocessed.h5ad", "cellpose_cells.h5ad"]:
                 p = output_dir_base / candidate
@@ -365,7 +369,11 @@ async def _run_loupe(config: dict, req: ExportRequest):
         if req.input_h5ad:
             p = Path(req.input_h5ad)
             if p.is_absolute():
-                h5ad_path = p
+                resolved = p.resolve()
+                allowed = [output_dir_base.resolve(), data_root_dir.resolve()]
+                if not any(str(resolved).startswith(str(r)) for r in allowed):
+                    raise ValueError("input_h5ad 路徑必須位於 output_dir 或 data_root 底下")
+                h5ad_path = resolved
             else:
                 candidate_a = output_dir_base / p
                 candidate_b = data_root_dir / p
@@ -374,7 +382,7 @@ async def _run_loupe(config: dict, req: ExportRequest):
                 elif candidate_b.exists():
                     h5ad_path = candidate_b
                 else:
-                    raise FileNotFoundError(f"找不到指定的 h5ad：{req.input_h5ad}")
+                    raise FileNotFoundError("找不到指定的 h5ad，請確認路徑正確")
         else:
             for candidate in ["clustered_final.h5ad", "umap_computed.h5ad", "qc_preprocessed.h5ad"]:
                 p = output_dir_base / candidate

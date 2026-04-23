@@ -172,24 +172,34 @@ async def get_disk_status():
     }
 
 
+_BROWSE_ALLOWED_ROOTS = [
+    Path(os.path.expanduser("~")),
+    Path("/Volumes"),
+    Path("/tmp"),
+]
+
+
 @router.get("/browse")
 async def browse_directory(path: str = Query("~", description="要瀏覽的目錄路徑")):
     """
     瀏覽本機目錄結構。回傳指定路徑下的子目錄與大型檔案。
     前端可用此 API 實現點擊式的資料夾選擇器。
+    僅限 ~/、/Volumes/、/tmp/ 底下的路徑。
     """
     try:
         target = Path(os.path.expanduser(path)).resolve()
+        if not any(str(target).startswith(str(r)) for r in _BROWSE_ALLOWED_ROOTS):
+            return {"status": "error", "message": "路徑不在允許範圍內"}
         if not target.exists():
-            return {"status": "error", "message": f"路徑不存在：{target}"}
+            return {"status": "error", "message": "路徑不存在"}
         if not target.is_dir():
-            return {"status": "error", "message": f"不是目錄：{target}"}
+            return {"status": "error", "message": "不是目錄"}
 
         items = []
         try:
             entries = sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
         except PermissionError:
-            return {"status": "error", "message": f"無權限存取：{target}"}
+            return {"status": "error", "message": "無權限存取此目錄"}
 
         for entry in entries:
             try:

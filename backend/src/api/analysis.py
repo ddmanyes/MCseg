@@ -115,8 +115,8 @@ async def _run_analysis(config: dict):
         await asyncio.get_running_loop().run_in_executor(None, run_analysis_pipeline, config)
         _task_status = {"status": "done", "progress": 1.0, "message": "分析完成"}
     except Exception as e:
-        logger.error(f"分析失敗：{e}")
-        _task_status = {"status": "error", "progress": 0.0, "message": str(e)}
+        logger.error(f"分析失敗：{e}", exc_info=True)
+        _task_status = {"status": "error", "progress": 0.0, "message": "分析失敗，請查閱 log"}
 
 
 @router.post("/run")

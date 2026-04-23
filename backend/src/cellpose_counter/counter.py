@@ -102,9 +102,12 @@ def count_rna_per_cell(
     n_out = len(adata) - n_valid
     logger.info(f"  有效 bins：{n_valid}（ROI 內），{n_out} 個超出 ROI 範圍（忽略）")
     if n_out > 0 and n_out / len(adata) > 0.3:
+        min_col = int(roi_col.min())
+        min_row = int(roi_row.min())
         logger.warning(
             f"⚠️ 超出 ROI 範圍的 bins 超過 30%（{n_out}/{len(adata)}），"
-            f"請確認 ROI 偏移 (x={roi_x_px}, y={roi_y_px}) 是否正確"
+            f"請確認 ROI 偏移 (x={roi_x_px}, y={roi_y_px}) 是否正確。"
+            f"最小座標：col={min_col}, row={min_row}"
         )
 
     # ── 4. 查詢每個 bin 的細胞 ID ────────────────────────────────────────

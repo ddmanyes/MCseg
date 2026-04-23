@@ -2,11 +2,12 @@
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks
 from fastapi.responses import Response as FastAPIResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from backend.src.utils.config import load_config, save_state
 from backend.src.utils.constants import VISIUM_UM_PX
@@ -57,6 +58,13 @@ class RoiConfig(BaseModel):
     y_um: Optional[float] = None
     width_um: Optional[float] = None
     height_um: Optional[float] = None
+
+    @field_validator("name")
+    @classmethod
+    def safe_name(cls, v: str) -> str:
+        if not re.match(r'^[\w\-]+$', v):
+            raise ValueError("ROI name 只允許英數字、底線、連字號，不能含有路徑字元")
+        return v
 
 
 @router.get("/status")

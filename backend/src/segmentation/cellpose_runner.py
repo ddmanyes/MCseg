@@ -35,6 +35,18 @@ from scipy import ndimage
 logger = logging.getLogger("pipeline.segmentation")
 
 
+def _clear_gpu_cache() -> None:
+    """釋放 CUDA / MPS 顯存碎片（CLAUDE.md §13）。"""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except ImportError:
+        pass
+
+
 # ─────────────────────────────────────────────────────────
 # 預處理工具
 # ─────────────────────────────────────────────────────────
@@ -340,6 +352,7 @@ def run_mcseg_v2(
 
     del cyto3
     gc.collect()
+    _clear_gpu_cache()
 
     if use_cpsam:
         logger.info(f"  [{time.time()-t0:.0f}s] 載入 cpsam...")
@@ -378,6 +391,7 @@ def run_mcseg_v2(
 
             del cpsam
             gc.collect()
+            _clear_gpu_cache()
         except Exception as e:
             logger.warning(f"  cpsam 失敗（跳過）：{e}")
 
@@ -755,6 +769,7 @@ def run_tiled_mcseg_v2(
     if hema_full is not None:
         del hema_full
     gc.collect()
+    _clear_gpu_cache()
 
     # ── Phase 2：全圖 Voronoi + 清理 ─────────────────────
     if progress_callback:

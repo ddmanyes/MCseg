@@ -360,8 +360,13 @@ def _generate_fake_barcodes(n: int) -> list[str]:
 
     使用固定 seed=42 確保可重現性。
     生成的條碼去重後取前 n 個，確保每個細胞擁有唯一條碼。
-    若 n 極大（> 4^16 理論上限）則允許重複。
     """
+    _MAX_UNIQUE = 4 ** 16  # 4,294,967,296
+    if n > _MAX_UNIQUE:
+        raise ValueError(
+            f"要求條碼數 {n} 超過 16bp ACGT 空間上限 {_MAX_UNIQUE}，"
+            "無法保證唯一性"
+        )
     bases = "ACGT"
     random.seed(42)
     barcodes: set[str] = set()
