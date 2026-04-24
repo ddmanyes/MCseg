@@ -11,8 +11,12 @@ Macenko 色彩標準化與影像前處理工具
 - apply_clahe: 局部對比度增強
 """
 
+import logging
+
 import numpy as np
 import cv2
+
+logger = logging.getLogger("pipeline.segmentation.macenko")
 
 
 class MacenkoNormalizer:
@@ -52,11 +56,11 @@ class MacenkoNormalizer:
         OD, ODhat = self._convert_rgb_to_od(I_reshaped, Io, beta)
 
         if ODhat.shape[0] < 100:
-            print(f"  -> Warning: Only {ODhat.shape[0]} valid pixels at beta={beta}. Retrying with beta=0.05...")
+            logger.warning(f"Macenko: only {ODhat.shape[0]} valid pixels at beta={beta}, retrying with beta=0.05")
             OD, ODhat = self._convert_rgb_to_od(I_reshaped, Io, beta=0.05)
 
         if ODhat.shape[0] < 100:
-            print("  -> Debug: Image is still too empty/white for calibration (Valid Pixels < 100).")
+            logger.warning("Macenko: image too empty/white for calibration (< 100 valid pixels)")
             return False
 
         try:
@@ -79,7 +83,7 @@ class MacenkoNormalizer:
             return True
 
         except Exception as e:
-            print(f"❌ Error calculating stain vectors: {e}")
+            logger.warning(f"Macenko: stain vector calculation failed: {e}")
             return False
 
     def extract_hematoxylin(self, I: np.ndarray, Io: int = 240, beta: float = 0.15) -> np.ndarray:
@@ -133,7 +137,7 @@ class MacenkoNormalizer:
             E_norm = cv2.normalize(E_conc, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             return H_norm, E_norm
         except Exception as e:
-            print(f"❌ Error extracting H/E channels: {e}. Falling back to grayscale.")
+            logger.warning(f"Macenko: H/E channel extraction failed, falling back to grayscale: {e}")
             gray = cv2.cvtColor(I, cv2.COLOR_RGB2GRAY) if I.ndim == 3 else I
             return gray, gray
 

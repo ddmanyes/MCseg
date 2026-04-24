@@ -91,6 +91,8 @@ async def add_roi(roi: RoiConfig):
 
 @router.delete("/{roi_name}")
 async def delete_roi(roi_name: str):
+    if not re.match(r'^[\w\-]+$', roi_name):
+        return {"status": "error", "message": "ROI name 含有非法字元"}
     config = load_config()
     rois = [r for r in config.get("rois", []) if r.get("name") != roi_name]
     save_state({"rois": rois})
@@ -159,6 +161,8 @@ async def roi_tile(level: int, tile_name: str):
     try:
         ts  = _get_tile_server()
         xy  = tile_name.replace('.jpg', '').replace('.jpeg', '').split('_')
+        if len(xy) < 2:
+            return FastAPIResponse(content=b'', status_code=400, media_type='image/jpeg')
         tx, ty = int(xy[0]), int(xy[1])
         jpg = ts.get_tile(level, tx, ty)
         return FastAPIResponse(

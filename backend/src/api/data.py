@@ -34,8 +34,8 @@ async def scan_directory(req: ScanRequest):
         result = scan_data_root(req.data_root)
         return {"status": "ok", "data": result.to_dict()}
     except Exception as e:
-        logger.error(f"掃描失敗：{e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"掃描失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "掃描失敗，請查閱 log"}
 
 
 @router.post("/apply")
@@ -80,8 +80,8 @@ async def apply_paths(req: ApplyRequest):
         logger.info(f"已套用 {len(updates)} 項路徑設定")
         return {"status": "ok", "message": f"已更新 {len(updates)} 項路徑", "data": paths}
     except Exception as e:
-        logger.error(f"套用失敗：{e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"套用失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "套用路徑失敗，請查閱 log"}
 
 
 @router.get("/output-dir")
@@ -94,8 +94,8 @@ async def get_output_dir():
         resolved = str(resolve_path(output_dir))
         return {"status": "ok", "data": {"output_dir": output_dir, "resolved": resolved}}
     except Exception as e:
-        logger.error(f"取得輸出目錄失敗：{e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"取得輸出目錄失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "取得輸出目錄失敗，請查閱 log"}
 
 
 @router.get("/status")
@@ -114,8 +114,8 @@ async def get_data_status():
             }
         return {"status": "ok", "data": status}
     except Exception as e:
-        logger.error(f"取得資料狀態失敗：{e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"取得資料狀態失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "取得資料狀態失敗，請查閱 log"}
 
 
 @router.get("/disk-status")
@@ -126,8 +126,8 @@ async def get_disk_status():
     try:
       config = load_config()
     except Exception as e:
-        logger.error(f"disk-status 載入設定失敗：{e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"disk-status 載入設定失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "磁碟狀態查詢失敗，請查閱 log"}
     paths = config.get("paths", {})
     output_dir = resolve_path(paths.get("output_dir", "results/analysis"))
 
@@ -254,6 +254,6 @@ async def browse_directory(path: str = Query("~", description="要瀏覽的目�
             },
         }
     except Exception as e:
-        logger.error(f"瀏覽目錄失敗：{e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"瀏覽目錄失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "瀏覽目錄失敗，請查閱 log"}
 

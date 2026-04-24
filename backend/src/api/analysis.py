@@ -276,8 +276,8 @@ async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = F
         return {"status": "ok", "data": {"n_cells": int(adata.n_obs), "metrics": metrics}}
 
     except Exception as e:
-        logger.error(f"raw_histogram 失敗：{e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"raw_histogram 失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "直方圖查詢失敗，請查閱 log"}
 
 
 # ─────────────────────── Step 1: QC ───────────────────────────────
@@ -364,7 +364,7 @@ async def _run_qc(config: dict):
     except Exception as e:
         import traceback
         logger.error(f"QC Step 失敗：{e!r}\n{traceback.format_exc()}")
-        _qc_status = {"status": "error", "progress": 0.0, "message": str(e)}
+        _qc_status = {"status": "error", "progress": 0.0, "message": "QC 失敗，請查閱 log"}
 
 
 @router.post("/run_qc")
@@ -420,7 +420,8 @@ async def get_available_rois():
                 continue
         return {"status": "ok", "data": result}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        logger.error(f"get_available_rois 失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "查詢 ROI 來源失敗，請查閱 log"}
 
 
 # ─────────────────────── Step 2: UMAP ─────────────────────────────
@@ -511,8 +512,8 @@ async def _run_umap(config: dict, p: UMAPExploreParams):
             "resolutions": p.resolutions,
         }
     except Exception as e:
-        logger.error(f"UMAP Step 失敗：{e}")
-        _umap_status = {"status": "error", "progress": 0.0, "message": str(e)}
+        logger.error(f"UMAP Step 失敗：{e}", exc_info=True)
+        _umap_status = {"status": "error", "progress": 0.0, "message": "UMAP 失敗，請查閱 log"}
 
 
 @router.post("/run_umap")
@@ -611,8 +612,8 @@ async def _run_heatmap(config: dict, p: HeatmapParams):
 
         _heat_status = {"status": "done", "progress": 1.0, "message": "Heatmap + Dotplot complete"}
     except Exception as e:
-        logger.error(f"Heatmap Step 失敗：{e}")
-        _heat_status = {"status": "error", "progress": 0.0, "message": str(e)}
+        logger.error(f"Heatmap Step 失敗：{e}", exc_info=True)
+        _heat_status = {"status": "error", "progress": 0.0, "message": "熱圖失敗，請查閱 log"}
 
 
 @router.post("/run_heatmap")
@@ -676,7 +677,8 @@ async def get_cluster_info(resolution: float, roi_name: Optional[str] = None):
         ids, existing_labels = get_cluster_ids(config, resolution, roi_name=roi_name)
         return {"status": "ok", "data": {"cluster_ids": ids, "existing_labels": existing_labels}}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        logger.error(f"get_cluster_info 失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "Cluster 資訊查詢失敗，請查閱 log"}
 
 
 @router.get("/celltypist_models")
@@ -709,8 +711,8 @@ async def _run_annotate(config: dict, p: AnnotateParams):
             "message": f"CellTypist 標註完成（{len(result)} 個 cluster）",
         }
     except Exception as e:
-        logger.error(f"CellTypist 標註失敗：{e}")
-        _annot_status = {"status": "error", "progress": 0.0, "message": str(e)}
+        logger.error(f"CellTypist 標註失敗：{e}", exc_info=True)
+        _annot_status = {"status": "error", "progress": 0.0, "message": "CellTypist 標註失敗，請查閱 log"}
 
 
 @router.post("/annotate")
@@ -760,8 +762,8 @@ async def get_roi_overlays():
             return {"status": "error", "message": "尚未產生 ROI 疊圖，請先執行 QC"}
         return {"status": "ok", "data": result}
     except Exception as e:
-        logger.error(f"roi_overlays 失敗：{e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"roi_overlays 失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "ROI 疊圖查詢失敗，請查閱 log"}
 
 
 @router.get("/marker_genes_csv")
@@ -810,8 +812,8 @@ async def get_marker_genes_csv(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"marker_genes_csv 失敗：{e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"marker_genes_csv 失敗：{e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Marker genes 查詢失敗，請查閱 log")
 
 
 @router.post("/apply_labels")
@@ -823,5 +825,5 @@ async def apply_labels_endpoint(params: ApplyLabelsParams):
         apply_cluster_labels(config, params.resolution, params.labels, roi_name=params.roi_name)
         return {"status": "ok", "message": f"已套用 {len(params.labels)} 個 cluster 標籤"}
     except Exception as e:
-        logger.error(f"套用標籤失敗：{e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"套用標籤失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "套用標籤失敗，請查閱 log"}

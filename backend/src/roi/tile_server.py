@@ -176,6 +176,10 @@ def _load_or_build_thumb(btf_path: Path, scale: int) -> np.ndarray:
                 fh.seek(offsets[tidx])
                 raw = np.frombuffer(fh.read(bytecounts[tidx]), np.uint8)
                 if raw.size != TH * TW * 3:
+                    logger.warning(
+                        f"Tile ({tx},{ty}) 大小不符（{raw.size} != {TH*TW*3}），跳過。"
+                        "如影像非 uint8 RGB，縮圖可能不完整。"
+                    )
                     continue
                 tile = raw.reshape(TH, TW, 3)
 
