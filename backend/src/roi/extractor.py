@@ -144,7 +144,7 @@ def read_btf_crop(
 
 # ── Visium HD AnnData 裁切 ──────────────────────────────────
 
-def subset_anndata_roi(adata, roi: dict):
+def subset_anndata_roi(adata, roi: dict, binned_dir: str | Path = None):
     """
     根據 ROI fullres pixel 座標，裁切 Visium HD AnnData。
 
@@ -155,12 +155,76 @@ def subset_anndata_roi(adata, roi: dict):
     x0, y0, w, h = roi_to_fullres_px(roi)
     x1, y1 = x0 + w, y0 + h
 
-    mask = (
-        (adata.obs["pxl_col_in_fullres"] >= x0) &
-        (adata.obs["pxl_col_in_fullres"] <  x1) &
-        (adata.obs["pxl_row_in_fullres"] >= y0) &
-        (adata.obs["pxl_row_in_fullres"] <  y1)
-    )
+    if binned_dir is not None:
+        import json
+        import pathlib
+        import numpy as np
+        reg_path = pathlib.Path(binned_dir) / "spatial" / "H1-WGR3TC4-D1-fiducials-image-registration.json"
+        if reg_path.exists():
+            with open(reg_path) as f:
+                data = json.load(f)
+            if "cytAssistInfo" in data and "transformImages" in data["cytAssistInfo"]:
+                try:
+                    T1 = np.array(data["cytAssistInfo"]["transformImages"])
+                    T2 = np.array(data["transform"])
+                    T2_inv = np.linalg.inv(T2)
+                    M = T2_inv @ T1
+                    
+                    pts = np.array([
+                        [x0, y0, 1], [x1, y0, 1],
+                        [x0, y1, 1], [x1, y1, 1]
+                    ]).T
+                    res = M @ pts
+                    xs = res[0, :] / res[2, :]
+                    ys = res[1, :] / res[2, :]
+                    mapped_x0, mapped_x1 = min(xs), max(xs)
+                    mapped_y0, mapped_y1 = min(ys), max(ys)
+                    logger.info(f"CytAssist 座標自動修正: 映射至內部 X={mapped_x0:.1f}~{mapped_x1:.1f}, Y={mapped_y0:.1f}~{mapped_y1:.1f}")
+                    
+                    # Compute Raw TIFF coordinates for all bins
+                    M_inv = np.linalg.inv(M)
+                    all_cols = adata.obs["pxl_col_in_fullres"].values
+                    all_rows = adata.obs["pxl_row_in_fullres"].values
+                    all_pts = np.vstack([all_cols, all_rows, np.ones_like(all_cols)])
+                    raw_res = M_inv @ all_pts
+                    adata.obs["raw_tiff_col"] = raw_res[0, :] / raw_res[2, :]
+                    adata.obs["raw_tiff_row"] = raw_res[1, :] / raw_res[2, :]
+                    
+                    # Update global obsm['spatial'] to align with Raw TIFF
+                    adata.obsm["spatial"] = np.stack([
+                        adata.obs["raw_tiff_col"].values,
+                        adata.obs["raw_tiff_row"].values,
+                    ], axis=1)
+                    
+                    # Update mask to use the mapped coordinates for filtering
+                    mask = (
+                        (adata.obs["pxl_col_in_fullres"] >= mapped_x0) &
+                        (adata.obs["pxl_col_in_fullres"] <  mapped_x1) &
+                        (adata.obs["pxl_row_in_fullres"] >= mapped_y0) &
+                        (adata.obs["pxl_row_in_fullres"] <  mapped_y1)
+                    )
+                except Exception as e:
+                    logger.error(f"CytAssist 矩陣轉換失敗: {e}")
+                    mask = (
+                        (adata.obs["pxl_col_in_fullres"] >= x0) &
+                        (adata.obs["pxl_col_in_fullres"] <  x1) &
+                        (adata.obs["pxl_row_in_fullres"] >= y0) &
+                        (adata.obs["pxl_row_in_fullres"] <  y1)
+                    )
+        else:
+            mask = (
+                (adata.obs["pxl_col_in_fullres"] >= x0) &
+                (adata.obs["pxl_col_in_fullres"] <  x1) &
+                (adata.obs["pxl_row_in_fullres"] >= y0) &
+                (adata.obs["pxl_row_in_fullres"] <  y1)
+            )
+    else:
+        mask = (
+            (adata.obs["pxl_col_in_fullres"] >= x0) &
+            (adata.obs["pxl_col_in_fullres"] <  x1) &
+            (adata.obs["pxl_row_in_fullres"] >= y0) &
+            (adata.obs["pxl_row_in_fullres"] <  y1)
+        )
     sub = adata[mask].copy()
     logger.info(f"AnnData ROI 裁切：{mask.sum()} / {len(adata)} bins")
     return sub
@@ -414,7 +478,7 @@ class RoiExtractor:
                 logger.warning(f"  {dir_key} 路徑不存在，跳過")
                 continue
             adata = load_visium_adata(binned_dir, bin_size)
-            sub = subset_anndata_roi(adata, roi)
+            sub = subset_anndata_roi(adata, roi, binned_dir=binned_dir)
             out_path = out_dir / f"adata_{bin_size}um.h5ad"
             sub.write_h5ad(str(out_path))
             logger.info(f"  已儲存：{out_path} ({sub.n_obs:,} bins)")
