@@ -191,6 +191,9 @@ def _hist_metric(arr: "np.ndarray", label: str, unit: str = "", n_bins: int = 60
     arr = arr[np.isfinite(arr) & (arr >= 0)]
     if len(arr) == 0:
         return {}
+    # 若所有值都是 0，直接回傳空字典，避免 np.histogram 產生 [-0.5, 0.5] 的無效 bin_edges
+    if arr.max() == 0:
+        return {}
     counts, bin_edges = np.histogram(arr, bins=n_bins)
     median = float(np.median(arr))
     # MAD 在 log1p 空間計算後轉回線性空間，適合 count data（高度右偏分布）

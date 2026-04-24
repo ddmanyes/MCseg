@@ -91,10 +91,16 @@ export default function QcHistogram({
   }, [])
 
   const { bin_edges, counts } = metric
-  const n = counts.length
+  const n = counts?.length ?? 0
   const chartW = svgWidth - PAD_L - PAD_R
-  const xMin = bin_edges[0]
-  const xMax = bin_edges[n]
+
+  // 提供安全預設值讓 hooks 可以在資料無效時仍正常執行（Rules of Hooks 要求 hooks 不能在條件分支後）
+  const isInvalid = !bin_edges || !counts || n === 0
+    || bin_edges[n] === undefined
+    || bin_edges[0] < 0
+    || bin_edges[n] <= bin_edges[0]
+  const xMin = isInvalid ? 0   : bin_edges[0]
+  const xMax = isInvalid ? 100 : bin_edges[n]
 
   // X scale helpers — linear
   const xScaleLin  = useCallback((v: number) => PAD_L + ((v - xMin) / (xMax - xMin)) * chartW, [xMin, xMax, chartW])
@@ -115,13 +121,14 @@ export default function QcHistogram({
   const xInvert = logScale ? xInvertLog : xInvertLin
 
   // Y scale
-  const yData = logScale ? counts.map(c => Math.log10(c + 1)) : counts
+  const safeCounts = isInvalid ? [] : counts
+  const yData = logScale ? safeCounts.map(c => Math.log10(c + 1)) : safeCounts
   const yMax  = Math.max(...yData, 1)
   const yScale = (v: number) => PAD_T + CHART_H - (v / yMax) * CHART_H
 
   // Pass rate (approximate via bins)
-  const totalInBins = counts.reduce((a, b) => a + b, 0)
-  const passInBins = counts.reduce((sum, c, i) => {
+  const totalInBins = safeCounts.reduce((a, b) => a + b, 0)
+  const passInBins = safeCounts.reduce((sum, c, i) => {
     const center = (bin_edges[i] + bin_edges[i + 1]) / 2
     const okMin = minVal === null || center >= minVal
     const okMax = maxVal === null || center <= maxVal
@@ -147,6 +154,16 @@ export default function QcHistogram({
   }, [xMin, xMax, xInvert, onMinChange, onMaxChange])
 
   const handleMouseUp = useCallback(() => { dragging.current = null }, [])
+
+  // ── 資料無效時顯示佔位符（所有 hooks 已在上方完成，此處可安全 return）
+  if (isInvalid) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs font-semibold text-gray-200">{metric.label}</span>
+        <div className="text-xs text-gray-500 italic py-4 text-center">無資料（細胞計數全為 0）</div>
+      </div>
+    )
+  }
 
   // X-axis ticks
   const xTicks = logScale

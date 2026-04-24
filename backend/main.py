@@ -120,4 +120,12 @@ async def websocket_log(websocket: WebSocket, stage: str):
 # ── 生產模式：服務前端靜態資源 ───────────────────────────────
 _frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
 if _frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
+    from fastapi.responses import FileResponse
+
+    # SPA catch-all：所有非 /api 路徑都回傳 index.html，讓前端 React Router 處理
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        index = _frontend_dist / "index.html"
+        return FileResponse(str(index))
+
+    app.mount("/assets", StaticFiles(directory=str(_frontend_dist / "assets")), name="assets")
