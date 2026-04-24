@@ -1,6 +1,8 @@
 """資料設定 API：掃描資料目錄、套用路徑配置、目錄瀏覽"""
 import logging
 import os
+import string
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -172,11 +174,14 @@ async def get_disk_status():
     }
 
 
-_BROWSE_ALLOWED_ROOTS = [
-    Path(os.path.expanduser("~")),
-    Path("/Volumes"),
-    Path("/tmp"),
-]
+def _build_allowed_roots() -> list[Path]:
+    home = Path(os.path.expanduser("~"))
+    if sys.platform == "win32":
+        drives = [Path(f"{d}:/") for d in string.ascii_uppercase if Path(f"{d}:/").exists()]
+        return [home, *drives]
+    return [home, Path("/Volumes"), Path("/tmp")]
+
+_BROWSE_ALLOWED_ROOTS = _build_allowed_roots()
 
 
 @router.get("/browse")

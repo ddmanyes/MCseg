@@ -54,7 +54,19 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
 ```
 
+**Windows (PowerShell, run as Administrator):**
+
+```powershell
+# Install Node.js (winget, built into Windows 10/11)
+winget install OpenJS.NodeJS.LTS
+
+# Install uv
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
 ### Installation
+
+**macOS / Linux:**
 
 ```bash
 # 1. Install uv (Python package manager)
@@ -73,13 +85,34 @@ cd frontend && npm install && cd ..
 bash start.sh
 ```
 
+**Windows (PowerShell):**
+
+```powershell
+# 1. Restart PowerShell after installing uv so it is in PATH
+
+# 2. Clone and install
+git clone https://github.com/ddmanyes/MCseg.git
+cd MCseg
+uv sync      # creates .venv directly — no symlink needed on Windows
+
+# 3. Install frontend dependencies
+cd frontend; npm install; cd ..
+
+# 4. Launch backend + frontend (two terminals)
+# Terminal 1:
+uv run uvicorn backend.main:app --port 8001
+# Terminal 2:
+cd frontend; npm run dev
+```
+
 Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 
 > [!NOTE]
 > **bash users:** replace `source ~/.zshrc` with `source ~/.bashrc`.
 
 > [!IMPORTANT]
-> **ExFAT / external drive users:** skip `uv sync` in step 2 and run `bash start.sh` directly — it creates `.venv` as a symlink to `~/.venvs/msseg` (APFS) before installing, avoiding resource-fork corruption.
+> **ExFAT / external drive users (macOS only):** skip `uv sync` in step 2 and run `bash start.sh` directly — it creates `.venv` as a symlink to `~/.venvs/msseg` (APFS) before installing, avoiding resource-fork corruption.
+> **Windows users:** the symlink workaround is not needed — run `uv sync` directly on any drive.
 
 ---
 
