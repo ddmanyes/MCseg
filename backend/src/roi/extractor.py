@@ -497,7 +497,17 @@ class RoiExtractor:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         x0, y0, w, h = roi_to_fullres_px(roi)
-        crop, ax0, ay0 = read_btf_crop(he_path, x0, y0, w, h)
+
+        import tifffile as _tifffile
+        with _tifffile.TiffFile(str(he_path)) as _tf:
+            _is_tiled = bool(_tf.pages[0].tags.get("TileOffsets"))
+
+        if _is_tiled:
+            crop, ax0, ay0 = read_btf_crop(he_path, x0, y0, w, h)
+        else:
+            from backend.src.roi.tile_server import read_strip_crop
+            crop = read_strip_crop(he_path, x0, y0, w, h)
+            ax0, ay0 = x0, y0
 
         out_path = out_dir / "he_crop.tif"
         tifffile.imwrite(str(out_path), crop)

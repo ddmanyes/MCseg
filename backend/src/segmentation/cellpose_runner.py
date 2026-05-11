@@ -368,14 +368,14 @@ def run_mcseg_v2(
                 resample=False,
             )
 
-            logger.info(f"  [{time.time()-t0:.0f}s] cpsam auto...")
-            m, _, _ = cpsam.eval(enhanced, diameter=0, **cpsam_base)
+            logger.info(f"  [{time.time()-t0:.0f}s] cpsam dia={dia_mid}...")
+            m, _, _ = cpsam.eval(enhanced, diameter=float(dia_mid), **cpsam_base)
             results["cpsam_auto"] = m
             logger.info(f"    → {m.max()} cells")
 
-            logger.info(f"  [{time.time()-t0:.0f}s] cpsam dia=16...")
+            logger.info(f"  [{time.time()-t0:.0f}s] cpsam dia={dia_large}...")
             m, _, _ = cpsam.eval(
-                enhanced, diameter=16,
+                enhanced, diameter=float(dia_large),
                 **{**cpsam_base, "cellprob_threshold": cellprob_thresh - 1.0},
             )
             results["cpsam_16"] = m
@@ -383,8 +383,8 @@ def run_mcseg_v2(
 
             if use_hematoxylin and hema is not None:
                 hema_rgb2 = np.stack([hema, hema, hema], axis=-1)
-                logger.info(f"  [{time.time()-t0:.0f}s] cpsam (hematoxylin)...")
-                m, _, _ = cpsam.eval(hema_rgb2, diameter=0, **cpsam_base)
+                logger.info(f"  [{time.time()-t0:.0f}s] cpsam hema dia={dia_mid}...")
+                m, _, _ = cpsam.eval(hema_rgb2, diameter=float(dia_mid), **cpsam_base)
                 results["cpsam_hema"] = m
                 logger.info(f"    → {m.max()} cells")
                 del hema_rgb2
@@ -402,10 +402,16 @@ def run_mcseg_v2(
 
     # ── 3. 集成合併（以 cyto3_mid 為基底）────────────────────
     base_mask = results["cyto3_mid"].copy().astype(np.int32)
+    target_shape = base_mask.shape
     for key, mask in results.items():
         if key == "cyto3_mid":
             continue
-        base_mask, n_added = merge_masks_fast(base_mask, mask.astype(np.int32))
+        m = mask.astype(np.int32)
+        if m.shape != target_shape:
+            import cv2 as _cv2
+            m = _cv2.resize(m, (target_shape[1], target_shape[0]),
+                            interpolation=_cv2.INTER_NEAREST)
+        base_mask, n_added = merge_masks_fast(base_mask, m)
         logger.info(f"    合併 {key}: +{n_added} cells")
     logger.info(f"  合併後：{base_mask.max()} cells")
 

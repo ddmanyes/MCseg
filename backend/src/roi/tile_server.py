@@ -33,6 +33,43 @@ OVERLAP     = 1
 THUMB_SCALE = 32   # 1/32 downsample for overview: 21504×47104 → ~672×1472 px
 
 
+def read_strip_crop(
+    tif_path: Path,
+    x0: int, y0: int,
+    w: int, h: int,
+) -> np.ndarray:
+    """Strip-based region read for non-tiled TIFFs (rowsperstrip layout)."""
+    import tifffile
+
+    with tifffile.TiffFile(str(tif_path)) as tf:
+        page = tf.pages[0]
+        W   = page.imagewidth
+        H   = page.imagelength
+        rps = getattr(page, "rowsperstrip", 1) or 1
+        offsets_tag    = page.tags.get("StripOffsets")
+        bytecounts_tag = page.tags.get("StripByteCounts")
+
+        x1 = min(W, x0 + w)
+        y1 = min(H, y0 + h)
+        s0 = y0 // rps
+        s1 = min(len(offsets_tag.value), (y1 + rps - 1) // rps)
+        offsets    = offsets_tag.value
+        bytecounts = bytecounts_tag.value
+
+    canvas = np.zeros(((s1 - s0) * rps, W, 3), dtype=np.uint8)
+    with open(str(tif_path), "rb") as fh:
+        for si in range(s0, s1):
+            if si >= len(offsets) or offsets[si] == 0:
+                continue
+            fh.seek(offsets[si])
+            raw = np.frombuffer(fh.read(bytecounts[si]), np.uint8)
+            if raw.size == rps * W * 3:
+                canvas[(si - s0) * rps:(si - s0 + 1) * rps] = raw.reshape(rps, W, 3)
+
+    local_y0 = y0 - s0 * rps
+    return canvas[local_y0:local_y0 + (y1 - y0), x0:x1]
+
+
 class DZITileServer:
     """Serves Deep Zoom Image tiles from a pyramidal BTF/TIFF."""
 
@@ -57,6 +94,7 @@ class DZITileServer:
             page = tf.pages[0]
             self.full_height = page.imagelength
             self.full_width  = page.imagewidth
+            self._is_tiled   = bool(page.tags.get("TileOffsets"))
 
         self.max_level = math.ceil(math.log2(max(self.full_width, self.full_height)))
 
@@ -81,7 +119,8 @@ class DZITileServer:
 
     def get_tile(self, level: int, tx: int, ty: int) -> bytes:
         """Return JPEG bytes for DZI tile at (level, tx, ty)."""
-        scale = 2 ** (self.max_level - level)
+        level = min(level, self.max_level)
+        scale = max(1, 2 ** (self.max_level - level))
 
         x0 = max(0, tx * TILE_SIZE * scale - OVERLAP * scale)
         y0 = max(0, ty * TILE_SIZE * scale - OVERLAP * scale)
@@ -98,8 +137,10 @@ class DZITileServer:
         if scale >= 4 and self._thumb_arr is not None:
             crop = _crop_from_thumb(self._thumb_arr, self._thumb_scale,
                                     x0, y0, x1, y1)
-        else:
+        elif self._is_tiled:
             crop, _, _ = read_btf_crop(self.btf_path, x0, y0, w, h)
+        else:
+            crop = read_strip_crop(self.btf_path, x0, y0, w, h)
 
         img = Image.fromarray(crop).convert('RGB')
         if img.size != (target_w, target_h):
@@ -142,22 +183,23 @@ def _load_or_build_thumb(btf_path: Path, scale: int) -> np.ndarray:
         page      = tf.pages[0]
         H         = page.imagelength
         W         = page.imagewidth
-        TH        = getattr(page, "tilelength", 512)
-        TW        = getattr(page, "tilewidth",  512)
-        n_tiles_x = (W + TW - 1) // TW
-        n_tiles_y = (H + TH - 1) // TH
+        TH        = getattr(page, "tilelength", 0) or 0
+        TW        = getattr(page, "tilewidth",  0) or 0
 
         offsets_tag    = page.tags.get("TileOffsets")
         bytecounts_tag = page.tags.get("TileByteCounts")
 
-        if not offsets_tag or not bytecounts_tag:
-            # Non-tiled TIFF: full load (warn: may be slow / large)
-            logger.warning("TIFF 無 TileOffsets，全圖載入以建立縮圖（可能耗時）")
+        if not offsets_tag or not bytecounts_tag or TW == 0 or TH == 0:
+            # Non-tiled TIFF (strip layout): full load
+            logger.warning("TIFF 無 TileOffsets 或 tile 尺寸為 0，全圖載入以建立縮圖（可能耗時）")
             img   = page.asarray()
             thumb = np.ascontiguousarray(img[::scale, ::scale])
             del img
             np.save(str(cache), thumb)
             return thumb
+
+        n_tiles_x = (W + TW - 1) // TW
+        n_tiles_y = (H + TH - 1) // TH
 
         offsets    = offsets_tag.value
         bytecounts = bytecounts_tag.value
