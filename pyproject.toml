@@ -67,6 +67,9 @@ dev = [
     "ipykernel",
 ]
 
+[project.scripts]
+msseg-segment = "backend.src.cli.segment:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

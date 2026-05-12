@@ -17,7 +17,7 @@ Its core segmentation engine, **MCseg**, was developed through the **AutoResearc
 
 ## Contents
 
-[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Output Structure](#output-structure) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
+[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [CLI (No-UI)](#cli-no-ui-whole-slide-segmentation) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Output Structure](#output-structure) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
 
 ---
 
@@ -27,13 +27,13 @@ Its core segmentation engine, **MCseg**, was developed through the **AutoResearc
 
 | Component         | Minimum                          | Recommended                     | Notes                                                                                                            |
 | ----------------- | -------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **OS**      | macOS 12 (Monterey)              | macOS 13+                       | Linux (Ubuntu 20.04+) also supported                                                                             |
-| **CPU**     | 4-core, any modern x86-64 or ARM | Apple Silicon (M1/M2/M3)        | Apple Silicon provides MPS GPU acceleration                                                                      |
+| **OS**      | macOS 12, Windows 10, Ubuntu 20.04 | macOS 13+ / Windows 11 / Ubuntu 22.04 | All three platforms fully supported                                                                         |
+| **CPU**     | 4-core, any modern x86-64 or ARM | Apple Silicon (M1/M2/M3) or AMD/Intel | Apple Silicon → MPS; NVIDIA → CUDA GPU acceleration                                                        |
 | **RAM**     | 8 GB                             | 16 GB+                          | Cellpose loads full ROI crops into memory; very large ROIs (>2000×2000 px) or multi-ROI runs benefit from 32 GB |
 | **Storage** | 15 GB free                       | 30 GB+ free                     | ~8 GB for Python env (torch, cellpose); remainder for data & results                                             |
 | **Python**  | 3.10                             | 3.11                            | Managed by `uv`; do not use system Python                                                                      |
-| **Node.js** | v18                              | v20 LTS                         | For frontend (Vite + React)                                                                                      |
-| **GPU**     | — (CPU fallback)                | Apple MPS or NVIDIA (CUDA 12.x) | GPU reduces segmentation time: ~30 min (4-pass) / ~55 min (7-pass) on CPU → ~2–3 / ~5–8 min with MPS/CUDA     |
+| **Node.js** | v18                              | v20 LTS                         | For frontend (Vite + React); CLI mode does not require Node.js                                                   |
+| **GPU**     | — (CPU fallback)                | NVIDIA CUDA 12.x or Apple MPS   | GPU reduces segmentation time: ~30 min (4-pass) / ~55 min (7-pass) on CPU → ~5–10 / ~15–25 min with CUDA/MPS  |
 
 ### Prerequisites
 
@@ -93,7 +93,12 @@ bash start.sh
 # 2. Clone and install
 git clone https://github.com/ddmanyes/MCseg.git
 cd MCseg
-uv sync      # creates .venv directly — no symlink needed on Windows
+
+# If your drive is NTFS (C:\, D:\ etc.):
+uv sync
+
+# If your drive is ExFAT (external SSD, e.g. K:\):
+$env:UV_LINK_MODE = "copy"; uv sync
 
 # 3. Install frontend dependencies
 cd frontend; npm install; cd ..
@@ -112,7 +117,7 @@ Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 
 > [!IMPORTANT]
 > **ExFAT / external drive users (macOS only):** skip `uv sync` in step 2 and run `bash start.sh` directly — it creates `.venv` as a symlink to `~/.venvs/msseg` (APFS) before installing, avoiding resource-fork corruption.
-> **Windows users:** the symlink workaround is not needed — run `uv sync` directly on any drive.
+> **ExFAT / external drive users (Windows):** use `$env:UV_LINK_MODE = "copy"; uv sync` instead of plain `uv sync` — this prevents hardlink failures on non-NTFS volumes. If `.venv` appears as a 1 KB file after `uv sync`, delete it with `cmd /c "attrib -H .venv && del .venv"` then re-run with `UV_LINK_MODE=copy`.
 
 ---
 
@@ -127,6 +132,99 @@ Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 | Stage 3: Analysis    | QC → Normalise → PCA → UMAP → Leiden                           | `umap_computed.h5ad`                |
 | Stage 3.5: Explorer  | Interactive spatial gene expression viewer                         | PNG export                            |
 | Stage 4: Export      | Xenium Explorer / Loupe Browser format                             | `experiment.xenium`, zarr archives  |
+
+---
+
+## CLI (No-UI) Whole-Slide Segmentation
+
+For batch processing, HPC clusters, or scripted pipelines, MSseg provides a **command-line interface (CLI)** that runs the full MCseg v2 segmentation stack without opening the web interface.
+
+### Basic syntax
+
+After `uv sync`, the `msseg-segment` command is available directly:
+
+```powershell
+# Windows (PowerShell) — short form
+uv run msseg-segment `
+    --btf  "K:\path\to\image.btf" `
+    --tp   "K:\path\to\tissue_positions.parquet" `
+    --h5   "K:\path\to\filtered_feature_bc_matrix.h5" `
+    --out  "K:\path\to\output_dir\" `
+    --tissue crc `
+    --cpsam
+```
+
+```bash
+# macOS / Linux — short form
+uv run msseg-segment \
+    --btf  "/Volumes/SSD/image.btf" \
+    --tp   "/Volumes/SSD/tissue_positions.parquet" \
+    --h5   "/Volumes/SSD/filtered_feature_bc_matrix.h5" \
+    --out  "/Volumes/SSD/output/" \
+    --tissue crc \
+    --cpsam
+```
+
+> Alternatively, use the module form: `uv run python -m backend.src.cli.segment ...`
+
+### Common recipes
+
+| Task | Command flags |
+|------|---------------|
+| **CRC 7-pass** (with cpsam) | `--tissue crc --cpsam` |
+| **LUAD 4-pass** (fast) | `--tissue luad` |
+| **Skip BTF crop** (reuse existing he_crop.tif) | `--he-crop path/to/he_crop.tif` |
+| **Crop a sub-region** from BTF | `--btf image.btf --crop-y0 4635 --crop-y1 18599 --btf-col0 45752 --btf-col1 55840` |
+| **Skip CellTypist** | `--skip-celltypist` |
+| **CPU only** | `--no-gpu` |
+| **Custom diameters** | `--dia-small 11 --dia-mid 15 --dia-large 20` |
+
+### All options
+
+```
+uv run python -m backend.src.cli.segment --help
+
+  --btf PATH            原始 BigTIFF (.btf) 路徑
+  --he-crop PATH        已裁切的 he_crop.tif（略過 BTF 裁切步驟）
+
+  --crop-y0 PX          裁切起始 row（BTF 全圖座標，預設 0）
+  --crop-y1 PX          裁切結束 row（-1 = 全圖）
+  --btf-col0 PX         裁切起始 col（BTF 全圖座標，預設 0）
+  --btf-col1 PX         裁切結束 col（-1 = 全圖）
+
+  --tp PATH             tissue_positions.parquet 路徑
+  --h5 PATH             filtered_feature_bc_matrix.h5 路徑
+  --out DIR             輸出目錄（必填）
+
+  --tissue {crc,luad,default}   組織 preset（預設 crc）
+  --cpsam               啟用 cpsam（7-pass，需更長時間）
+  --no-gpu              強制 CPU
+  --batch-size N        Cellpose batch size（預設 2）
+  --tile-size PX        Tile 大小（預設 1024）
+  --overlap PX          Tile 重疊（預設 128）
+  --dia-small/mid/large PX      覆寫 cyto3 直徑
+  --voronoi-d PX        覆寫 Voronoi 距離
+  --cellprob THRESH     覆寫 cellprob_threshold
+
+  --celltypist-model MODEL      CellTypist 模型（預設 Human_Colorectal_Cancer.pkl）
+  --skip-celltypist     跳過 CellTypist
+```
+
+### Output files
+
+```
+<out>/
+├── he_crop.tif               ← 裁切後 H&E 影像
+├── mcseg_mask.npy            ← MCseg v2 細胞遮罩（int32, H×W）
+├── bin_attribution.parquet   ← barcode → cell_id 對應表
+└── celltypist_labels.csv     ← cell_id → celltypist_label
+```
+
+> [!TIP]
+> CLI 支援**斷點續跑**：每個輸出檔若已存在則自動跳過該步驟，可隨時中斷後重新執行。
+
+> [!NOTE]
+> CLI 和 Web UI 使用**完全相同的 `cellpose_runner.py` 引擎**，參數語義一致。Web UI 做的任何 ROI 參數覆寫都可以直接翻譯成 `--dia-mid` / `--voronoi-d` 等 CLI flags。
 
 ---
 
@@ -454,6 +552,8 @@ uv run pytest backend/tests/ -v
 | Too few cells detected                      | `cellprob_threshold` too high | Lower to `-2.0` or `-3.0` in Stage 1 UI                                                                                                        |
 | Fragmented small cells                      | `min_size` too low            | Increase `min_size` (e.g., 50 px²) in Stage 1 UI                                                                                                |
 | Low bin assignment rate                     | Voronoi gaps not filled         | Set `rna_counting.dilation_px: 6` in `pipeline.yaml` (default is 6)                                                                            |
+| CLI: `.venv` file error on Windows          | ExFAT symlink from macOS        | Run `cmd /c "attrib -H K:\...\MSseg\.venv && del K:\...\MSseg\.venv"` then `$env:UV_LINK_MODE="copy"; uv sync`                                 |
+| CLI: `zarr < 3 not supported`               | tifffile version conflict       | Run `uv pip install "tifffile==2023.12.9"` inside the MSseg venv                                                                                |
 | macOS `._*` file errors                   | ExFAT external drive            | Pipeline auto-filters; manually:`find . -name "._*" -delete`                                                                                     |
 
 ---

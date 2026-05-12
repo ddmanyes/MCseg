@@ -637,6 +637,7 @@ def run_tiled_mcseg_v2(
     cellprob_thresh = float(cfg.get("cellprob_threshold", -2.0))
     min_size        = int(cfg.get("min_size", 20))
     max_size        = int(cfg.get("max_size", 6000))
+    use_cpsam       = bool(cfg.get("use_cpsam", False))
     clahe_clip      = float(cfg.get("clahe_clip_limit", 3.0))
 
     H, W = img.shape[:2]
@@ -663,6 +664,16 @@ def run_tiled_mcseg_v2(
 
     logger.info(f"  載入 cyto3 模型 (gpu={use_gpu})")
     cyto3 = models.CellposeModel(model_type="cyto3", gpu=use_gpu)
+
+    cpsam = None
+    if use_cpsam:
+        logger.info(f"  載入 cpsam 模型 (gpu={use_gpu})")
+        try:
+            cpsam = models.CellposeModel(model_type="cpsam", gpu=use_gpu)
+            logger.info("  cpsam 載入成功")
+        except Exception as e:
+            logger.warning(f"  cpsam 載入失敗（跳過）：{e}")
+            cpsam = None
 
     eval_base = dict(
         channels=[0, 0],
@@ -714,6 +725,20 @@ def run_tiled_mcseg_v2(
                     m, _, _ = cyto3.eval(hema_rgb, diameter=dia_mid, **eval_base)
                     tile_results["hema"] = m
 
+                if cpsam is not None:
+                    cpsam_base = {**eval_base, "augment": False, "resample": False}
+                    m, _, _ = cpsam.eval(enh_tile, diameter=float(dia_mid), **cpsam_base)
+                    tile_results["cpsam_mid"] = m
+                    m, _, _ = cpsam.eval(
+                        enh_tile, diameter=float(dia_large),
+                        **{**cpsam_base, "cellprob_threshold": cellprob_thresh - 1.0},
+                    )
+                    tile_results["cpsam_large"] = m
+                    if hema_tile is not None:
+                        hema_rgb2 = np.stack([hema_tile] * 3, axis=-1)
+                        m, _, _ = cpsam.eval(hema_rgb2, diameter=float(dia_mid), **cpsam_base)
+                        tile_results["cpsam_hema"] = m
+
             except RuntimeError as e:
                 if "MPS" in str(e) or "out of memory" in str(e).lower():
                     logger.warning(f"  MPS OOM on tile {tile_idx}，fallback CPU")
@@ -728,10 +753,15 @@ def run_tiled_mcseg_v2(
 
             # merge tile results
             base = tile_results.get("mid", np.zeros_like(enh_tile[:, :, 0])).copy().astype(np.int32)
+            target_h, target_w = base.shape
             for key, mask in tile_results.items():
                 if key == "mid":
                     continue
-                base, _ = merge_masks_fast(base, mask.astype(np.int32))
+                m = mask.astype(np.int32)
+                if m.shape != (target_h, target_w):
+                    m = cv2.resize(m, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+                base, _ = merge_masks_fast(base, m)
+
 
             # 裁掉 overlap，只保留有效區域
             act_top   = y - y0e
@@ -771,7 +801,10 @@ def run_tiled_mcseg_v2(
 
             logger.info(f"    cells in tile: {int(np.max(valid))-int(current_max - int(valid.max()))}  total: {current_max}")
 
-    del cyto3, enhanced
+    del cyto3
+    if cpsam is not None:
+        del cpsam
+    del enhanced
     if hema_full is not None:
         del hema_full
     gc.collect()
