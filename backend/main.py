@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MSseg",
-    version="1.0.0",
+    version="0.8.0",
     description="MCseg v2 Visium HD 空間轉錄體分析流水線 API",
     lifespan=lifespan,
 )
@@ -73,7 +73,7 @@ app.include_router(export.router,        prefix="/api/export",      tags=["Stage
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": "0.8.0"}
 
 
 @app.get("/api/config")

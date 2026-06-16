@@ -1,6 +1,6 @@
 [project]
 name = "msseg"
-version = "1.0.0"
+version = "0.8.0"
 description = "MSseg：MCseg v2 多模型 Voronoi 集成 Visium HD 分析流水線"
 readme = "README.md"
 requires-python = ">=3.10"
