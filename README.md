@@ -17,7 +17,7 @@ Its core segmentation engine, **MCseg**, was developed through the **AutoResearc
 
 ## Contents
 
-[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [CLI (No-UI)](#cli-no-ui-whole-slide-segmentation) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Output Structure](#output-structure) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
+[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [CLI (No-UI)](#cli-no-ui-whole-slide-pipeline) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Output Structure](#output-structure) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
 
 ---
 
@@ -135,9 +135,16 @@ Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 
 ---
 
-## CLI (No-UI) Whole-Slide Segmentation
+## CLI (No-UI) Whole-Slide Pipeline
 
-For batch processing, HPC clusters, or scripted pipelines, MSseg provides a **command-line interface (CLI)** that runs the full MCseg v2 segmentation stack without opening the web interface.
+For batch processing, HPC clusters, or scripted pipelines, MSseg provides a **command-line interface (CLI)** that runs the full whole-slide pipeline without opening the web interface — **segmentation → RNA counting → cell-type annotation** in a single command:
+
+1. **Crop** H&E from the raw BTF (or load an existing `he_crop.tif`)
+2. **Segment** the whole slide with tiled MCseg v2 (4-pass, or 7-pass with `--cpsam`) → `mcseg_mask.npy`
+3. **Bin attribution** / RNA counting (when `--tp` + `--h5` are supplied) → `bin_attribution.parquet`
+4. **CellTypist** annotation (unless `--skip-celltypist`) → `celltypist_labels.csv`
+
+Steps 3–4 run automatically once their inputs are provided; pass only `--btf`/`--out` for segmentation-only.
 
 ### Basic syntax
 
@@ -461,6 +468,8 @@ After launching (`bash start.sh`), open **[http://localhost:3000](http://localho
 2. (Optional) Expand **ROI Overrides** to tune parameters per individual ROI (all parameters above, including the cpsam 7-pass spec).
 3. Click **Preview** on one ROI to verify cell outlines before committing to a full run.
 4. Click **Run All ROIs** — outputs `segmentation_masks.npy` per ROI.
+
+> **Whole-slide segmentation (no ROI):** the **Run Full Segmentation** action segments the entire slide via tiled MCseg v2 (MPS-safe: tile=1024, batch≤2, cpsam disabled), writing `full_image_segmentation_masks.npy`. A 6 GB in-memory cap guards against oversized slides — beyond that, use ROI mode (or the [CLI](#cli-no-ui-whole-slide-pipeline), which tile-reads the BTF without the cap). This produces the mask only; counting and analysis remain per-ROI in the UI.
 
 ### Step 4 — Stage 2: RNA Counting (~2–3 min/ROI)
 

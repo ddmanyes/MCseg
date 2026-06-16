@@ -17,7 +17,7 @@
 
 ## 目錄
 
-[快速開始](#快速開始) · [流程概覽](#流程概覽) · [CLI（無介面模式）](#cli無介面全幻燈片分割) · [介面導覽](#介面導覽) · [範例結果](#範例結果) · [輸出結構](#輸出結構) · [使用指南](#使用指南) · [演算法](#mcseg-演算法) · [設定](#設定) · [疑難排解](#疑難排解) · [引用](#引用) · [授權](#授權)
+[快速開始](#快速開始) · [流程概覽](#流程概覽) · [CLI（無介面模式）](#cli無介面全切片流程) · [介面導覽](#介面導覽) · [範例結果](#範例結果) · [輸出結構](#輸出結構) · [使用指南](#使用指南) · [演算法](#mcseg-演算法) · [設定](#設定) · [疑難排解](#疑難排解) · [引用](#引用) · [授權](#授權)
 
 ---
 
@@ -135,9 +135,16 @@ cd frontend; npm run dev
 
 ---
 
-## CLI（無介面）全幻燈片分割
+## CLI（無介面）全切片流程
 
-針對批次處理、HPC 叢集或腳本化 pipeline，MSseg 提供**命令列介面（CLI）**，無需開啟網頁介面即可執行完整 MCseg v2 分割。
+針對批次處理、HPC 叢集或腳本化 pipeline，MSseg 提供**命令列介面（CLI）**，無需開啟網頁介面即可一行指令跑完整全切片流程——**分割 → RNA 計數 → 細胞型態標注**：
+
+1. **裁切** 從原始 BTF 取出 H&E（或載入既有 `he_crop.tif`）
+2. **分割** 以 tiled MCseg v2 對整片分割（4-pass，或加 `--cpsam` 為 7-pass）→ `mcseg_mask.npy`
+3. **Bin attribution／RNA 計數**（提供 `--tp` + `--h5` 時執行）→ `bin_attribution.parquet`
+4. **CellTypist** 細胞型態標注（未加 `--skip-celltypist` 時）→ `celltypist_labels.csv`
+
+步驟 3–4 在輸入齊全時自動執行；只給 `--btf`/`--out` 則僅做分割。
 
 ### 基本語法
 
@@ -462,6 +469,8 @@ MCseg 輸出可直接載入的 Xenium Explorer 套件（`experiment.xenium` + za
 2. （選擇性）展開 **ROI Overrides** 為個別 ROI 微調參數（含上述全部參數與 cpsam 7-pass 規格）。
 3. 對其中一個 ROI 點選 **Preview**，在正式執行前確認細胞輪廓。
 4. 點選 **Run All ROIs**——每個 ROI 輸出 `segmentation_masks.npy`。
+
+> **整片分割（不分 ROI）：** **Run Full Segmentation** 會以 tiled MCseg v2 對整片切片分割（MPS 安全：tile=1024、batch≤2、停用 cpsam），輸出 `full_image_segmentation_masks.npy`。內建 6 GB 記憶體上限保護過大切片——超過時請改用 ROI 模式（或 [CLI](#cli無介面全切片流程)，以 tile 方式讀取 BTF、無此上限）。此模式只產生遮罩，計數與分析在 UI 上仍以 ROI 為單位。
 
 ### 步驟四 — Stage 2：RNA 計數（~2–3 分鐘/ROI）
 
