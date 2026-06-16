@@ -142,9 +142,11 @@ cd frontend; npm run dev
 1. **裁切** 從原始 BTF 取出 H&E（或載入既有 `he_crop.tif`）
 2. **分割** 以 tiled MCseg v2 對整片分割（4-pass，或加 `--cpsam` 為 7-pass）→ `mcseg_mask.npy`
 3. **Bin attribution／RNA 計數**（提供 `--tp` + `--h5` 時執行）→ `bin_attribution.parquet`
-4. **CellTypist** 細胞型態標注（未加 `--skip-celltypist` 時）→ `celltypist_labels.csv`
+4. **聚合** cells×genes 矩陣（含細胞重心）→ `cells.h5ad`
+5. **CellTypist** 細胞型態標注（未加 `--skip-celltypist` 時）→ `celltypist_labels.csv`（並回寫至 `cells.h5ad`）
+6. **Xenium Explorer** 匯出（加 `--export-xenium` 時）→ `xenium_explorer/`
 
-步驟 3–4 在輸入齊全時自動執行；只給 `--btf`/`--out` 則僅做分割。
+步驟 3–5 在 `--tp`/`--h5` 齊全時自動執行；只給 `--btf`/`--out` 則僅做分割。
 
 ### 基本語法
 
@@ -183,6 +185,7 @@ uv run msseg-segment \
 | **跳過 BTF 裁切**（重用現有 he_crop.tif） | `--he-crop path/to/he_crop.tif` |
 | **從 BTF 裁切子區域** | `--btf image.btf --crop-y0 4635 --crop-y1 18599 --btf-col0 45752 --btf-col1 55840` |
 | **跳過 CellTypist** | `--skip-celltypist` |
+| **匯出 Xenium Explorer** | `--export-xenium`（需 `--tp` + `--h5`） |
 | **僅使用 CPU** | `--no-gpu` |
 | **自訂直徑** | `--dia-small 11 --dia-mid 15 --dia-large 20` |
 
@@ -215,6 +218,8 @@ uv run python -m backend.src.cli.segment --help
 
   --celltypist-model MODEL      CellTypist 模型（預設 Human_Colorectal_Cancer.pkl）
   --skip-celltypist     跳過 CellTypist
+
+  --export-xenium       匯出 Xenium Explorer bundle（需 --tp + --h5）
 ```
 
 ### 輸出檔案
@@ -224,7 +229,9 @@ uv run python -m backend.src.cli.segment --help
 ├── he_crop.tif               ← 裁切後 H&E 影像
 ├── mcseg_mask.npy            ← MCseg v2 細胞遮罩（int32, H×W）
 ├── bin_attribution.parquet   ← barcode → cell_id 對應表
-└── celltypist_labels.csv     ← cell_id → celltypist_label
+├── cells.h5ad                ← cells × genes 矩陣（原始 counts、重心、celltypist 標籤）
+├── celltypist_labels.csv     ← cell_id → celltypist_label
+└── xenium_explorer/          ← Xenium Explorer bundle（僅 --export-xenium 時）
 ```
 
 > [!TIP]

@@ -142,9 +142,11 @@ For batch processing, HPC clusters, or scripted pipelines, MSseg provides a **co
 1. **Crop** H&E from the raw BTF (or load an existing `he_crop.tif`)
 2. **Segment** the whole slide with tiled MCseg v2 (4-pass, or 7-pass with `--cpsam`) → `mcseg_mask.npy`
 3. **Bin attribution** / RNA counting (when `--tp` + `--h5` are supplied) → `bin_attribution.parquet`
-4. **CellTypist** annotation (unless `--skip-celltypist`) → `celltypist_labels.csv`
+4. **Aggregate** cells×genes matrix with centroids → `cells.h5ad`
+5. **CellTypist** annotation (unless `--skip-celltypist`) → `celltypist_labels.csv` (also written back into `cells.h5ad`)
+6. **Xenium Explorer** export (only with `--export-xenium`) → `xenium_explorer/`
 
-Steps 3–4 run automatically once their inputs are provided; pass only `--btf`/`--out` for segmentation-only.
+Steps 3–5 run automatically once `--tp`/`--h5` are provided; pass only `--btf`/`--out` for segmentation-only.
 
 ### Basic syntax
 
@@ -183,6 +185,7 @@ uv run msseg-segment \
 | **Skip BTF crop** (reuse existing he_crop.tif) | `--he-crop path/to/he_crop.tif` |
 | **Crop a sub-region** from BTF | `--btf image.btf --crop-y0 4635 --crop-y1 18599 --btf-col0 45752 --btf-col1 55840` |
 | **Skip CellTypist** | `--skip-celltypist` |
+| **Export to Xenium Explorer** | `--export-xenium` (requires `--tp` + `--h5`) |
 | **CPU only** | `--no-gpu` |
 | **Custom diameters** | `--dia-small 11 --dia-mid 15 --dia-large 20` |
 
@@ -215,6 +218,8 @@ uv run python -m backend.src.cli.segment --help
 
   --celltypist-model MODEL      CellTypist model (default: Human_Colorectal_Cancer.pkl)
   --skip-celltypist     Skip CellTypist
+
+  --export-xenium       Export a Xenium Explorer bundle (requires --tp + --h5)
 ```
 
 ### Output files
@@ -224,7 +229,9 @@ uv run python -m backend.src.cli.segment --help
 ├── he_crop.tif               ← Cropped H&E image
 ├── mcseg_mask.npy            ← MCseg v2 cell mask (int32, H×W)
 ├── bin_attribution.parquet   ← barcode → cell_id mapping
-└── celltypist_labels.csv     ← cell_id → celltypist label
+├── cells.h5ad                ← cells × genes matrix (raw counts, centroids, celltypist labels)
+├── celltypist_labels.csv     ← cell_id → celltypist label
+└── xenium_explorer/          ← Xenium Explorer bundle (only with --export-xenium)
 ```
 
 > [!TIP]

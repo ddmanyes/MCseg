@@ -139,12 +139,7 @@ def step_segment(img: np.ndarray, cfg: dict, out_dir: Path) -> np.ndarray:
         log.info(f"  shape: {mask.shape}  cells: {int(mask.max()):,}")
         return mask
 
-    # 動態 import（避免在沒有 MSseg 路徑時 import 失敗）
-    msseg_root = Path(__file__).parents[4]  # MSseg/
-    if str(msseg_root / "backend") not in sys.path:
-        sys.path.insert(0, str(msseg_root / "backend"))
-
-    from src.segmentation.cellpose_runner import run_tiled_mcseg_v2
+    from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
 
     passes = 7 if cfg.get("use_cpsam") else 4
     log.info(f"[2/4] MCseg v2 {passes}-pass 分割（GPU={cfg.get('use_gpu', True)}）")
@@ -201,41 +196,34 @@ def step_bin_attribution(
     return attr
 
 
-def step_celltypist(
-    mask: np.ndarray,
+def _aggregate_cells_raw(
     attribution: "pd.DataFrame",  # noqa: F821
     h5_path: Path,
-    out_dir: Path,
-    celltypist_model: str,
-) -> "pd.DataFrame":  # noqa: F821
-    """CellTypist 細胞型態標注，輸出 celltypist_labels.csv。"""
+) -> "ad.AnnData":  # noqa: F821
+    """
+    依 attribution（barcode→cell_id）把 2µm bins 聚合成 cells×genes 原始 counts。
+
+    回傳 AnnData：X=原始 counts（稀疏），obs_names=cell_id 字串，
+    obs['cell_id']（int）、obs['n_bins'］。不做 normalize（供下游自由運用）。
+    """
     import gc as _gc
 
+    import anndata as ad
     import numpy as np
-    import pandas as pd
     import scanpy as sc
     import scipy.sparse as sp
 
-    csv_path = out_dir / "celltypist_labels.csv"
-    if csv_path.exists():
-        log.info(f"[SKIP] 載入已存在的 CellTypist 結果: {csv_path.name}")
-        return pd.read_csv(str(csv_path))
-
-    log.info(f"[4/4] CellTypist 標注（model={celltypist_model}）")
     log.info(f"  讀取 h5 矩陣: {h5_path.name}")
     adata_full = sc.read_10x_h5(str(h5_path))
     adata_full.var_names_make_unique()
 
-    barcodes_in_crop = attribution["barcode"].values
-    mask_obs = adata_full.obs_names.isin(barcodes_in_crop)
+    mask_obs = adata_full.obs_names.isin(attribution["barcode"].values)
     adata_crop = adata_full[mask_obs].copy()
     del adata_full
     _gc.collect()
 
     barcode_to_cell = attribution.set_index("barcode")["cell_id"]
-    adata_crop.obs["cell_id"] = barcode_to_cell.reindex(adata_crop.obs_names).values
-
-    cell_ids = adata_crop.obs["cell_id"].values.astype(np.int32)
+    cell_ids = barcode_to_cell.reindex(adata_crop.obs_names).values.astype(np.int32)
     valid = cell_ids > 0
     adata_valid = adata_crop[valid]
     cell_ids_v = cell_ids[valid]
@@ -243,38 +231,167 @@ def step_celltypist(
     n_cells = len(unique_cells)
     log.info(f"  unique cells with RNA: {n_cells:,}")
 
-    cell_id_to_idx = {int(c): i for i, c in enumerate(unique_cells)}
-    rows = np.array([cell_id_to_idx[int(c)] for c in cell_ids_v])
+    lut = np.zeros(int(unique_cells.max()) + 1, dtype=np.int64)
+    lut[unique_cells] = np.arange(n_cells)
+    rows = lut[cell_ids_v]
     cols = np.arange(len(cell_ids_v))
     A = sp.csr_matrix(
         (np.ones(len(cell_ids_v), dtype=np.float32), (rows, cols)),
         shape=(n_cells, adata_valid.n_obs),
     )
     X_agg = A @ adata_valid.X
-    adata_cells = sc.AnnData(
+    cells = ad.AnnData(
         X=X_agg.tocsr() if sp.issparse(X_agg) else sp.csr_matrix(X_agg),
         var=adata_valid.var.copy(),
     )
-    adata_cells.obs_names = [str(c) for c in unique_cells]
+    cells.obs_names = [str(int(c)) for c in unique_cells]
+    cells.obs["cell_id"] = unique_cells.astype(int)
+    cells.obs["n_bins"] = np.asarray(A.sum(axis=1)).ravel().astype(int)
     del adata_crop, adata_valid, A
     _gc.collect()
+    return cells
 
-    sc.pp.normalize_total(adata_cells, target_sum=1e4)
-    sc.pp.log1p(adata_cells)
+
+def step_count_cells(
+    mask: np.ndarray,
+    attribution: "pd.DataFrame",  # noqa: F821
+    h5_path: Path,
+    out_dir: Path,
+    pixel_size_um: float,
+) -> Path:
+    """[4/6] 由 bin attribution 聚合 cells×genes，附加重心，輸出 cells.h5ad。"""
+    import numpy as np
+    from scipy.ndimage import center_of_mass
+
+    h5ad_path = out_dir / "cells.h5ad"
+    if h5ad_path.exists():
+        log.info(f"[SKIP] 載入已存在的 cells h5ad: {h5ad_path.name}")
+        return h5ad_path
+
+    log.info("[4/6] 聚合 cells×genes 矩陣")
+    cells = _aggregate_cells_raw(attribution, h5_path)
+    unique_cells = cells.obs["cell_id"].values.astype(np.int64)
+
+    # 重心（mask 局部 px，原點 = 裁切左上角）→ µm
+    log.info("  計算細胞重心…")
+    cen = np.asarray(
+        center_of_mass(mask > 0, labels=mask, index=unique_cells.tolist()),
+        dtype=float,
+    )
+    cy_px, cx_px = cen[:, 0], cen[:, 1]
+    cells.obs["centroid_x_px"] = cx_px
+    cells.obs["centroid_y_px"] = cy_px
+    cells.obsm["spatial"] = np.stack(
+        [cx_px * pixel_size_um, cy_px * pixel_size_um], axis=1
+    )
+
+    cells.write_h5ad(str(h5ad_path))
+    log.info(f"  儲存: {h5ad_path.name}  ({cells.n_obs:,} cells × {cells.n_vars:,} genes)")
+    return h5ad_path
+
+
+def step_celltypist(
+    cells_h5ad_path: Path,
+    out_dir: Path,
+    celltypist_model: str,
+) -> "pd.DataFrame":  # noqa: F821
+    """[5/6] CellTypist 標注；寫出 celltypist_labels.csv 並回寫標籤至 cells.h5ad。"""
+    import pandas as pd
+    import scanpy as sc
+
+    csv_path = out_dir / "celltypist_labels.csv"
+    if csv_path.exists():
+        log.info(f"[SKIP] 載入已存在的 CellTypist 結果: {csv_path.name}")
+        return pd.read_csv(str(csv_path))
+
+    log.info(f"[5/6] CellTypist 標注（model={celltypist_model}）")
+    cells = sc.read_h5ad(str(cells_h5ad_path))
+
+    adata_norm = cells.copy()
+    sc.pp.normalize_total(adata_norm, target_sum=1e4)
+    sc.pp.log1p(adata_norm)
 
     import celltypist
     predictions = celltypist.annotate(
-        adata_cells,
-        model=celltypist_model,
-        majority_voting=False,
+        adata_norm, model=celltypist_model, majority_voting=False,
     )
     ct_labels = predictions.predicted_labels["predicted_labels"].values
 
-    df = pd.DataFrame({"cell_id": unique_cells, "celltypist_label": ct_labels})
+    df = pd.DataFrame(
+        {"cell_id": cells.obs["cell_id"].values, "celltypist_label": ct_labels}
+    )
     df.to_csv(str(csv_path), index=False)
-    log.info(f"  儲存: {csv_path.name}")
+
+    # 回寫標籤至 cells.h5ad，使其成為含註解的標準產物
+    cells.obs["celltypist_label"] = ct_labels
+    cells.write_h5ad(str(cells_h5ad_path))
+
+    log.info(f"  儲存: {csv_path.name}（標籤亦回寫 {cells_h5ad_path.name}）")
     log.info(f"  細胞型態分佈:\n{df['celltypist_label'].value_counts().head(10).to_string()}")
     return df
+
+
+def step_export_xenium(
+    mask: np.ndarray,
+    cells_h5ad_path: Path,
+    out_dir: Path,
+    pixel_size_um: float,
+    he_image_path: Path | None = None,
+) -> Path:
+    """[6/6] 將整片遮罩 + cells.h5ad 匯出為 Xenium Explorer bundle。"""
+    import json
+
+    import numpy as np
+    from skimage import measure
+
+    xen_dir = out_dir / "xenium_explorer"
+    if (xen_dir / "experiment.xenium").exists():
+        log.info(f"[SKIP] Xenium bundle 已存在: {xen_dir.name}")
+        return xen_dir
+
+    # 1. 細胞多邊形 GeoJSON（局部 µm，原點 = 裁切左上角；格式同 GUI 匯出）
+    geojson_path = out_dir / "cells_polygons.geojson"
+    if geojson_path.exists():
+        log.info(f"[SKIP] 載入已存在的多邊形: {geojson_path.name}")
+    else:
+        n_cells = int(mask.max())
+        log.info(f"[6/6] 產生細胞多邊形 GeoJSON（{n_cells:,} cells，整片可能較久）…")
+        features = []
+        for prop in measure.regionprops(mask):
+            cid = prop.label
+            r0, c0, r1, c1 = prop.bbox
+            cell_crop = (mask[r0:r1, c0:c1] == cid).astype(np.uint8)
+            contours = measure.find_contours(np.pad(cell_crop, 1, mode="constant"), 0.5)
+            if not contours:
+                continue
+            contour = max(contours, key=len)
+            xy_um = np.column_stack([
+                (contour[:, 1] - 1 + c0) * pixel_size_um,   # col → x
+                (contour[:, 0] - 1 + r0) * pixel_size_um,   # row → y
+            ])
+            if not np.allclose(xy_um[0], xy_um[-1]):
+                xy_um = np.vstack([xy_um, xy_um[0]])
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [xy_um.tolist()]},
+                "properties": {"full_id": str(int(cid)), "cell_id": int(cid)},
+            })
+        with open(geojson_path, "w", encoding="utf-8") as f:
+            json.dump({"type": "FeatureCollection", "features": features}, f)
+        log.info(f"  多邊形數: {len(features):,} → {geojson_path.name}")
+
+    # 2. 組裝 Xenium Explorer bundle（多邊形 µm 座標與 cells.h5ad obs['cell_id'] 對齊）
+    log.info("  匯出 Xenium Explorer bundle…")
+    from backend.src.export.xenium_exporter import XeniumExporter
+
+    exporter = XeniumExporter(
+        poly_json_path=geojson_path,
+        pixel_size_um=pixel_size_um,
+        he_image_path=he_image_path if (he_image_path and he_image_path.exists()) else None,
+    )
+    exporter.export(cells_h5ad_path, xen_dir)
+    log.info(f"  ✅ Xenium bundle: {xen_dir}")
+    return xen_dir
 
 
 # ─── CLI entry point ──────────────────────────────────────────────────────────
@@ -283,8 +400,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m backend.src.cli.segment",
         description=(
-            "MSseg CLI — 對 Visium HD BTF 執行全切片 MCseg v2 分割\n"
-            "輸出: he_crop.tif / mcseg_mask.npy / bin_attribution.parquet / celltypist_labels.csv"
+            "MSseg CLI — Visium HD BTF 全切片流程（分割 → 計數 → 細胞型注釈 → 選配 Xenium 匯出）\n"
+            "輸出: he_crop.tif / mcseg_mask.npy / bin_attribution.parquet / "
+            "cells.h5ad / celltypist_labels.csv / xenium_explorer/"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
@@ -343,6 +461,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="CellTypist 模型名稱（預設 Human_Colorectal_Cancer.pkl）")
     ct.add_argument("--skip-celltypist", action="store_true",
                     help="跳過 CellTypist 標注")
+
+    # ── Browser 匯出（選填）
+    exp = p.add_argument_group("Browser 匯出（選填，需 --tp 與 --h5）")
+    exp.add_argument("--export-xenium", action="store_true",
+                     help="匯出 Xenium Explorer bundle（整片細胞數多時較耗時）")
 
     return p
 
@@ -409,6 +532,9 @@ def main(argv: list[str] | None = None) -> int:
     gc.collect()
 
     # ── Step 3: Bin attribution（有 tp & h5 才跑）
+    from backend.src.utils.constants import VISIUM_UM_PX
+    pixel_size_um = VISIUM_UM_PX
+
     attribution = None
     if args.tp and args.h5:
         if not args.tp.exists():
@@ -420,11 +546,24 @@ def main(argv: list[str] | None = None) -> int:
                 mask, args.tp, out_dir, crop_y0, btf_col0
             )
 
-    # ── Step 4: CellTypist
-    if attribution is not None and not args.skip_celltypist:
-        step_celltypist(
-            mask, attribution, args.h5, out_dir, args.celltypist_model
+    # ── Step 4: 聚合 cells×genes h5ad（有 attribution 才跑）
+    cells_h5ad = None
+    if attribution is not None:
+        cells_h5ad = step_count_cells(
+            mask, attribution, args.h5, out_dir, pixel_size_um
         )
+
+        # ── Step 5: CellTypist
+        if not args.skip_celltypist:
+            step_celltypist(cells_h5ad, out_dir, args.celltypist_model)
+
+    # ── Step 6: Xenium Explorer 匯出（選填）
+    if args.export_xenium:
+        if cells_h5ad is None:
+            log.warning("--export-xenium 需要 --tp 與 --h5（產生 cells.h5ad）才能匯出，已跳過")
+        else:
+            he_for_img = args.he_crop if args.he_crop else (out_dir / "he_crop.tif")
+            step_export_xenium(mask, cells_h5ad, out_dir, pixel_size_um, he_for_img)
 
     log.info("=" * 60)
     log.info(f"✅ MSseg CLI 完成！  結果目錄: {out_dir}")
