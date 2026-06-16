@@ -33,6 +33,12 @@ segmentation:
     # 可選 pass
     use_hematoxylin: true    # cyto3 on Ruifrok Hematoxylin 通道
     use_cpsam: false         # cpsam 集成（可選，顯著增加時間）
+    # cpsam 7-pass 獨立規格（僅 use_cpsam=true 時生效；論文 Pass 5/6/7）
+    dia_cpsam_auto: 0.0      # Pass 5/7 直徑；0 = Cellpose 自動偵測（~30px）
+    dia_cpsam_small: 16.0    # Pass 6 固定直徑（px）
+    cellprob_cpsam_auto: -1.0   # Pass 5（CLAHE-RGB, auto dia）
+    cellprob_cpsam_small: -3.0  # Pass 6（CLAHE-RGB, dia=16）
+    cellprob_cpsam_hema: -1.0   # Pass 7（Hematoxylin, auto dia）
     # Voronoi 擴張
     voronoi_distance: 9      # px，約 2.5µm（VISIUM_UM_PX=0.2737）
     # 細胞過濾

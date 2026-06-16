@@ -42,6 +42,12 @@ class SegmentationParams(BaseModel):
     use_hematoxylin: Optional[bool] = None
     use_cpsam: Optional[bool] = None
 
+    dia_cpsam_auto: Optional[float] = None
+    dia_cpsam_small: Optional[float] = None
+    cellprob_cpsam_auto: Optional[float] = None
+    cellprob_cpsam_small: Optional[float] = None
+    cellprob_cpsam_hema: Optional[float] = None
+
     voronoi_distance: Optional[int] = None
     min_size: Optional[int] = None
     max_size: Optional[int] = None
@@ -92,6 +98,11 @@ def _apply_overrides(config: dict, p: SegmentationParams) -> dict:
     _maybe_set(mcseg, "dia_large",             p.dia_large)
     _maybe_set(mcseg, "use_hematoxylin",       p.use_hematoxylin)
     _maybe_set(mcseg, "use_cpsam",             p.use_cpsam)
+    _maybe_set(mcseg, "dia_cpsam_auto",        p.dia_cpsam_auto)
+    _maybe_set(mcseg, "dia_cpsam_small",       p.dia_cpsam_small)
+    _maybe_set(mcseg, "cellprob_cpsam_auto",   p.cellprob_cpsam_auto)
+    _maybe_set(mcseg, "cellprob_cpsam_small",  p.cellprob_cpsam_small)
+    _maybe_set(mcseg, "cellprob_cpsam_hema",   p.cellprob_cpsam_hema)
     _maybe_set(mcseg, "voronoi_distance",      p.voronoi_distance)
     _maybe_set(mcseg, "min_size",              p.min_size)
     _maybe_set(mcseg, "max_size",              p.max_size)

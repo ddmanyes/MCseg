@@ -31,6 +31,12 @@ interface SegParams {
   // 可選 pass
   use_hematoxylin: boolean
   use_cpsam: boolean
+  // cpsam 7-pass 獨立規格（僅 use_cpsam=true 生效）
+  dia_cpsam_auto: number
+  dia_cpsam_small: number
+  cellprob_cpsam_auto: number
+  cellprob_cpsam_small: number
+  cellprob_cpsam_hema: number
   // 後處理
   voronoi_distance: number
   min_size: number
@@ -51,6 +57,11 @@ const DEFAULT_PARAMS: SegParams = {
   dia_large: 22.0,
   use_hematoxylin: true,
   use_cpsam: false,
+  dia_cpsam_auto: 0.0,
+  dia_cpsam_small: 16.0,
+  cellprob_cpsam_auto: -1.0,
+  cellprob_cpsam_small: -3.0,
+  cellprob_cpsam_hema: -1.0,
   voronoi_distance: 9,
   min_size: 20,
   max_size: 6000,
@@ -534,6 +545,26 @@ export default function Stage1_Segmentation() {
               <Toggle label={t('stage1.param.cpsam')} value={params.use_cpsam}
                 onChange={v => set('use_cpsam', v)}
                 tooltip="額外加入 Cellpose SAM 模型（cpsam）的 3 個 pass。可提升小型/不規則細胞的召回率，但會顯著增加運算時間（約 2-3 倍）。預設關閉。" />
+              {params.use_cpsam && (
+                <div className="mt-2 pl-3 border-l-2 border-blue-500/40 space-y-3">
+                  <p className="text-xs text-blue-400/80">cpsam 7-pass 進階規格（論文 Pass 5/6/7）</p>
+                  <NumberInput label={t('stage1.param.dia_cpsam_auto')} value={params.dia_cpsam_auto}
+                    onChange={v => set('dia_cpsam_auto', v)} step={1} min={0} max={60} hint="px"
+                    tooltip="Pass 5/7 的 cpsam 直徑。0 = Cellpose 自動偵測（約 30px）。預設 0（auto）。" />
+                  <NumberInput label={t('stage1.param.dia_cpsam_small')} value={params.dia_cpsam_small}
+                    onChange={v => set('dia_cpsam_small', v)} step={0.5} min={4} max={40} hint="px"
+                    tooltip="Pass 6 的 cpsam 固定直徑。預設 16px。" />
+                  <NumberInput label={t('stage1.param.cellprob_cpsam_auto')} value={params.cellprob_cpsam_auto}
+                    onChange={v => set('cellprob_cpsam_auto', v)} step={0.5} min={-6} max={4}
+                    tooltip="Pass 5（CLAHE-RGB, auto dia）的 cellprob 閾值。預設 -1.0。" />
+                  <NumberInput label={t('stage1.param.cellprob_cpsam_small')} value={params.cellprob_cpsam_small}
+                    onChange={v => set('cellprob_cpsam_small', v)} step={0.5} min={-6} max={4}
+                    tooltip="Pass 6（CLAHE-RGB, dia=16）的 cellprob 閾值。預設 -3.0。" />
+                  <NumberInput label={t('stage1.param.cellprob_cpsam_hema')} value={params.cellprob_cpsam_hema}
+                    onChange={v => set('cellprob_cpsam_hema', v)} step={0.5} min={-6} max={4}
+                    tooltip="Pass 7（Hematoxylin, auto dia）的 cellprob 閾值。預設 -1.0。" />
+                </div>
+              )}
             </Section>
           </div>
 

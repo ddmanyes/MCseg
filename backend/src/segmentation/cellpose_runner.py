@@ -290,11 +290,20 @@ def run_mcseg_v2(
     max_size         = int(cfg.get("max_size", 6000))
     use_rescue       = bool(cfg.get("use_transcript_rescue", True))
     clahe_clip       = float(cfg.get("clahe_clip_limit", 3.0))
+    # ── cpsam 獨立直徑與 cellprob（論文 7-pass 規格）──────────────────────
+    # dia_cpsam_auto=0 → Cellpose 自動偵測直徑（論文 Pass 5/7 30 auto）
+    # dia_cpsam_small=16 → 論文 Pass 6 固定 16px
+    dia_cpsam_auto   = float(cfg.get("dia_cpsam_auto",   0.0))   # 0 = auto
+    dia_cpsam_small  = float(cfg.get("dia_cpsam_small",  16.0))  # fixed 16px
+    cellprob_cpsam_auto  = float(cfg.get("cellprob_cpsam_auto",  -1.0))
+    cellprob_cpsam_small = float(cfg.get("cellprob_cpsam_small", -3.0))
+    cellprob_cpsam_hema  = float(cfg.get("cellprob_cpsam_hema",  -1.0))
 
     logger.info("[MCseg v2] === V12 Voronoi 集成分割 ===")
     logger.info(
-        f"  dia: {dia_small}/{dia_mid}/{dia_large} | "
-        f"cpsam={use_cpsam} | voronoi_d={voronoi_dist}"
+        f"  cyto3 dia: {dia_small}/{dia_mid}/{dia_large} | "
+        f"cpsam={use_cpsam} (dia_auto={dia_cpsam_auto or 'auto'}, dia_small={dia_cpsam_small}) | "
+        f"voronoi_d={voronoi_dist}"
     )
 
     # ── 1. 預處理 ────────────────────────────────────────────
@@ -361,30 +370,39 @@ def run_mcseg_v2(
             cpsam_base = dict(
                 channels=[0, 0],
                 flow_threshold=flow_thresh,
-                cellprob_threshold=cellprob_thresh,
                 min_size=10,
                 batch_size=batch_size,
                 augment=False,
                 resample=False,
             )
 
-            logger.info(f"  [{time.time()-t0:.0f}s] cpsam dia={dia_mid}...")
-            m, _, _ = cpsam.eval(enhanced, diameter=float(dia_mid), **cpsam_base)
+            # Pass 5（論文）：cpsam CLAHE-RGB，dia=auto（0 → Cellpose 自偵測 ~30px），cellprob=-1.0
+            _dia_auto = dia_cpsam_auto if dia_cpsam_auto > 0 else None  # None = Cellpose auto
+            logger.info(f"  [{time.time()-t0:.0f}s] cpsam Pass5 dia={'auto' if _dia_auto is None else _dia_auto} (RGB, cellprob={cellprob_cpsam_auto})...")
+            m, _, _ = cpsam.eval(
+                enhanced, diameter=_dia_auto,
+                **{**cpsam_base, "cellprob_threshold": cellprob_cpsam_auto},
+            )
             results["cpsam_auto"] = m
             logger.info(f"    → {m.max()} cells")
 
-            logger.info(f"  [{time.time()-t0:.0f}s] cpsam dia={dia_large}...")
+            # Pass 6（論文）：cpsam CLAHE-RGB，dia=16px，cellprob=-3.0
+            logger.info(f"  [{time.time()-t0:.0f}s] cpsam Pass6 dia={dia_cpsam_small} (RGB, cellprob={cellprob_cpsam_small})...")
             m, _, _ = cpsam.eval(
-                enhanced, diameter=float(dia_large),
-                **{**cpsam_base, "cellprob_threshold": cellprob_thresh - 1.0},
+                enhanced, diameter=float(dia_cpsam_small),
+                **{**cpsam_base, "cellprob_threshold": cellprob_cpsam_small},
             )
-            results["cpsam_16"] = m
+            results["cpsam_small"] = m
             logger.info(f"    → {m.max()} cells")
 
+            # Pass 7（論文）：cpsam Hematoxylin，dia=auto，cellprob=-1.0
             if use_hematoxylin and hema is not None:
                 hema_rgb2 = np.stack([hema, hema, hema], axis=-1)
-                logger.info(f"  [{time.time()-t0:.0f}s] cpsam hema dia={dia_mid}...")
-                m, _, _ = cpsam.eval(hema_rgb2, diameter=float(dia_mid), **cpsam_base)
+                logger.info(f"  [{time.time()-t0:.0f}s] cpsam Pass7 dia={'auto' if _dia_auto is None else _dia_auto} (hema, cellprob={cellprob_cpsam_hema})...")
+                m, _, _ = cpsam.eval(
+                    hema_rgb2, diameter=_dia_auto,
+                    **{**cpsam_base, "cellprob_threshold": cellprob_cpsam_hema},
+                )
                 results["cpsam_hema"] = m
                 logger.info(f"    → {m.max()} cells")
                 del hema_rgb2
@@ -456,6 +474,8 @@ _ROI_OVERRIDE_FIELDS: frozenset[str] = frozenset({
     "use_gpu", "batch_size",
     "dia_small", "dia_mid", "dia_large",
     "use_hematoxylin", "use_cpsam",
+    "dia_cpsam_auto", "dia_cpsam_small",
+    "cellprob_cpsam_auto", "cellprob_cpsam_small", "cellprob_cpsam_hema",
     "voronoi_distance",
     "flow_threshold", "cellprob_threshold",
     "min_size", "max_size",
@@ -639,6 +659,12 @@ def run_tiled_mcseg_v2(
     max_size        = int(cfg.get("max_size", 6000))
     use_cpsam       = bool(cfg.get("use_cpsam", False))
     clahe_clip      = float(cfg.get("clahe_clip_limit", 3.0))
+    # ── cpsam 獨立直徑與 cellprob（論文 7-pass 規格）──────────────────────
+    dia_cpsam_auto       = float(cfg.get("dia_cpsam_auto",       0.0))   # 0 = auto
+    dia_cpsam_small      = float(cfg.get("dia_cpsam_small",     16.0))
+    cellprob_cpsam_auto  = float(cfg.get("cellprob_cpsam_auto",  -1.0))
+    cellprob_cpsam_small = float(cfg.get("cellprob_cpsam_small", -3.0))
+    cellprob_cpsam_hema  = float(cfg.get("cellprob_cpsam_hema",  -1.0))
 
     H, W = img.shape[:2]
     y_starts = list(range(0, H, tile_size))
@@ -726,17 +752,27 @@ def run_tiled_mcseg_v2(
                     tile_results["hema"] = m
 
                 if cpsam is not None:
+                    _dia_auto = dia_cpsam_auto if dia_cpsam_auto > 0 else None
                     cpsam_base = {**eval_base, "augment": False, "resample": False}
-                    m, _, _ = cpsam.eval(enh_tile, diameter=float(dia_mid), **cpsam_base)
-                    tile_results["cpsam_mid"] = m
+                    # Pass 5: cpsam RGB dia=auto, cellprob_cpsam_auto
                     m, _, _ = cpsam.eval(
-                        enh_tile, diameter=float(dia_large),
-                        **{**cpsam_base, "cellprob_threshold": cellprob_thresh - 1.0},
+                        enh_tile, diameter=_dia_auto,
+                        **{**cpsam_base, "cellprob_threshold": cellprob_cpsam_auto},
                     )
-                    tile_results["cpsam_large"] = m
+                    tile_results["cpsam_auto"] = m
+                    # Pass 6: cpsam RGB dia=16, cellprob_cpsam_small
+                    m, _, _ = cpsam.eval(
+                        enh_tile, diameter=float(dia_cpsam_small),
+                        **{**cpsam_base, "cellprob_threshold": cellprob_cpsam_small},
+                    )
+                    tile_results["cpsam_small"] = m
+                    # Pass 7: cpsam Hema dia=auto, cellprob_cpsam_hema
                     if hema_tile is not None:
                         hema_rgb2 = np.stack([hema_tile] * 3, axis=-1)
-                        m, _, _ = cpsam.eval(hema_rgb2, diameter=float(dia_mid), **cpsam_base)
+                        m, _, _ = cpsam.eval(
+                            hema_rgb2, diameter=_dia_auto,
+                            **{**cpsam_base, "cellprob_threshold": cellprob_cpsam_hema},
+                        )
                         tile_results["cpsam_hema"] = m
 
             except RuntimeError as e:
@@ -794,12 +830,15 @@ def run_tiled_mcseg_v2(
             for c_lbl, p_lbl in mappings.items():
                 valid[valid == c_lbl] = p_lbl
 
+            prev_max = current_max
             current_max = max(current_max, int(valid.max()))
             tw = min(x + tile_size, W) - x
             th = min(y + tile_size, H) - y
             stitched[y:y + th, x:x + tw] = valid[:th, :tw]
 
-            logger.info(f"    cells in tile: {int(np.max(valid))-int(current_max - int(valid.max()))}  total: {current_max}")
+            # 新增細胞 = ID 超過上一塊 max 者（邊界合併的細胞已被重映射到舊 ID）
+            n_new_tile = int(np.unique(valid[valid > prev_max]).size)
+            logger.info(f"    cells in tile (new): {n_new_tile}  total: {current_max}")
 
     del cyto3
     if cpsam is not None:

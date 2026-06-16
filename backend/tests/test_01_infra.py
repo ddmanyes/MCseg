@@ -29,9 +29,9 @@ class TestConfig:
         assert paths["binned_008"], "binned_008 path is empty"
 
     def test_rois_defined(self, config_dict):
-        """ROI 列表已定義"""
+        """ROI 列表已定義（數量取決於 state.json，至少 1 個）"""
         rois = config_dict.get("rois", [])
-        assert len(rois) >= 2, f"Expected >= 2 ROIs, got {len(rois)}"
+        assert len(rois) >= 1, f"Expected >= 1 ROI, got {len(rois)}"
 
     def test_roi_structure(self, config_dict):
         """每個 ROI 包含必要欄位"""
@@ -44,9 +44,12 @@ class TestConfig:
             assert "height_px" in roi
 
     def test_segmentation_config(self, config_dict):
-        """分割設定使用 cyto2（CRC）"""
+        """分割設定使用 MCseg v2（cyto3 多直徑集成）"""
         seg = config_dict["segmentation"]
-        assert seg["cellpose_model"]["model_type"] == "cyto2"
+        assert "mcseg_v2" in seg, "缺少 segmentation.mcseg_v2 區塊"
+        mcseg = seg["mcseg_v2"]
+        for key in ("dia_small", "dia_mid", "dia_large", "voronoi_distance"):
+            assert key in mcseg, f"mcseg_v2 缺少必要欄位：{key}"
 
     def test_analysis_mito_prefix(self, config_dict):
         """人類資料必須用大寫 MT-"""

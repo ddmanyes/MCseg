@@ -184,47 +184,47 @@ uv run msseg-segment \
 ```
 uv run python -m backend.src.cli.segment --help
 
-  --btf PATH            原始 BigTIFF (.btf) 路徑
-  --he-crop PATH        已裁切的 he_crop.tif（略過 BTF 裁切步驟）
+  --btf PATH            Raw BigTIFF (.btf) path
+  --he-crop PATH        Pre-cropped he_crop.tif (skip BTF crop step)
 
-  --crop-y0 PX          裁切起始 row（BTF 全圖座標，預設 0）
-  --crop-y1 PX          裁切結束 row（-1 = 全圖）
-  --btf-col0 PX         裁切起始 col（BTF 全圖座標，預設 0）
-  --btf-col1 PX         裁切結束 col（-1 = 全圖）
+  --crop-y0 PX          Crop start row (BTF full-image coordinates, default 0)
+  --crop-y1 PX          Crop end row (-1 = full image)
+  --btf-col0 PX         Crop start col (BTF full-image coordinates, default 0)
+  --btf-col1 PX         Crop end col (-1 = full image)
 
-  --tp PATH             tissue_positions.parquet 路徑
-  --h5 PATH             filtered_feature_bc_matrix.h5 路徑
-  --out DIR             輸出目錄（必填）
+  --tp PATH             tissue_positions.parquet path
+  --h5 PATH             filtered_feature_bc_matrix.h5 path
+  --out DIR             Output directory (required)
 
-  --tissue {crc,luad,default}   組織 preset（預設 crc）
-  --cpsam               啟用 cpsam（7-pass，需更長時間）
-  --no-gpu              強制 CPU
-  --batch-size N        Cellpose batch size（預設 2）
-  --tile-size PX        Tile 大小（預設 1024）
-  --overlap PX          Tile 重疊（預設 128）
-  --dia-small/mid/large PX      覆寫 cyto3 直徑
-  --voronoi-d PX        覆寫 Voronoi 距離
-  --cellprob THRESH     覆寫 cellprob_threshold
+  --tissue {crc,luad,default}   Tissue preset (default: crc)
+  --cpsam               Enable cpsam (7-pass; significantly longer runtime)
+  --no-gpu              Force CPU mode
+  --batch-size N        Cellpose batch size (default 2)
+  --tile-size PX        Tile size (default 1024)
+  --overlap PX          Tile overlap (default 128)
+  --dia-small/mid/large PX      Override cyto3 diameters
+  --voronoi-d PX        Override Voronoi expansion distance
+  --cellprob THRESH     Override cellprob_threshold
 
-  --celltypist-model MODEL      CellTypist 模型（預設 Human_Colorectal_Cancer.pkl）
-  --skip-celltypist     跳過 CellTypist
+  --celltypist-model MODEL      CellTypist model (default: Human_Colorectal_Cancer.pkl)
+  --skip-celltypist     Skip CellTypist
 ```
 
 ### Output files
 
 ```
 <out>/
-├── he_crop.tif               ← 裁切後 H&E 影像
-├── mcseg_mask.npy            ← MCseg v2 細胞遮罩（int32, H×W）
-├── bin_attribution.parquet   ← barcode → cell_id 對應表
-└── celltypist_labels.csv     ← cell_id → celltypist_label
+├── he_crop.tif               ← Cropped H&E image
+├── mcseg_mask.npy            ← MCseg v2 cell mask (int32, H×W)
+├── bin_attribution.parquet   ← barcode → cell_id mapping
+└── celltypist_labels.csv     ← cell_id → celltypist label
 ```
 
 > [!TIP]
-> CLI 支援**斷點續跑**：每個輸出檔若已存在則自動跳過該步驟，可隨時中斷後重新執行。
+> CLI supports **checkpoint resumption**: if an output file already exists, that step is automatically skipped — you can interrupt and re-run at any time.
 
 > [!NOTE]
-> CLI 和 Web UI 使用**完全相同的 `cellpose_runner.py` 引擎**，參數語義一致。Web UI 做的任何 ROI 參數覆寫都可以直接翻譯成 `--dia-mid` / `--voronoi-d` 等 CLI flags。
+> The CLI and Web UI use **exactly the same `cellpose_runner.py` engine** with consistent parameter semantics. Any per-ROI parameter overrides applied in the Web UI can be directly translated to `--dia-mid` / `--voronoi-d` CLI flags.
 
 ---
 
@@ -448,7 +448,17 @@ After launching (`bash start.sh`), open **[http://localhost:3000](http://localho
    | `use_cpsam`               | false           | enable for complex/dense tissue (+3 passes, ~50–60 min on CPU) |
    | `use_transcript_rescue`   | true            | fills in cells missed by morphology                             |
    | `use_gpu`                 | true            | MPS / CUDA; falls back to CPU                                   |
-2. (Optional) Expand **ROI Overrides** to tune parameters per individual ROI.
+
+   When `use_cpsam` is enabled, the cpsam 7-pass spec is independently tunable (paper Pass 5/6/7):
+
+   | Parameter               | Default | Notes                                        |
+   | ----------------------- | ------- | -------------------------------------------- |
+   | `dia_cpsam_auto`      | 0 (auto)| Pass 5/7 diameter; 0 = Cellpose auto (~30 px)|
+   | `dia_cpsam_small`     | 16 px   | Pass 6 fixed diameter                        |
+   | `cellprob_cpsam_auto` | -1.0    | Pass 5 (CLAHE-RGB, auto dia)                 |
+   | `cellprob_cpsam_small`| -3.0    | Pass 6 (CLAHE-RGB, dia=16)                   |
+   | `cellprob_cpsam_hema` | -1.0    | Pass 7 (Hematoxylin, auto dia)               |
+2. (Optional) Expand **ROI Overrides** to tune parameters per individual ROI (all parameters above, including the cpsam 7-pass spec).
 3. Click **Preview** on one ROI to verify cell outlines before committing to a full run.
 4. Click **Run All ROIs** — outputs `segmentation_masks.npy` per ROI.
 
@@ -535,8 +545,17 @@ global:
 ## Testing
 
 ```bash
+uv sync --extra dev            # installs pytest-asyncio + httpx (required for API tests)
 uv run pytest backend/tests/ -v
 ```
+
+> **ExFAT / external drive (macOS):** `uv run` rebuilds the env and can clobber the `.venv`
+> symlink. Clean resource-fork junk first, then run pytest against the venv directly:
+>
+> ```bash
+> find . -name '._*' -delete && find ~/.venvs/msseg -name '._*' -delete
+> .venv/bin/python -m pytest backend/tests/ -v
+> ```
 
 ---
 
