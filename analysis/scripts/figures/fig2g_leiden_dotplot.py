@@ -125,10 +125,10 @@ def render_dotplot(ax, fig, pct_arr: np.ndarray, mean_arr: np.ndarray,
     ax.set_xlim(-0.6, n_g - 0.4)
     ax.set_ylim(-0.6, n_gr - 0.4)
     ax.set_xticks(range(n_g))
-    ax.set_xticklabels(x_labels, fontsize=7.5, rotation=45, ha="right",
+    ax.set_xticklabels(x_labels, fontsize=13, rotation=45, ha="right",
                        rotation_mode="anchor")
     ax.set_yticks(range(n_gr))
-    ax.set_yticklabels(y_labels[::-1], fontsize=8.5)
+    ax.set_yticklabels(y_labels[::-1], fontsize=14)
     ax.grid(alpha=0.12, lw=0.35, zorder=0)
     ax.set_axisbelow(True)
     ax.tick_params(axis="both", length=0)
@@ -145,8 +145,8 @@ def render_dotplot(ax, fig, pct_arr: np.ndarray, mean_arr: np.ndarray,
     cbar_ax = fig.add_axes([ax_pos.x1 + 0.013, ax_pos.y0 + ax_pos.height * 0.42,
                              0.014, ax_pos.height * 0.52])
     cb = fig.colorbar(sc_obj, cax=cbar_ax)
-    cb.set_label("Mean log(1+UMI)", fontsize=6, labelpad=2)
-    cb.ax.tick_params(labelsize=5.5, pad=1)
+    cb.set_label("Mean log(1+UMI)", fontsize=11, labelpad=3)
+    cb.ax.tick_params(labelsize=10, pad=1)
     cb.set_ticks(np.linspace(0, vmax_mean, 5))
 
     # Size legend
@@ -158,11 +158,13 @@ def render_dotplot(ax, fig, pct_arr: np.ndarray, mean_arr: np.ndarray,
                label=f"{p}%")
         for p in [25, 50, 75]
     ]
+    # handleheight must clear the largest marker (~19 pt = 1.7 em at 11 pt),
+    # otherwise the circles spill out of their rows and overlap.
     ax.legend(handles=leg_h, title="% positive",
               bbox_to_anchor=(1.02, 0.38), loc="upper left",
-              fontsize=6, title_fontsize=6,
-              handletextpad=0.3, labelspacing=0.3,
-              framealpha=0.85, edgecolor="#ccc")
+              fontsize=11, title_fontsize=11,
+              handletextpad=0.8, handleheight=1.9, labelspacing=0.35,
+              borderpad=0.7, framealpha=0.85, edgecolor="#ccc")
 
     return sc_obj
 
@@ -225,10 +227,10 @@ def main() -> None:
     vmax = max(float(mean_arr.max()), 0.1)
 
     print("[5] Plotting...")
-    fig_w = 145 * MM
-    fig_h =  90 * MM
+    fig_w = 175 * MM
+    fig_h =  95 * MM
     fig, ax = plt.subplots(1, 1, figsize=(fig_w, fig_h),
-                            gridspec_kw=dict(left=0.32, right=0.78,
+                            gridspec_kw=dict(left=0.30, right=0.82,
                                              top=0.88, bottom=0.30))
 
     render_dotplot(ax, fig, pct_arr, mean_arr,
@@ -261,9 +263,13 @@ def main() -> None:
                     xycoords="data", textcoords="data",
                     arrowprops=dict(arrowstyle="-", color=col, lw=2.2),
                     annotation_clip=False)
-        ax.text((x0 + x1) / 2, n_clusters - 0.0,
-                grp_name.replace(" Pneumocyte", "").replace("Alveolar ", "Alv."),
-                ha="center", va="bottom", fontsize=5.5, color=col,
+        # Abbreviated: the enlarged type would otherwise run into the
+        # neighbouring group label (each group spans only 2-3 gene columns).
+        short = (grp_name.replace(" Pneumocyte", "")
+                         .replace("Alveolar Macrophage", "Alv. Mac")
+                         .replace("Endothelial", "Endo"))
+        ax.text((x0 + x1) / 2, n_clusters - 0.0, short,
+                ha="center", va="bottom", fontsize=10, color=col,
                 fontweight="bold", transform=ax.transData)
         boundary += n_g_grp
 

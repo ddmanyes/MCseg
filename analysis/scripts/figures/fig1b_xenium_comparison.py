@@ -66,11 +66,11 @@ def add_scale_bar(ax, img_h, img_w):
     x_end  = img_w - margin
     x_start = x_end - scale_px
     ax.plot([x_start, x_end], [bar_y, bar_y],
-            color="white", linewidth=4, solid_capstyle="butt")
+            color="white", linewidth=7, solid_capstyle="butt")
     ax.text((x_start + x_end) / 2, bar_y - img_h * 0.025,
             f"{SCALE_UM} µm",
             color="white", ha="center", va="bottom",
-            fontsize=13, fontweight="bold",
+            fontsize=26, fontweight="bold",
             bbox=dict(facecolor="none", edgecolor="none", pad=0))
 
 # 2. 繪圖：極簡 1x3 佈局
@@ -80,7 +80,7 @@ plt.subplots_adjust(wspace=0.03)
 
 for ax, title, panel in zip(axes, PANEL_TITLES, [img, img_pred, img_gt]):
     ax.imshow(panel)
-    ax.set_title(title, fontsize=18, fontweight="bold", pad=15)
+    ax.set_title(title, fontsize=32, fontweight="bold", pad=18)
     ax.axis("off")
 
 # Scale bar on all three panels
@@ -92,7 +92,8 @@ for ax in axes:
 from matplotlib.patches import Patch
 legend_elements = [Patch(facecolor=np.array(BLUE)/255, alpha=0.7, label="MCseg"),
                    Patch(facecolor=np.array(ORANGE)/255, alpha=0.7, label="Xenium GT")]
-fig.legend(handles=legend_elements, loc="lower center", ncol=2, fontsize=14, frameon=False, bbox_to_anchor=(0.5, 0.05))
+fig.legend(handles=legend_elements, loc="lower center", ncol=2, fontsize=26, frameon=False, bbox_to_anchor=(0.5, 0.02))
 
-plt.savefig(OUT_PNG, bbox_inches="tight", facecolor="white")
-print(f"✅ Minimalist 3-panel figure generated: {OUT_PNG}")
+for out in (OUT_PNG, OUT_PNG.with_name("fig1b.png")):
+    plt.savefig(out, bbox_inches="tight", facecolor="white")
+    print(f"✅ Minimalist 3-panel figure generated: {out}")

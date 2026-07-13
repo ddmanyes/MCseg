@@ -50,6 +50,9 @@ OUT_FIG2F    = Path("/Volumes/SSD/plan_a/manuscript/figures/fig2/fig2f.png")  # 
 sys.path.insert(0, str(PROJECT_ROOT))
 from backend.src.utils.alignment import load_alignment_matrix, he_pixel_to_xe_um, xe_um_to_he_pixel
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _panel_style import add_scale_bar
+
 ROI10_X0, ROI10_Y0 = 7562, 19440
 ROI10_W,  ROI10_H  = 3194, 1587
 MARGIN_UM = 15.0
@@ -195,24 +198,13 @@ def make_spatial_overlay(ax, at1_binary, mcg_mask):
         mpatches.Patch(facecolor="white", edgecolor="#262626", linewidth=1.5,
                        label="MCseg  cell boundaries"),
     ]
-    ax.legend(handles=handles, fontsize=6.5, loc="lower right",
+    ax.legend(handles=handles, fontsize=12, loc="lower right",
               framealpha=0.90, edgecolor="#bbb",
               handlelength=1.2, borderpad=0.5, labelspacing=0.3)
 
-    # Scale bar (bottom-left): 100 µm @ 0.2737 µm/px
-    H, W = ROI10_H, ROI10_W
-    scale_px  = 50 / 0.2737        # ≈ 183 px
-    margin_x  = W * 0.04
-    margin_y  = H * 0.05
-    bar_y     = H - margin_y
-    bar_x0    = margin_x
-    bar_x1    = bar_x0 + scale_px
-    ax.plot([bar_x0, bar_x1], [bar_y, bar_y],
-            color="#111111", linewidth=3, solid_capstyle="butt", zorder=10)
-    ax.text((bar_x0 + bar_x1) / 2, bar_y - H * 0.025,
-            "50 µm",
-            color="#111111", ha="center", va="bottom",
-            fontsize=7, fontweight="bold", zorder=10)
+    # Scale bar (bottom-left), on an opaque white plate so it stays readable
+    # over the cell outlines — mirrors the legend box on the right.
+    add_scale_bar(ax, img_w_px=W, fontsize=12)
 
 
 # ── Panel B: waterfall chart ───────────────────────────────────────────────────
@@ -335,9 +327,9 @@ def main() -> None:
     print(f"  ✅ {OUT_FIG2E}")
 
     print("[5] Rendering fig2f — AT1 detection rate chart (standalone)...")
-    fig_f, ax_f = plt.subplots(1, 1, figsize=(90 * MM, 90 * MM),
-                                gridspec_kw=dict(left=0.17, right=0.95,
-                                                 top=0.92, bottom=0.20))
+    fig_f, ax_f = plt.subplots(1, 1, figsize=(125 * MM, 95 * MM),
+                                gridspec_kw=dict(left=0.15, right=0.97,
+                                                 top=0.92, bottom=0.26))
     # % rate bars: Xenium AT1, MCseg geometric, MCseg RNA
     rates  = [n_xe_at1 / n_xe_total_cells * 100,
               n_mcg_in_at1 / n_mcg_total * 100,
@@ -354,11 +346,12 @@ def main() -> None:
     for x, r, lbl, n, c in zip(x_pos, rates, labels, ns, colors):
         ax_f.bar(x, r, width=bar_w, color=c, edgecolor="white", linewidth=0.8, zorder=3)
         ax_f.text(x, r + max_r * 0.025, f"{r:.1f}%\n(n={n})",
-                  ha="center", va="bottom", fontsize=6.5, color="#333", linespacing=1.4)
+                  ha="center", va="bottom", fontsize=11, color="#333", linespacing=1.4)
 
     ax_f.set_xticks(x_pos)
-    ax_f.set_xticklabels(labels, fontsize=6.5)
-    ax_f.set_ylabel("% of cells", fontsize=7)
+    ax_f.set_xticklabels(labels, fontsize=10)
+    ax_f.tick_params(axis="y", labelsize=11)
+    ax_f.set_ylabel("% of cells", fontsize=12)
     ax_f.set_ylim(0, max_r * 1.45)
     ax_f.set_xlim(-0.55, 2.55)
     ax_f.grid(axis="y", alpha=0.18, lw=0.5, zorder=0)

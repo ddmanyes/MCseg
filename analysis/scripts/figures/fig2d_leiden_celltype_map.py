@@ -39,12 +39,16 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import sys
 from pathlib import Path
 from skimage.segmentation import find_boundaries
 from sklearn.decomposition import TruncatedSVD
 from sklearn.neighbors import NearestNeighbors
 import leidenalg
 import igraph
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _panel_style import add_scale_bar
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path("/Volumes/SSD/plan_a/xenium_he_seg")
@@ -238,28 +242,14 @@ def main() -> None:
         mpatches.Patch(color=PALETTE_HEX["Unresolved"],
                        label=f"Unresolved  (n={unresolved_n}, {1 - at2_pct:.0%})"),
     ]
-    ax.legend(handles=leg_handles, fontsize=6.5, loc="lower right",
+    ax.legend(handles=leg_handles, fontsize=12, loc="lower right",
               framealpha=0.88, edgecolor="#ccc", handlelength=1.2)
     ax.text(-0.005, 1.06, "d", transform=ax.transAxes,
             fontsize=12, fontweight="bold", va="top", ha="right")
 
-    # Scale bar (bottom-left): 100 µm @ 0.2737 µm/px
-    px_per_um   = 1 / 0.2737
-    scale_um    = 50
-    scale_px    = scale_um * px_per_um            # ≈ 183 px
-    margin_x    = w_px * 0.04                     # 4% from left
-    margin_y    = h_px * 0.05                     # 5% from bottom
-    bar_y       = h_px - margin_y
-    bar_x0      = margin_x
-    bar_x1      = bar_x0 + scale_px
-    ax.plot([bar_x0, bar_x1], [bar_y, bar_y],
-            color="white", linewidth=3, solid_capstyle="butt",
-            transform=ax.transData, zorder=10)
-    ax.text((bar_x0 + bar_x1) / 2, bar_y - h_px * 0.025,
-            f"{scale_um} µm",
-            color="white", ha="center", va="bottom",
-            fontsize=7, fontweight="bold",
-            transform=ax.transData, zorder=10)
+    # Scale bar (bottom-left), on an opaque white plate with a dark bar: white-on-H&E
+    # was unreadable against the bright eosin background.
+    add_scale_bar(ax, fontsize=12, img_w_px=w_px)
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(OUT_PATH, dpi=300, bbox_inches="tight", facecolor="white")

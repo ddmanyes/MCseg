@@ -38,23 +38,21 @@ OUT_DIR_SUB  = Path("/Volumes/SSD/plan_a/submission_bioinformatics/figures/fig4"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR_SUB.mkdir(parents=True, exist_ok=True)
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _panel_style import add_scale_bar as _add_scale_bar
+
 PIXEL_SIZE_UM = 0.2738   # CRC VisiumHD H&E: 0.2738 µm/px
 SCALE_UM      = 50
 
 def add_scale_bar(ax, h: int, w: int) -> None:
-    """White 50 µm scale bar at bottom-right corner."""
-    scale_px = SCALE_UM / PIXEL_SIZE_UM   # ≈ 183 px
-    margin_x = w * 0.05
-    margin_y = h * 0.06
-    bar_y  = h - margin_y
-    bar_x1 = w - margin_x
-    bar_x0 = bar_x1 - scale_px
-    ax.plot([bar_x0, bar_x1], [bar_y, bar_y],
-            color="white", linewidth=3, solid_capstyle="butt", zorder=10)
-    ax.text((bar_x0 + bar_x1) / 2, bar_y - h * 0.025,
-            f"{SCALE_UM} µm",
-            color="white", ha="center", va="bottom",
-            fontsize=9, fontweight="bold", zorder=10)
+    """50 µm scale bar (bottom-right) on a white plate.
+
+    White-on-tissue was unreadable once the panel is scaled down in the
+    merged figure; the plate matches the style used in fig1–fig3.
+    """
+    _add_scale_bar(ax, img_w_px=w, fontsize=15, scale_um=SCALE_UM,
+                   um_per_px=PIXEL_SIZE_UM, corner="right")
 
 ROI = "roi15"
 
@@ -155,7 +153,7 @@ def create_cluster_panel(ax, he, mask, adata, cell_type_col, color_dict, title):
     edge = np.zeros((*mask.shape, 4))
     edge[bounds] = [0, 0, 0, 0.9]
     ax.imshow(edge)
-    ax.set_title(title, fontweight="bold", fontsize=12)
+    ax.set_title(title, fontweight="bold", fontsize=20)
     ax.axis("off")
 
 
@@ -180,7 +178,7 @@ def render_marker(ax, he, mask, adata, gene):
     edge = np.zeros((*mask.shape, 4))
     edge[bounds] = [0, 0, 0, 0.8]
     ax.imshow(edge)
-    ax.set_title(gene, fontsize=10, fontweight="bold")
+    ax.set_title(gene, fontsize=17, fontweight="bold")
     ax.axis("off")
     if gene in adata.var_names:
         return norm, plt.get_cmap(MARKER_CMAPS.get(gene, "Oranges"))
@@ -228,7 +226,7 @@ def main():
     fig, axes = plt.subplots(1, 3, figsize=(20, 7), gridspec_kw={"wspace": 0.05})
 
     axes[0].imshow(he_v12, alpha=0.95)
-    axes[0].set_title("H&E", fontweight="bold", fontsize=12)
+    axes[0].set_title("H&E", fontweight="bold", fontsize=20)
     axes[0].axis("off")
     add_scale_bar(axes[0], he_v12.shape[0], he_v12.shape[1])
 
@@ -246,7 +244,7 @@ def main():
     edge_v12 = np.zeros((*v12_mask.shape, 4))
     edge_v12[bounds_v12] = [0, 0, 0, 0.70]
     axes[1].imshow(edge_v12)
-    axes[1].set_title("MCseg", fontweight="bold", fontsize=12)
+    axes[1].set_title("MCseg", fontweight="bold", fontsize=20)
     axes[1].axis("off")
     add_scale_bar(axes[1], he_v12.shape[0], he_v12.shape[1])
     v12_ct_counts = v12_ad.obs["cell_type"].value_counts()
@@ -254,8 +252,9 @@ def main():
         mpatches.Patch(color=V12_COLORS.get(ct, "#808080"), label=f"{ct} (n={n})")
         for ct, n in v12_ct_counts.items()
     ]
-    axes[1].legend(handles=v12_handles, loc="lower center",
-                   bbox_to_anchor=(0.5, -0.12), fontsize=7.5, ncol=2)
+    axes[1].legend(handles=v12_handles, loc="upper center",
+                   bbox_to_anchor=(0.5, -0.02), fontsize=13, ncol=1,
+                   handlelength=1.3, handletextpad=0.5, labelspacing=0.4)
 
     # ── Red rectangle on V12 panel (rescale ZOOM coords to v12 mask space) ──
     scale_r = v12_mask.shape[0] / sr_mask.shape[0]
@@ -281,7 +280,7 @@ def main():
     edge_sr = np.zeros((*sr_mask.shape, 4))
     edge_sr[bounds_sr] = [0, 0, 0, 0.70]
     axes[2].imshow(edge_sr)
-    axes[2].set_title("SR", fontweight="bold", fontsize=12)
+    axes[2].set_title("SR", fontweight="bold", fontsize=20)
     axes[2].axis("off")
     add_scale_bar(axes[2], he_sr.shape[0], he_sr.shape[1])
     sr_ct_counts = sr_ad.obs["cell_type"].value_counts()
@@ -290,8 +289,9 @@ def main():
                        label=f"{ct} (n={n})")
         for ct, n in sr_ct_counts.items()
     ]
-    axes[2].legend(handles=sr_handles, loc="lower center",
-                   bbox_to_anchor=(0.5, -0.12), fontsize=7.5, ncol=2)
+    axes[2].legend(handles=sr_handles, loc="upper center",
+                   bbox_to_anchor=(0.5, -0.02), fontsize=13, ncol=1,
+                   handlelength=1.3, handletextpad=0.5, labelspacing=0.4)
 
     # Red rectangle on SR main panel (same ZOOM coords, already in SR space)
     rect_sr = Rectangle((ZOOM["c0"], ZOOM["r0"]),
@@ -312,9 +312,9 @@ def main():
 
     n_m = len(MARKERS)
     print(f"\nGenerating Fig E_markers (2×{n_m})...")
-    fig2 = plt.figure(figsize=(4 * n_m, 13))
+    fig2 = plt.figure(figsize=(4 * n_m, 11.5))
     # Outer grid: 2 row-blocks (MCseg v2 / SR), each with a label strip + panels
-    outer = GridSpec(2, 1, figure=fig2, hspace=0.30,
+    outer = GridSpec(2, 1, figure=fig2, hspace=0.10,
                      top=0.97, bottom=0.08, left=0.02, right=0.98)
 
     inner0 = GridSpecFromSubplotSpec(2, n_m, subplot_spec=outer[0],
@@ -322,8 +322,8 @@ def main():
                                      height_ratios=[0.07, 1])
     ax_label0 = fig2.add_subplot(inner0[0, :])
     ax_label0.axis("off")
-    ax_label0.text(0.5, 0.4, "MCseg v2", ha="center", va="center",
-                   fontsize=13, fontweight="bold", transform=ax_label0.transAxes)
+    ax_label0.text(0.5, 0.4, "MCseg", ha="center", va="center",
+                   fontsize=22, fontweight="bold", transform=ax_label0.transAxes)
     axes_v12 = [fig2.add_subplot(inner0[1, c]) for c in range(n_m)]
 
     inner1 = GridSpecFromSubplotSpec(2, n_m, subplot_spec=outer[1],
@@ -332,7 +332,7 @@ def main():
     ax_label1 = fig2.add_subplot(inner1[0, :])
     ax_label1.axis("off")
     ax_label1.text(0.5, 0.4, "SR", ha="center", va="center",
-                   fontsize=13, fontweight="bold", transform=ax_label1.transAxes)
+                   fontsize=22, fontweight="bold", transform=ax_label1.transAxes)
     axes_sr = [fig2.add_subplot(inner1[1, c]) for c in range(n_m)]
 
     v12_norms = []
@@ -351,11 +351,14 @@ def main():
         ])
         cb = fig2.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap),
                            cax=cax, orientation="horizontal")
-        cb.set_label("Expr. Level", fontsize=8)
-        cb.ax.tick_params(labelsize=7)
+        cb.set_label("Expr. Level", fontsize=14)
+        cb.ax.tick_params(labelsize=12)
 
     out_e = OUT_DIR / "fig4b_tls_markers.png"
     plt.savefig(out_e, dpi=350, bbox_inches="tight")
+    out_e_sub = OUT_DIR_SUB / "fig4b.png"
+    plt.savefig(out_e_sub, dpi=350, bbox_inches="tight")
+    print(f"✓ Saved: {out_e_sub}")
     plt.close(fig2)
     print(f"✓ Saved: {out_e}")
 

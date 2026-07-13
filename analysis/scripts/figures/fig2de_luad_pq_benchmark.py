@@ -402,7 +402,7 @@ def plot_pq_3boxplots():
 
         ax.set_xlim(0.5, 2.75)
         ax.set_xticks([1, 2])
-        ax.set_xticklabels(["MCseg v1", "MCseg v2"], fontsize=7)
+        ax.set_xticklabels(["2Cseg", "MCseg"], fontsize=7)
         ax.set_ylabel("Score (n = 6 ROIs)" if key == "pq" else "", fontsize=7.5)
         ax.set_title(label, fontsize=9, fontweight="bold")
         ax.spines["top"].set_visible(False)
@@ -549,13 +549,13 @@ def plot_fig2abc():
     """
     from scipy.stats import wilcoxon
 
-    fig = plt.figure(figsize=(183 / 25.4, 72 / 25.4))
+    fig = plt.figure(figsize=(183 / 25.4, 86 / 25.4))
     import matplotlib.gridspec as gridspec
     gs = gridspec.GridSpec(
         1, 3,
-        hspace=0.0, wspace=0.40,
-        left=0.08, right=0.97,
-        top=0.88, bottom=0.14,
+        hspace=0.0, wspace=0.45,
+        left=0.10, right=0.97,
+        top=0.86, bottom=0.16,
     )
     ax_a = fig.add_subplot(gs[0, 0])
     ax_b = fig.add_subplot(gs[0, 1])
@@ -590,26 +590,27 @@ def plot_fig2abc():
         _, p = wilcoxon(v1, v2, alternative="two-sided")
         star = ("***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns")
         dr = max(max(v1), max(v2)) - min(min(v1), min(v2))
-        y_bar  = max(max(v1), max(v2)) + dr * 0.06
-        y_star = y_bar + dr * 0.025
-        y_delt = y_bar + dr * 0.10
+        y_bar  = max(max(v1), max(v2)) + dr * 0.08
+        y_star = y_bar + dr * 0.04
+        y_delt = y_bar + dr * 0.20
         ax.plot([1, 2], [y_bar, y_bar], color="k", lw=0.8)
-        ax.text(1.5, y_star, star, ha="center", fontsize=7.5)
+        ax.text(1.5, y_star, star, ha="center", fontsize=13)
         delta = np.mean(v2) - np.mean(v1)
-        ax.text(1.5, y_delt, f"+{delta:.3f}", ha="center", fontsize=8,
+        ax.text(1.5, y_delt, f"{delta:+.3f}", ha="center", fontsize=14,
                 color="#C0392B", fontweight="bold")
 
         ax.set_xlim(0.5, 2.75)
         ax.set_xticks([1, 2])
-        ax.set_xticklabels(["MCseg v1", "MCseg v2"], fontsize=7)
-        ax.set_ylabel("Score (n = 6 ROIs)" if key == "pq" else "", fontsize=7.5)
-        ax.set_title(label, fontsize=9, fontweight="bold")
+        ax.set_xticklabels(["2Cseg", "MCseg"], fontsize=13)
+        ax.tick_params(axis="y", labelsize=12)
+        ax.set_ylabel("Score (n = 6 ROIs)" if key == "pq" else "", fontsize=13)
+        ax.set_title(label, fontsize=16, fontweight="bold")
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.grid(axis="y", alpha=0.25, lw=0.5)
         if key != "rq":
             ax.axhline(0.5, color="grey", lw=0.5, ls=":", alpha=0.6)
-        ax.set_ylim(min(min(v1), min(v2)) - dr * 0.05, y_delt + dr * 0.08)
+        ax.set_ylim(min(min(v1), min(v2)) - dr * 0.05, y_delt + dr * 0.16)
 
     # Panel labels
     for ax, letter in zip([ax_a, ax_b, ax_c], ["a", "b", "c"]):

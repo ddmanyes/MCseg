@@ -232,26 +232,26 @@ def render_dotplot(ax, fig, pct_arr: np.ndarray, mean_arr: np.ndarray,
             ax_pos.height * 0.52,
         ])
         cb = fig.colorbar(sc_obj, cax=cbar_ax)
-        cb.set_label("Mean log(1+UMI)", fontsize=5.5, labelpad=2)
-        cb.ax.tick_params(labelsize=5.5, pad=1)
+        cb.set_label("Mean log(1+UMI)", fontsize=11, labelpad=3)
+        cb.ax.tick_params(labelsize=10, pad=1)
         cb.set_ticks(np.linspace(0, vmax_mean, 5))
         # Size legend below colorbar
         ax.legend(handles=leg_h, title="% positive",
                   bbox_to_anchor=(1.02, 0.36), loc="upper left",
-                  fontsize=5.5, title_fontsize=5.5,
-                  handletextpad=0.3, labelspacing=0.3,
-                  framealpha=0.85, edgecolor="#ccc")
+                  fontsize=11, title_fontsize=11,
+                  handletextpad=0.8, handleheight=2.0, labelspacing=0.35,
+                  borderpad=0.7, framealpha=0.85, edgecolor="#ccc")
     else:
         cbar_ax = ax.inset_axes([0.88, 0.38, 0.026, 0.55])
         cb = fig.colorbar(sc_obj, cax=cbar_ax)
-        cb.set_label("Mean log(1+UMI)", fontsize=5.5, labelpad=2)
-        cb.ax.tick_params(labelsize=5.5, pad=1)
+        cb.set_label("Mean log(1+UMI)", fontsize=11, labelpad=3)
+        cb.ax.tick_params(labelsize=10, pad=1)
         cb.set_ticks(np.linspace(0, vmax_mean, 5))
         ax.legend(handles=leg_h, title="% positive",
                   bbox_to_anchor=(1.0, 0.33), loc="upper right",
-                  fontsize=5.5, title_fontsize=5.5,
-                  handletextpad=0.3, labelspacing=0.3,
-                  framealpha=0.85, edgecolor="#ccc")
+                  fontsize=11, title_fontsize=11,
+                  handletextpad=0.8, handleheight=2.0, labelspacing=0.35,
+                  borderpad=0.7, framealpha=0.85, edgecolor="#ccc")
 
 
 def get_expr_dense(X_log: np.ndarray, gene: str,
@@ -679,9 +679,9 @@ def make_fig2g():
                    vmax_mean=vmax_g, max_dot_s=420, legends_outside=True)
 
     # ── Override tick aesthetics ──────────────────────────────────────────────
-    ax.set_xticklabels(curated_selected, fontsize=8, rotation=45, ha="right",
+    ax.set_xticklabels(curated_selected, fontsize=13, rotation=45, ha="right",
                        rotation_mode="anchor")
-    ax.set_yticklabels(cl_labels[::-1], fontsize=8.5, fontweight="normal")
+    ax.set_yticklabels(cl_labels[::-1], fontsize=14, fontweight="normal")
     ax.tick_params(axis="both", length=0)
 
     # ── Alternating row shading ───────────────────────────────────────────────
