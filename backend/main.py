@@ -124,10 +124,13 @@ _frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
 if _frontend_dist.exists():
     from fastapi.responses import FileResponse
 
-    # SPA catch-all：所有非 /api 路徑都回傳 index.html，讓前端 React Router 處理
+    # ⚠️ 掛載順序有意義：Starlette 依**註冊順序**比對路由，若 catch-all 先註冊，
+    # 它會連 /assets/*.js 一起吃掉並回傳 index.html —— 瀏覽器把 HTML 當 ES module
+    # 載入就整頁空白，且沒有任何錯誤訊息。/assets 必須先掛。
+    app.mount("/assets", StaticFiles(directory=str(_frontend_dist / "assets")), name="assets")
+
+    # SPA catch-all：其餘非 /api 路徑都回傳 index.html，讓前端 React Router 處理
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
         index = _frontend_dist / "index.html"
         return FileResponse(str(index))
-
-    app.mount("/assets", StaticFiles(directory=str(_frontend_dist / "assets")), name="assets")

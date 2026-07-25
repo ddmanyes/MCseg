@@ -113,3 +113,39 @@ class TestStageStatusApis:
         """Stage 狀態端點回傳 200"""
         r = await client.get(endpoint)
         assert r.status_code == 200
+
+
+class TestStaticAssetServing:
+    """生產模式（`/` 直接吃 frontend/dist）的靜態資源
+
+    SPA catch-all 若註冊在 `/assets` 掛載之前，會把 `/assets/*.js` 一起吃掉並
+    回傳 index.html —— 瀏覽器把 HTML 當 ES module 載入就**整頁空白且無錯誤訊息**。
+    掛載順序是有意義的，用測試釘死。
+    """
+
+    async def test_js_assets_are_not_swallowed_by_spa_fallback(self, client):
+        from pathlib import Path
+
+        dist = Path(__file__).parents[2] / "frontend" / "dist" / "assets"
+        js = sorted(dist.glob("*.js")) if dist.exists() else []
+        if not js:
+            pytest.skip("frontend 尚未 build，無 dist/assets")
+
+        r = await client.get(f"/assets/{js[0].name}")
+
+        assert r.status_code == 200
+        assert "javascript" in r.headers["content-type"], (
+            f"/assets/*.js 回傳 {r.headers['content-type']}，"
+            "表示被 SPA catch-all 攔截（掛載順序錯誤）"
+        )
+
+    async def test_deep_link_still_returns_index_html(self, client):
+        from pathlib import Path
+
+        if not (Path(__file__).parents[2] / "frontend" / "dist" / "index.html").exists():
+            pytest.skip("frontend 尚未 build")
+
+        r = await client.get("/roi")
+
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
