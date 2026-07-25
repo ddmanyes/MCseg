@@ -113,3 +113,55 @@ class TestDiscovery:
         assert result.he_image is None
         assert result.binned_002 is None
         assert len(result.warnings) > 0
+
+
+class TestPipelineYamlAlignmentBlock:
+    """`config/pipeline.yaml` 的 alignment 區塊必須解析成正確**型別**
+
+    不是只看鍵存在 —— 曾發生 `extra_alignment_json: null# 註解` 少一個空格，
+    被 YAML 解析成字串 `'null# ...'`，讓整個對位 JSON 功能靜默失效
+    （被當成使用者指定了一個不存在的檔案路徑）。用 dict 造出來的測試 config
+    抓不到這種錯，必須讀真正的 YAML。
+    """
+
+    def test_alignment_defaults_have_correct_types(self):
+        from pathlib import Path
+
+        import yaml
+
+        cfg = yaml.safe_load(
+            (Path(__file__).parents[2] / "config" / "pipeline.yaml").read_text(encoding="utf-8")
+        )
+        align = cfg["alignment"]
+
+        assert align["extra_alignment_json"] is None
+        assert align["bin_to_mask_scale"] is None
+        assert align["estimated_error"] is None
+        assert align["use_alignment_json"] is True
+        assert align["enabled"] is False
+        assert align["matrix"] == [[1, 0, 0], [0, 1, 0]]
+
+    def test_no_null_string_typos_anywhere(self):
+        """整份設定檔不得出現任何被誤解析成 'null...' 字串的值。"""
+        from pathlib import Path
+
+        import yaml
+
+        cfg = yaml.safe_load(
+            (Path(__file__).parents[2] / "config" / "pipeline.yaml").read_text(encoding="utf-8")
+        )
+
+        bad: list[str] = []
+
+        def walk(node, path=""):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    walk(v, f"{path}.{k}" if path else str(k))
+            elif isinstance(node, list):
+                for i, v in enumerate(node):
+                    walk(v, f"{path}[{i}]")
+            elif isinstance(node, str) and node.lstrip().startswith(("null#", "true#", "false#")):
+                bad.append(f"{path} = {node[:40]!r}")
+
+        walk(cfg)
+        assert not bad, f"YAML 註解前缺少空格，值被吃進字串：{bad}"

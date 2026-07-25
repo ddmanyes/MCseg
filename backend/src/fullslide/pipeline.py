@@ -199,6 +199,14 @@ def _compose_from_alignment_json(
 
     candidates = sorted(spatial.glob("*.json")) if spatial.exists() else []
     extra_path = Path(extra) if extra else None
+    if extra_path is not None and not extra_path.exists():
+        # 設定指向一個不存在的檔案時**退回自動偵測**，而不是讓整條 JSON 路徑陣亡。
+        # （曾因 YAML 少一個空格而讓 `null#...` 被解析成字串，靜默關掉整個功能。）
+        logger.warning(
+            f"alignment.extra_alignment_json 指向的檔案不存在（{extra_path.name}），"
+            "改為自動從 spatial/ 偵測"
+        )
+        extra_path = None
     if extra_path is not None and extra_path not in candidates:
         candidates.append(extra_path)
     if not candidates:
