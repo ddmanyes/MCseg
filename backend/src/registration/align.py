@@ -222,7 +222,7 @@ def tissue_gray(rgb: np.ndarray) -> np.ndarray:
     return 255.0 - gray
 
 
-def _block_mean(img: np.ndarray, ds: int) -> np.ndarray:
+def block_mean(img: np.ndarray, ds: int) -> np.ndarray:
     """整數倍降採樣（區塊平均）；邊緣不足一格者裁掉。"""
     if ds <= 1:
         return img.astype(np.float32)
@@ -328,7 +328,7 @@ def estimate_shift_fullres(
         ch, cw = crop.shape[:2]
         # 座標一律以 read_btf_crop 回傳的 actual origin 為準 —— tile 對齊可能讓
         # 實際原點與請求值不同，用請求值會整批偏移。
-        ref = _block_mean(tissue_gray(crop), fine_ds)
+        ref = block_mean(tissue_gray(crop), fine_ds)
         mov = rasterize_xy(x, y, ax0, ay0, cw, ch, fine_ds)
         if ref.shape != mov.shape or mov.sum() == 0 or ref.std() == 0:
             continue

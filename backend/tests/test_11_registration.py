@@ -527,3 +527,36 @@ class TestRegistrationAPI:
         images = got.json()["data"]
         assert len(images) == 2
         assert all(im["data"].startswith("data:image/png;base64,") for im in images)
+
+
+# ── counter 偏移警告附建議位移 ──────────────────────────────────────────────
+
+class TestCounterSuggestedShift:
+    """>30% bins 越界時，警告須附上可據以修正的建議位移值"""
+
+    def test_log_suggested_shift_reports_known_offset(self, caplog):
+        from backend.src.cellpose_counter.counter import _log_suggested_shift
+
+        rng = np.random.default_rng(0)
+        mask = np.zeros((512, 512), dtype=np.int32)
+        mask[128:384, 128:384] = 1                       # 中央方形「組織」
+
+        n = 5000
+        col = rng.uniform(128, 384, n) + 40              # bins 整體右下偏移 40 px
+        row = rng.uniform(128, 384, n) + 40
+
+        with caplog.at_level("WARNING"):
+            _log_suggested_shift(mask, col, row, downsample=8)
+
+        msgs = [r.message for r in caplog.records if "建議偏移" in r.message]
+        assert msgs, "應輸出建議偏移"
+        assert "+40" in msgs[0] or "+39" in msgs[0] or "+41" in msgs[0]
+
+    def test_log_suggested_shift_never_raises(self, caplog):
+        """診斷輔助失敗不得中斷計數流程。"""
+        from backend.src.cellpose_counter.counter import _log_suggested_shift
+
+        with caplog.at_level("WARNING"):
+            _log_suggested_shift(
+                np.zeros((16, 16), dtype=np.int32), np.array([]), np.array([])
+            )   # 全空：不應拋錯

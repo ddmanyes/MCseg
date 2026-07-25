@@ -30,6 +30,44 @@ from backend.src.utils.constants import VISIUM_UM_PX
 
 logger = logging.getLogger("pipeline.cellpose_counter")
 
+def _log_suggested_shift(
+    seg_mask: np.ndarray, roi_col: np.ndarray, roi_row: np.ndarray, downsample: int = 8
+) -> None:
+    """
+    偏移警告觸發時，附上一個**建議位移值**讓使用者知道該往哪個方向修。
+
+    以「遮罩的細胞覆蓋密度」為參考、「bin 密度」為移動影像做相位相關 ——
+    兩者都在遮罩座標系，不需回頭讀 BTF。
+
+    失敗一律只 warning 不中斷：這是診斷輔助，不該讓計數流程掛掉
+    （CLAUDE.md §11 容錯規範）。
+    """
+    try:
+        from backend.src.registration.align import (
+            block_mean,
+            estimate_shift,
+            rasterize_xy,
+        )
+
+        h, w = seg_mask.shape
+        # 遮罩用 block_mean 而非逐點光柵化 —— 全片遮罩的非零像素可達數億個
+        ref = block_mean((seg_mask > 0).astype(np.float32), downsample)
+        mov = rasterize_xy(roi_col, roi_row, 0, 0, w, h, downsample)
+        if ref.shape != mov.shape:
+            hh, ww = min(ref.shape[0], mov.shape[0]), min(ref.shape[1], mov.shape[1])
+            ref, mov = ref[:hh, :ww], mov[:hh, :ww]
+        if ref.std() == 0 or mov.sum() == 0:
+            return
+
+        dy, dx, _ = estimate_shift(ref, mov)
+        logger.warning(
+            f"   建議偏移：dy={dy * downsample:+.1f}, dx={dx * downsample:+.1f} px"
+            f"（bin 相對遮罩；把 ROI 的 y/x 各加上此值可對齊）"
+        )
+    except Exception as e:   # noqa: BLE001 — 診斷輔助，任何失敗都不得中斷計數
+        logger.warning(f"   位移估計未能完成（{type(e).__name__}: {e}）")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 核心計數函式
 # ──────────────────────────────────────────────────────────────────────────────
@@ -109,6 +147,7 @@ def count_rna_per_cell(
             f"請確認 ROI 偏移 (x={roi_x_px}, y={roi_y_px}) 是否正確。"
             f"最小座標：col={min_col}, row={min_row}"
         )
+        _log_suggested_shift(seg_mask, roi_col, roi_row)
 
     # ── 4. 查詢每個 bin 的細胞 ID ────────────────────────────────────────
     bin_cell_ids = np.zeros(len(adata), dtype=np.int32)
