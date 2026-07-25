@@ -546,8 +546,8 @@ Files are saved to `<output_dir>/export/xenium/{roi_name}/`.
    · cpsam @ 17 px on Hematoxylin channel (1 pass, use_hematoxylin=true by default)
    · cpsam @ auto / 16 px / hematoxylin (up to 3 passes, use_cpsam=false by default)
 3. Ensemble merging (IoU overlap threshold < 15%)
-4. Voronoi boundary expansion (default d=9 px for CRC, d=8 px for LUAD — see
-   `config/profiles/`; pass `--voronoi-d 8` to reproduce the CRC paper benchmark)
+4. Voronoi boundary expansion (d=9 px for CRC — the value used in the paper
+   benchmark; d=8 px for LUAD — see `config/profiles/`)
 5. Quality filtering (20–6000 px²)
 ```
 

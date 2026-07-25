@@ -546,8 +546,8 @@ MCseg 輸出可直接載入的 Xenium Explorer 套件（`experiment.xenium` + za
    · cpsam @ 17 px，以蘇木精通道為輸入（1 輪，use_hematoxylin=true，預設啟用）
    · cpsam @ auto / 16 px / 蘇木精（最多 3 輪，use_cpsam=false，預設停用）
 3. 集成合併（IoU 重疊閾值 < 15%）
-4. Voronoi 邊界擴張（CRC 預設 d=9 px、LUAD d=8 px，見 `config/profiles/`；
-   欲重現 CRC 論文基準請加 `--voronoi-d 8`）
+4. Voronoi 邊界擴張（CRC d=9 px，即論文基準所用值；LUAD d=8 px，
+   見 `config/profiles/`）
 5. 品質過濾（20–6000 px²）
 ```
 
