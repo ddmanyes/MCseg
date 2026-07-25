@@ -18,9 +18,21 @@ logger = logging.getLogger("pipeline.discovery")
 
 # ── 已知檔案 patterns ────────────────────────────────────────
 
-# H&E 影像：BTF 或大型 TIFF（> 100 MB）
-_HE_EXTENSIONS = {".btf", ".tif", ".tiff"}
+# H&E 影像：BTF、全片掃描格式（NDPI/SVS/MRXS），或大型 TIFF（> 100 MB）
+_HE_EXTENSIONS = {".btf", ".tif", ".tiff", ".ndpi", ".svs", ".mrxs"}
+# 這些格式本身就是全片掃描檔，不需靠檔案大小判斷；且自帶金字塔
+_HE_SLIDE_EXTENSIONS = {".btf", ".ndpi", ".svs", ".mrxs"}
 _HE_MIN_SIZE = 100 * 1024 * 1024  # 100 MB
+
+# 副檔名 → 顯示用格式標籤
+_HE_FORMAT_LABELS = {
+    ".btf": "BigTIFF",
+    ".tif": "TIFF",
+    ".tiff": "TIFF",
+    ".ndpi": "NDPI (Hamamatsu)",
+    ".svs": "SVS (Aperio)",
+    ".mrxs": "MRXS (3DHISTECH)",
+}
 
 # Visium HD SpaceRanger binned 目錄的必要檔案
 _BINNED_REQUIRED = "filtered_feature_bc_matrix.h5"
@@ -184,8 +196,8 @@ def scan_data_root(data_root: str | Path) -> DiscoveryResult:
             if suffix in _HE_EXTENSIONS:
                 try:
                     fsize = fpath.stat().st_size
-                    # BTF 直接加入，大型 TIFF 需 > 100MB
-                    if suffix == ".btf" or fsize > _HE_MIN_SIZE:
+                    # 全片掃描格式直接加入，一般 TIFF 需 > 100MB
+                    if suffix in _HE_SLIDE_EXTENSIONS or fsize > _HE_MIN_SIZE:
                         # 排除 morphology.ome.tif（Xenium 的形態影像）
                         if "morphology" not in fname.lower():
                             he_candidates.append((fpath, fsize))
@@ -194,17 +206,13 @@ def scan_data_root(data_root: str | Path) -> DiscoveryResult:
 
     # ── 選擇最佳候選 ──────────────────────────────────────────
 
-    # H&E：優先 BTF，其次最大的 TIFF
+    # H&E：優先全片掃描格式（BTF/NDPI/SVS/MRXS），其次最大的 TIFF
     if he_candidates:
-        # BTF 優先
-        btf = [c for c in he_candidates if c[0].suffix.lower() == ".btf"]
-        if btf:
-            best = max(btf, key=lambda c: c[1])
-        else:
-            best = max(he_candidates, key=lambda c: c[1])
+        slides = [c for c in he_candidates if c[0].suffix.lower() in _HE_SLIDE_EXTENSIONS]
+        best = max(slides or he_candidates, key=lambda c: c[1])
         result.he_image = DiscoveredFile(
             path=str(best[0]),
-            label=best[0].name,
+            label=f"{best[0].name}（{_HE_FORMAT_LABELS.get(best[0].suffix.lower(), '?')}）",
             size_bytes=best[1],
             size_human=_human_size(best[1]),
         )

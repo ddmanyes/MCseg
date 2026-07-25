@@ -250,3 +250,41 @@ class TestTileServerUsesSlideReader:
 
         assert _thumb_from_pyramid(tmp_path / "img.btf", 4) is None
         assert _load_or_build_thumb(tmp_path / "img.btf", 4).shape[:2] == (128, 128)
+
+
+# ── 資料掃描 ────────────────────────────────────────────────────────────────
+
+class TestDiscoveryRecognisesSlideFormats:
+    """/api/data/scan 要認得 NDPI/SVS/MRXS"""
+
+    def test_ndpi_is_discovered_without_size_threshold(self, tmp_path):
+        """NDPI 本身就是全片掃描檔 —— 不該像一般 TIFF 那樣要求 > 100MB。"""
+        from backend.src.utils.discovery import scan_data_root
+
+        (tmp_path / "scan.ndpi").write_bytes(b"\x00" * 1024)
+
+        result = scan_data_root(str(tmp_path))
+
+        assert result.he_image is not None
+        assert "scan.ndpi" in result.he_image.label
+        assert "NDPI" in result.he_image.label
+
+    def test_small_plain_tiff_is_still_ignored(self, tmp_path):
+        """小型 TIFF 多半是縮圖／輔助圖，維持既有的體積門檻。"""
+        from backend.src.utils.discovery import scan_data_root
+
+        (tmp_path / "thumb.tif").write_bytes(b"\x00" * 1024)
+
+        assert scan_data_root(str(tmp_path)).he_image is None
+
+    def test_svs_preferred_over_large_plain_tiff(self, tmp_path):
+        """全片掃描格式優先於同目錄下的大型一般 TIFF。"""
+        from backend.src.utils.discovery import scan_data_root
+
+        (tmp_path / "big.tif").write_bytes(b"\x00" * (101 * 1024 * 1024))
+        (tmp_path / "slide.svs").write_bytes(b"\x00" * 2048)
+
+        result = scan_data_root(str(tmp_path))
+
+        assert "slide.svs" in result.he_image.label
+        assert any("big.tif" in f.label for f in result.extra_files)
