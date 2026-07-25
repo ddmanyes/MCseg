@@ -209,7 +209,7 @@ async def run_coverage_qc(
     from backend.src.fullslide.coverage_qc import run_coverage_qc_from_config
 
     try:
-        df = run_coverage_qc_from_config(
+        sections, grid = run_coverage_qc_from_config(
             load_config(), grid_px=grid_px, min_bins=min_bins, low_ratio=low_ratio
         )
     except ValueError as e:
@@ -219,13 +219,15 @@ async def run_coverage_qc(
         logger.error(f"覆蓋率 QC 失敗：{e}", exc_info=True)
         return {"status": "error", "message": "覆蓋率 QC 失敗，請查閱 log"}
 
-    flagged = df[df["flagged"]]
     return {
         "status": "ok",
         "data": {
-            "summary": df.attrs["summary"],
-            # 只回傳被標記的格子（全片可有數百格，前端只需要可疑的那些）
-            "flagged": flagged.to_dict(orient="records"),
+            # 切片層級是主要結論（網格層級抓不到整片缺口，見 coverage_qc 模組說明）
+            "sections": sections.to_dict(orient="records"),
+            "sections_summary": sections.attrs.get("summary", {}),
+            "grid_summary": grid.attrs["summary"],
+            # 網格只回傳被標記的（全片可有數百格），用途是在切片內定位
+            "grid_flagged": grid[grid["flagged"]].to_dict(orient="records"),
         },
     }
 

@@ -6,6 +6,8 @@
 
 本檔用合成資料重現兩種失敗模式，並釘住「不該誤報」的情形。
 """
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -230,8 +232,10 @@ class TestCoverageQcStatistics:
 
         tp = _write_tp(tmp_path / "tp.parquet", rows_cols)
 
+        # 明確指定下限，讓本測試不依賴校準值（校準值會隨樣本更新而變動）
         with caplog.at_level(logging.WARNING, logger="pipeline.fullslide.coverage"):
-            df = compute_coverage_qc(mask, tp, grid_px=GRID, min_bins=100)
+            df = compute_coverage_qc(mask, tp, grid_px=GRID, min_bins=100,
+                                     min_global_density=10.0)
 
         assert not df["flagged"].any(), "密度一致，逐格標記本來就不會叫"
         assert df.attrs["summary"]["global_density_ok"] is False
@@ -250,6 +254,198 @@ class TestCoverageQcStatistics:
 
         df = compute_coverage_qc(mask, _write_tp(tmp_path / "tp.parquet", rows_cols),
                                  grid_px=GRID, min_bins=100)
+
+        assert df.attrs["summary"]["global_density_ok"] is True
+
+
+class TestSectionCoverage:
+    """組織切片層級 —— 這才是抓得到整片缺口的分析單位
+
+    dpcp01 實測證明固定網格**抓不到**目標失敗（Day0 段整體 0.52×，切成網格後
+    存活格的密度中位數變成 1.00×，任何門檻都標記不到）。切片層級一次就分辨出來。
+    """
+
+    @staticmethod
+    def _two_sections(gap=400, sec_w=300, h=300):
+        """造兩塊分離的組織：左塊正常、右塊缺細胞。"""
+        w = sec_w * 2 + gap
+        mask = np.zeros((h, w), dtype=np.int32)
+        rows_cols, label = [], 1
+        for sx, dense in ((0, True), (sec_w + gap, False)):
+            for y in range(10, h - 10, 10):
+                for x in range(sx + 10, sx + sec_w - 10, 10):
+                    rows_cols.append((y, x))
+            if dense:
+                for y in range(10, h - 10, 20):
+                    for x in range(sx + 10, sx + sec_w - 10, 20):
+                        mask[y:y + 6, x:x + 6] = label
+                        label += 1
+        return mask, rows_cols, w
+
+    def test_detects_separated_sections(self, tmp_path):
+        """兩塊中間隔著空白的組織須被辨識成 2 個切片。"""
+        from backend.src.fullslide.coverage_qc import detect_tissue_sections
+
+        _, rows_cols, w = self._two_sections()
+        row = np.array([r for r, _ in rows_cols])
+        col = np.array([c for _, c in rows_cols])
+
+        secs = detect_tissue_sections(row, col, (300, w), raster_px=16,
+                                      min_section_bins=100)
+
+        assert len(secs) == 2, f"預期 2 個切片，得到 {len(secs)}"
+        assert secs[0]["x1"] < secs[1]["x0"], "切片應由左至右排序且不重疊"
+
+    def test_flags_section_missing_cells(self, tmp_path):
+        """右塊有 bins 卻幾乎沒有細胞 → 該切片須被標記。"""
+        from backend.src.fullslide.coverage_qc import compute_section_coverage
+
+        mask, rows_cols, w = self._two_sections()
+        row = np.array([r for r, _ in rows_cols])
+        col = np.array([c for _, c in rows_cols])
+
+        df = compute_section_coverage(mask, row, col, raster_px=16,
+                                      min_section_bins=100)
+
+        assert len(df) == 2
+        flagged = df[df["flagged"]]
+        assert len(flagged) == 1, f"預期標記 1 個切片\n{df}"
+        assert flagged.iloc[0]["n_cells"] == 0
+        assert flagged.iloc[0]["x0"] > df[~df["flagged"]].iloc[0]["x0"], "應標記右塊"
+
+    def test_uniform_sections_flag_nothing(self):
+        """兩塊密度一致時不得誤報。"""
+        from backend.src.fullslide.coverage_qc import compute_section_coverage
+
+        gap, sec_w, h = 400, 300, 300
+        w = sec_w * 2 + gap
+        mask = np.zeros((h, w), dtype=np.int32)
+        rows_cols, label = [], 1
+        for sx in (0, sec_w + gap):
+            for y in range(10, h - 10, 10):
+                for x in range(sx + 10, sx + sec_w - 10, 10):
+                    rows_cols.append((y, x))
+            for y in range(10, h - 10, 20):
+                for x in range(sx + 10, sx + sec_w - 10, 20):
+                    mask[y:y + 6, x:x + 6] = label
+                    label += 1
+
+        df = compute_section_coverage(
+            mask, np.array([r for r, _ in rows_cols]),
+            np.array([c for _, c in rows_cols]), raster_px=16, min_section_bins=100,
+        )
+
+        assert not df["flagged"].any(), f"密度一致卻誤報\n{df}"
+
+    def test_small_speckles_are_not_sections(self):
+        """零星雜點不得被當成一個切片。"""
+        from backend.src.fullslide.coverage_qc import detect_tissue_sections
+
+        rows_cols = [(y, x) for y in range(10, 290, 10) for x in range(10, 290, 10)]
+        rows_cols += [(150, 900), (152, 902)]        # 兩個孤立雜點
+
+        secs = detect_tissue_sections(
+            np.array([r for r, _ in rows_cols]), np.array([c for _, c in rows_cols]),
+            (300, 1000), raster_px=16, min_section_bins=100,
+        )
+
+        assert len(secs) == 1
+
+
+# ── 真實資料回歸（EP dpcp01 全片遮罩）────────────────────────────────────────
+
+EP_FULLSLIDE_MASK = Path(
+    "/Volumes/KINGSTON/Evo_PRISM/results/mcseg/dpcp01_vh_v114_02_hd_r004/"
+    "fullslide/segmentation_masks_fullslide.npy"
+)
+DPCP01_BINNED = Path("/Volumes/SSD/plan_a/tissue sample/raw/binned_outputs/square_002um")
+
+
+@pytest.mark.skipif(
+    not (EP_FULLSLIDE_MASK.exists() and DPCP01_BINNED.exists()),
+    reason="需要 EP 全片遮罩與 dpcp01 binned_outputs",
+)
+class TestRealSlideCoverage:
+    """對照 dpcp01 全片的已知缺口（EP `99f6fad4`：Day0 段分割失敗）
+
+    這是本 QC 的**唯一實測校準來源**，數字釘在這裡，未來改動若讓它抓不到
+    已知缺口，測試會失敗。
+    """
+
+    @staticmethod
+    def _load():
+        from backend.src.fullslide.pipeline import (
+            map_bins_to_mask,
+            read_tissue_bins,
+            resolve_bin_to_image_transform,
+        )
+
+        mask = np.load(str(EP_FULLSLIDE_MASK), mmap_mode="r")
+        cfg = {"paths": {"binned_002": str(DPCP01_BINNED)},
+               "alignment": {"use_alignment_json": True}}
+        transform, scale, _ = resolve_bin_to_image_transform(cfg, mask.shape)
+        tp = read_tissue_bins(DPCP01_BINNED / "spatial" / "tissue_positions.parquet")
+        row, col, ib, _ = map_bins_to_mask(tp, mask.shape, 0, 0,
+                                           scale=scale, transform=transform)
+        return mask, row[ib], col[ib]
+
+    def test_finds_four_tissue_sections(self):
+        """dpcp01 是四個時序切片並排 —— 切片偵測須剛好找到 4 塊。"""
+        from backend.src.fullslide.coverage_qc import detect_tissue_sections
+
+        mask, row, col = self._load()
+        secs = detect_tissue_sections(row, col, mask.shape)
+
+        assert len(secs) == 4, f"預期 4 個切片，得到 {len(secs)}"
+        # 由左至右 = Day3→Day0；Day0（最右）明顯較小
+        assert secs[3]["n_bins"] < secs[0]["n_bins"]
+
+    def test_flags_the_known_day0_gap(self):
+        """已知缺口（最右側 Day0 段）必須被標記，且**只有它**被標記。"""
+        from backend.src.fullslide.coverage_qc import compute_section_coverage
+
+        mask, row, col = self._load()
+        df = compute_section_coverage(mask, row, col)
+
+        flagged = df[df["flagged"]]
+        assert len(flagged) == 1, f"預期只標記 Day0 一段\n{df}"
+        assert flagged.iloc[0]["section"] == 3, "被標記的應是最右側（Day0）"
+        # 實測 6.01 cells/1k bins，其他三段 11.1–13.8
+        assert flagged.iloc[0]["cells_per_1k_bins"] == pytest.approx(6.0, abs=1.0)
+
+    def test_normal_sections_stay_within_expected_band(self):
+        """三個正常切片的密度須落在校準時觀察到的區間內。
+
+        這條同時守住「對位變換沒被改壞」—— 座標系一錯，密度會整體崩掉。
+        """
+        from backend.src.fullslide.coverage_qc import compute_section_coverage
+
+        mask, row, col = self._load()
+        df = compute_section_coverage(mask, row, col)
+
+        normal = df[~df["flagged"]]["cells_per_1k_bins"]
+        assert len(normal) == 3
+        assert normal.min() > 9.0, f"正常切片密度低於預期：{list(normal)}"
+        assert normal.max() < 18.0, f"正常切片密度高於預期：{list(normal)}"
+
+    def test_global_density_floor_does_not_false_alarm(self):
+        """校準後的絕對下限不得對這張**正常**切片發出全片警告。
+
+        初版下限 15.0 是推導值（誤以為健康密度約 80 cells/1k bins），
+        實測中位數只有 9–12 —— 那個值會對每一張真實切片誤報。
+        """
+        from backend.src.fullslide.coverage_qc import compute_coverage_qc
+        from backend.src.fullslide.pipeline import resolve_bin_to_image_transform
+
+        mask = np.load(str(EP_FULLSLIDE_MASK), mmap_mode="r")
+        cfg = {"paths": {"binned_002": str(DPCP01_BINNED)},
+               "alignment": {"use_alignment_json": True}}
+        transform, scale, _ = resolve_bin_to_image_transform(cfg, mask.shape)
+
+        df = compute_coverage_qc(
+            mask, DPCP01_BINNED / "spatial" / "tissue_positions.parquet",
+            scale=scale, transform=transform, grid_px=2048,
+        )
 
         assert df.attrs["summary"]["global_density_ok"] is True
 
@@ -334,13 +530,17 @@ class TestCoverageQcFromConfig:
             "backend.src.fullslide.pipeline.resolve_full_count_inputs", fake_inputs
         )
 
-        df = coverage_qc.run_coverage_qc_from_config(
+        sections, grid = coverage_qc.run_coverage_qc_from_config(
             {}, grid_px=GRID, min_bins=100
         )
 
         assert (out / "coverage_qc.parquet").exists()
-        assert df.attrs["summary"]["transform_source"] == "測試用近似縮放"
-        assert pd.read_parquet(str(out / "coverage_qc.parquet")).shape[0] == len(df)
+        assert (out / "coverage_qc_sections.parquet").exists()
+        assert grid.attrs["summary"]["transform_source"] == "測試用近似縮放"
+        assert pd.read_parquet(str(out / "coverage_qc.parquet")).shape[0] == len(grid)
+        assert pd.read_parquet(
+            str(out / "coverage_qc_sections.parquet")
+        ).shape[0] == len(sections)
 
     @pytest.mark.asyncio
     async def test_api_returns_only_flagged_grids(self, tmp_path, monkeypatch):
@@ -370,9 +570,11 @@ class TestCoverageQcFromConfig:
         resp = await cellpose_count.run_coverage_qc(grid_px=GRID, min_bins=100)
 
         assert resp["status"] == "ok"
-        assert resp["data"]["summary"]["n_grid_flagged"] == 1
-        assert len(resp["data"]["flagged"]) == 1
-        assert resp["data"]["flagged"][0]["grid_x"] == 1
+        assert resp["data"]["grid_summary"]["n_grid_flagged"] == 1
+        assert len(resp["data"]["grid_flagged"]) == 1
+        assert resp["data"]["grid_flagged"][0]["grid_x"] == 1
+        # 切片層級為主要結論，必須一併回傳
+        assert "sections" in resp["data"]
 
     @pytest.mark.asyncio
     async def test_api_reports_missing_mask_as_error(self, monkeypatch):
