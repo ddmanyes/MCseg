@@ -98,96 +98,110 @@ MSseg/
 
 > 核心決策：**不**用 pseudo-ROI hack（會被迫為全片產生 `adata_002um.h5ad` 與 `he_crop.tif`，又撞 RAM 上限）。改為把 CLI 已驗證的 attribution 流程提升為共用模組，API 與 CLI 共用（CLAUDE.md §11 DRY）。
 
-- [ ] **P0-1 建立 fullslide 模組骨架**
+- [x] **P0-1 建立 fullslide 模組骨架**
   - 預期行為：`backend/src/fullslide/__init__.py`、`pipeline.py` 建立，`pipeline.py` 僅含模組 docstring。
   - 驗證：`.venv/bin/python -c "import backend.src.fullslide.pipeline"`
   - 檔案：`backend/src/fullslide/{__init__,pipeline}.py`
   - commit：`feat(fullslide): 建立全片流程模組骨架`
 
-- [ ] **P0-2 【紅燈】寫 bin_attribution 失敗測試**
+- [x] **P0-2 【紅燈】寫 bin_attribution 失敗測試**
   - 預期行為：`test_10_fullslide.py::test_bin_attribution_maps_bins_to_cells` 以合成資料（10×10 mask，label 1 佔 rows 0-4、label 2 佔 rows 5-9；4 個假 bin）斷言回傳 DataFrame 含 `barcode`/`cell_id` 且 cell_id 正確。此時 import 失敗。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_10_fullslide.py -q` → **FAILED（ImportError）**
   - 檔案：`backend/tests/test_10_fullslide.py`
   - commit：`test(fullslide): bin_attribution 紅燈測試`
 
-- [ ] **P0-3 【綠燈】搬移 bin_attribution 至 fullslide.pipeline**
+- [x] **P0-3 【綠燈】搬移 bin_attribution 至 fullslide.pipeline**
   - 預期行為：把 `cli/segment.py:167-196` 的 `step_bin_attribution` 主體改寫為 `bin_attribution(mask, tp_path, crop_y0, crop_x0, out_path=None) -> pd.DataFrame`（快取邏輯改為 `out_path` 可選）。純函式、不含 log bar。
   - 驗證：同上指令 → **PASSED**
   - 檔案：`backend/src/fullslide/pipeline.py`
   - commit：`feat(fullslide): bin_attribution 純函式化`
 
-- [ ] **P0-4 【重構】CLI 改用共用函式**
+- [x] **P0-4 【重構】CLI 改用共用函式**
   - 預期行為：`cli/segment.py` 的 `step_bin_attribution` 改為薄包裝（保留 `[SKIP]` log 與 parquet 快取），內部呼叫 `fullslide.pipeline.bin_attribution`。刪除重複邏輯。
   - 驗證：`.venv/bin/python -m pytest backend/tests/ -q` 全綠；`.venv/bin/python -m backend.src.cli.segment --help` 正常輸出
   - 檔案：`backend/src/cli/segment.py`
   - commit：`refactor(cli): bin_attribution 改用 fullslide 共用模組`
 
-- [ ] **P0-5 【紅燈】aggregate_cells 測試**
+- [x] **P0-5 【紅燈】aggregate_cells 測試**
   - 預期行為：`test_aggregate_cells_sums_bins_per_cell` 用 3 bins→2 cells 的合成 h5（`anndata` 就地建立、寫臨時 h5ad 再讀）斷言輸出 `n_obs==2`、`obs['n_bins']==[2,1]`、counts 為加總。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_10_fullslide.py -q` → FAILED
   - 檔案：`backend/tests/test_10_fullslide.py`
   - commit：`test(fullslide): aggregate_cells 紅燈測試`
 
-- [ ] **P0-6 【綠燈】搬移 aggregate_cells**
+- [x] **P0-6 【綠燈】搬移 aggregate_cells**
   - 預期行為：`_aggregate_cells_raw`（`cli/segment.py:199-252`）搬為 `aggregate_cells(attribution, h5_path) -> AnnData`，簽章不變、移除 log。
   - 驗證：同上 → PASSED
   - 檔案：`backend/src/fullslide/pipeline.py`、`backend/src/cli/segment.py`
   - commit：`feat(fullslide): aggregate_cells 共用化`
 
-- [ ] **P0-7 加入 centroid 計算函式（含 fullres 座標）**
+- [x] **P0-7 加入 centroid 計算函式（含 fullres 座標）**
   - 預期行為：`add_centroids(cells, mask, pixel_size_um, origin_xy=(0, 0))` 就地補 `obs['centroid_x_px']`、`obs['centroid_y_px']`（**裁切局部**，維持 CLI 現行語意）、以及 `obs['centroid_x_fullres']`、`obs['centroid_y_fullres']`（局部 + `origin_xy`）、`obsm['spatial']`（µm，由局部座標換算）。邏輯取自 `cli/segment.py:276-286`。
   - **為何需要 fullres 欄位**：P2 的 RegionSelector 在全片座標系上框選，而 centroid 是裁切局部座標。若不在此處落地 fullres 欄位，P2 每次過濾都要回頭讀 meta sidecar 補償原點 —— 那是重複且易錯的轉換。
   - 驗證：`test_add_centroids_sets_local_and_fullres`：10×10 全 label-1 mask、`origin_xy=(100, 200)` → local ≈ (4.5, 4.5)、fullres ≈ (104.5, 204.5)
   - 檔案：`backend/src/fullslide/pipeline.py`
   - commit：`feat(fullslide): add_centroids 共用化`
 
-- [ ] **P0-8 解除 6 GB 與 cpsam 硬編碼**
+- [x] **P0-8 解除 6 GB 與 cpsam 硬編碼**
   - 預期行為：`segmentation.py:258` 的 `6.0` 改讀 `config["full_seg"]["max_load_gb"]`（預設 6.0）；`:275` 的 `use_cpsam=False` 改讀 `config["full_seg"]["force_disable_cpsam"]`（預設 `true`，維持現行為）。`config/pipeline.yaml` 新增 `full_seg:` 區塊含 `tile_size: 1024`、`overlap: 128`、`max_load_gb: 6.0`、`force_disable_cpsam: true`。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_01_infra.py -q`；`.venv/bin/python -c "from backend.src.utils.config import load_config; c=load_config(); print(c['full_seg'])"`
   - 檔案：`backend/src/api/segmentation.py`、`config/pipeline.yaml`
   - commit：`refactor(segmentation): full_seg 參數移出硬編碼`
 
-- [ ] **P0-9 【紅燈】裁切座標驗證測試**
+- [x] **P0-9 【紅燈】裁切座標驗證測試**
   - 預期行為：`test_full_seg_crop_validation` POST `/api/segmentation/run_full` 帶 `{"crop_x0":100,"crop_x1":50}` → 回 `status:error`、訊息含「crop_x1 必須大於 crop_x0」。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_10_fullslide.py -q` → FAILED
   - 檔案：`backend/tests/test_10_fullslide.py`
   - commit：`test(segmentation): 全圖裁切座標驗證紅燈測試`
 
-- [ ] **P0-10 【綠燈】run_full 接受裁切座標**
+- [x] **P0-10 【綠燈】run_full 接受裁切座標**
   - 預期行為：新增 `FullSegParams(BaseModel)`：`crop_y0/crop_y1/crop_x0/crop_x1: Optional[int] = None`、`use_cpsam: Optional[bool] = None`。`-1` 或 `None` = 全圖邊界。驗證 `0 <= v0 < v1 <= 影像邊界`，否則回 error。`_run_full_segmentation` 只讀取該窗格（`arr[y0:y1, x0:x1]`），並把 `(x0, y0)` 存入結果 metadata。
   - 驗證：同上 → PASSED
   - 檔案：`backend/src/api/segmentation.py`
   - commit：`feat(segmentation): run_full 支援裁切座標與 cpsam 開關`
 
-- [ ] **P0-11 全圖分割輸出加 metadata sidecar**
+- [x] **P0-11 全圖分割輸出加 metadata sidecar**
   - 預期行為：分割完成後除 `.npy` 另寫 `full_image_segmentation_meta.json`：`{crop_x0, crop_y0, width, height, n_cells, pixel_size_um, passes, created_at}`。下游據此還原座標。
   - 驗證：`test_full_seg_meta_schema` 斷言 json 含全部 8 個 key
   - 檔案：`backend/src/api/segmentation.py`
   - commit：`feat(segmentation): 全圖遮罩輸出 metadata sidecar`
 
-- [ ] **P0-12 【紅燈】/api/count/run_full 端點測試**
+- [x] **P0-12 【紅燈】/api/count/run_full 端點測試**
   - 預期行為：`test_count_run_full_requires_mask`：無遮罩時 POST `/api/count/run_full` → `status:error` 且訊息含「請先完成全圖分割」。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_10_fullslide.py -q` → FAILED
   - 檔案：`backend/tests/test_10_fullslide.py`
   - commit：`test(count): 全圖計數端點紅燈測試`
 
-- [ ] **P0-13 【綠燈】實作 /api/count/run_full + /full_status**
+- [x] **P0-13 【綠燈】實作 /api/count/run_full + /full_status**
   - 預期行為：背景任務讀 `full_image_segmentation_masks.npy` + meta sidecar，依序呼叫 `bin_attribution` → `aggregate_cells` → `add_centroids`，輸出 `{output_dir}/fullslide/cells.h5ad`。`tp` 取 `paths.binned_002/spatial/tissue_positions.parquet`，`h5` 取 `paths.binned_002/filtered_feature_bc_matrix.h5`。進度回報沿用 `_full_status` 同型別 dict。
   - 驗證：同上 → PASSED
   - 檔案：`backend/src/api/cellpose_count.py`
   - commit：`feat(count): 新增全圖 RNA 計數端點`
 
-- [ ] **P0-14 per-sample mpp 覆寫常數**
+- [x] **P0-14 per-sample mpp 覆寫常數**
   - 預期行為：新增 `fullslide.pipeline.resolve_pixel_size(config) -> float`：優先讀 `binned_002/spatial/scalefactors_json.json` 的 `microns_per_pixel`，缺失才回退 `VISIUM_UM_PX`。CLI `segment.py:535-536` 與 P0-13 改用它。**註記**：此值只影響 µm 換算與匯出比例尺，**不影響** attribution（純像素運算）。
   - 驗證：`test_resolve_pixel_size_prefers_scalefactors`（用臨時 json 斷言取到自訂值；檔案不存在時取 0.2737）
   - 檔案：`backend/src/fullslide/pipeline.py`、`backend/src/cli/segment.py`
   - commit：`fix(fullslide): 樣本 microns_per_pixel 覆寫預設常數`
 
-- [ ] **P0-15 前端：裁切座標與全圖計數 UI**
+- [x] **P0-15 前端：裁切座標與全圖計數 UI**
   - 預期行為：`client.ts` 新增 `runFullSegmentation(body)` 參數化、`runFullCount()`、`getFullCountStatus()`。`Stage1_Segmentation.tsx` 全圖區塊加 4 個座標輸入（空白 = 全圖）與 cpsam 勾選；`Stage2_Count.tsx` 加「全圖計數」按鈕 + 進度條。i18n 補 zh/en 字串。
   - 驗證：`cd frontend && npm run build`
   - 檔案：`frontend/src/api/client.ts`、`frontend/src/pages/Stage1_Segmentation.tsx`、`frontend/src/pages/Stage2_Count.tsx`、`frontend/src/i18n/translations.ts`
   - commit：`feat(ui): 全圖分割裁切座標與全圖計數介面`
+
+---
+
+### P0 完成紀錄（2026-07-25）
+
+**全部 15 項完成**，7 個 commit（`05df83a` → `ea94214`）。backend 全套 **141 passed**（P0 新增 35 項，全為合成資料、Windows 可跑）；`npm run build`（含 `tsc`）通過。
+
+實作過程與計畫的三處偏離：
+
+1. **`-1` 哨兵語意收窄**（P0-9 測試抓出來的）：初稿把 `-1` 當成「取影像邊界」對四個座標一律適用，但這讓 `crop_x0=-1` 這種明顯錯誤變成合法輸入。改為 **`-1` 只對上界（`crop_x1`/`crop_y1`）有效**，下界收到負值即報錯 —— 與 CLI 的 `--crop-y0` 預設 0、`--crop-y1` 預設 -1 一致。
+2. **記憶體上限改以裁切窗格計算**：原本 `estimated_gb` 算的是整張影像，加了裁切後若仍用全圖尺寸判斷，縮小範圍也會被擋。改成算實際窗格，超限訊息也從「請改用 ROI 模式」改為「請縮小裁切範圍或改用 ROI 模式」。
+3. **多做了 `resolve_full_count_inputs`**：計畫的 P0-13 把輸入解析寫在端點內；實作時抽成 `fullslide.pipeline` 的純函式，才能在不啟動背景任務的情況下測錯誤路徑（4 項測試）。錯誤訊息一律不含絕對路徑。
+
+sidecar 缺失的處理也在實作時定案為 **warning 而非 error**（原點退為 `(0,0)`），因為舊遮罩沒有 sidecar，而全圖模式的原點本來就是 `(0,0)`。
 
 ---
 
