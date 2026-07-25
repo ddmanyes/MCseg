@@ -249,6 +249,74 @@ def _compose_from_alignment_json(
     return m, f"對位 JSON {h_old.name} → {h_new.name}"
 
 
+def read_tissue_bins(tp_path: str | Path) -> "pd.DataFrame":  # noqa: F821
+    """讀 `tissue_positions.parquet` 並只留 `in_tissue == 1` 的 bins。"""
+    import pandas as pd
+
+    tp = pd.read_parquet(
+        str(tp_path),
+        columns=["barcode", "in_tissue", "pxl_row_in_fullres", "pxl_col_in_fullres"],
+    )
+    return tp[tp["in_tissue"] == 1].copy()
+
+
+def map_bins_to_mask(
+    tp: "pd.DataFrame",  # noqa: F821
+    mask_shape: tuple[int, int],
+    crop_y0: int,
+    crop_x0: int,
+    *,
+    scale: tuple[float, float] = (1.0, 1.0),
+    transform: np.ndarray | None = None,
+    alignment=None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+    """
+    把 bins 的 SR fullres 座標映射到遮罩局部 `(row, col)`。
+
+    ```text
+    SR fullres px ──transform / ×scale──> 影像(raw TIFF) px ──−crop origin──> 遮罩局部 px
+    ```
+
+    **先變換、後扣原點** —— 原點是遮罩空間的量。此函式由 `bin_attribution` 與
+    覆蓋率 QC 共用；兩者若各自實作這段換算，遲早會漂移成不同的座標系
+    （CLAUDE.md §11）。
+
+    Returns
+    -------
+    tuple
+        `(row, col, in_bounds, desc)`；`desc` 為人類可讀的變換來源說明。
+    """
+    src_row = tp["pxl_row_in_fullres"].values.astype(float)
+    src_col = tp["pxl_col_in_fullres"].values.astype(float)
+
+    if alignment is not None and not alignment.is_identity():
+        # 殘餘修正疊在主變換之後 → 先把主變換也表達成 3×3 再左乘
+        base = (
+            np.asarray(transform, dtype=float) if transform is not None
+            else np.diag([scale[0], scale[1], 1.0])
+        )
+        transform = alignment.to_3x3() @ base
+        scale = (1.0, 1.0)   # 已併入 transform，避免重複套用
+
+    if transform is not None:
+        if scale != (1.0, 1.0):
+            logger.warning(
+                f"同時指定 transform 與 scale={scale}；採用 transform（幾何正確），忽略 scale。"
+            )
+        x, y = _apply_homography(np.asarray(transform, dtype=float), src_col, src_row)
+        desc = "homography"
+    else:
+        x, y = src_col * scale[0], src_row * scale[1]
+        desc = f"scale={scale}"
+
+    row = np.rint(y - crop_y0).astype(np.int64)
+    col = np.rint(x - crop_x0).astype(np.int64)
+
+    h, w = mask_shape
+    in_bounds = (row >= 0) & (row < h) & (col >= 0) & (col < w)
+    return row, col, in_bounds, desc
+
+
 def bin_attribution(
     mask: np.ndarray,
     tp_path: str | Path,
@@ -306,40 +374,13 @@ def bin_attribution(
     """
     import pandas as pd
 
-    tp = pd.read_parquet(
-        str(tp_path),
-        columns=["barcode", "in_tissue", "pxl_row_in_fullres", "pxl_col_in_fullres"],
+    tp = read_tissue_bins(tp_path)
+    row, col, in_bounds, desc = map_bins_to_mask(
+        tp, mask.shape, crop_y0, crop_x0,
+        scale=scale, transform=transform, alignment=alignment,
     )
-    tp = tp[tp["in_tissue"] == 1].copy()
-
     h, w = mask.shape
-    src_row = tp["pxl_row_in_fullres"].values.astype(float)
-    src_col = tp["pxl_col_in_fullres"].values.astype(float)
 
-    if alignment is not None and not alignment.is_identity():
-        # 殘餘修正疊在主變換之後 → 先把主變換也表達成 3×3 再左乘
-        base = (
-            np.asarray(transform, dtype=float) if transform is not None
-            else np.diag([scale[0], scale[1], 1.0])
-        )
-        transform = alignment.to_3x3() @ base
-        scale = (1.0, 1.0)   # 已併入 transform，避免重複套用
-
-    if transform is not None:
-        if scale != (1.0, 1.0):
-            logger.warning(
-                f"同時指定 transform 與 scale={scale}；採用 transform（幾何正確），忽略 scale。"
-            )
-        x, y = _apply_homography(np.asarray(transform, dtype=float), src_col, src_row)
-        desc = "homography"
-    else:
-        x, y = src_col * scale[0], src_row * scale[1]
-        desc = f"scale={scale}"
-
-    row = np.rint(y - crop_y0).astype(np.int64)
-    col = np.rint(x - crop_x0).astype(np.int64)
-
-    in_bounds = (row >= 0) & (row < h) & (col >= 0) & (col < w)
     cell_ids = np.zeros(len(tp), dtype=mask.dtype)
     cell_ids[in_bounds] = mask[row[in_bounds], col[in_bounds]]
     tp["cell_id"] = cell_ids

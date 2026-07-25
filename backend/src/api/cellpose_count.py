@@ -194,6 +194,42 @@ async def _run_full_count(inputs: dict) -> None:
         _full_status = {"status": "error", "progress": 0.0, "message": safe_msg}
 
 
+@router.post("/coverage_qc")
+async def run_coverage_qc(
+    grid_px: int = 2048, min_bins: int = 200, low_ratio: float = 0.3
+):
+    """
+    全片分割覆蓋率 QC：逐網格比對 bin 密度 vs 細胞密度，標記分割失敗的區域。
+
+    回答總命中率看不出來的問題 —— 一個區域整片漏掉只讓總數低幾個百分點
+    （真實案例：Day0/Day3 區只分出 380 顆碎片，該區有 31,969 bins）。
+
+    同步執行：只讀 memmap 遮罩與 parquet，全片約數十秒，不需背景任務。
+    """
+    from backend.src.fullslide.coverage_qc import run_coverage_qc_from_config
+
+    try:
+        df = run_coverage_qc_from_config(
+            load_config(), grid_px=grid_px, min_bins=min_bins, low_ratio=low_ratio
+        )
+    except ValueError as e:
+        # resolve_full_count_inputs 的診斷訊息（不含絕對路徑），可安全回傳
+        return {"status": "error", "message": str(e)}
+    except Exception as e:
+        logger.error(f"覆蓋率 QC 失敗：{e}", exc_info=True)
+        return {"status": "error", "message": "覆蓋率 QC 失敗，請查閱 log"}
+
+    flagged = df[df["flagged"]]
+    return {
+        "status": "ok",
+        "data": {
+            "summary": df.attrs["summary"],
+            # 只回傳被標記的格子（全片可有數百格，前端只需要可疑的那些）
+            "flagged": flagged.to_dict(orient="records"),
+        },
+    }
+
+
 @router.get("/available_rois")
 async def get_available_rois():
     """列出所有已有 cellpose_cells.h5ad 的 ROI"""
