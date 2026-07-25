@@ -270,3 +270,75 @@ class TestRenderBinDensity:
         dens = render_bin_density(tp, full_shape=(64, 64), downsample=8)
 
         assert dens.sum() == pytest.approx(1.0)
+
+
+# ── 次像素位移估計 ───────────────────────────────────────────────────────────
+
+def _textured_image(shape=(128, 128), seed=0) -> np.ndarray:
+    """有結構的合成影像（白雜訊過高斯），供相位相關使用。"""
+    from scipy.ndimage import gaussian_filter
+
+    rng = np.random.default_rng(seed)
+    return gaussian_filter(rng.random(shape).astype(np.float32), 3)
+
+
+class TestEstimateShift:
+    """`estimate_shift` 回傳 mov 相對 ref 的位移 (dy, dx)"""
+
+    def test_estimate_shift_recovers_known_offset(self):
+        from backend.src.registration.align import estimate_shift
+
+        ref = _textured_image()
+        mov = np.roll(ref, (7, -5), axis=(0, 1))
+
+        dy, dx, err = estimate_shift(ref, mov)
+
+        assert dy == pytest.approx(7.0, abs=0.5)
+        assert dx == pytest.approx(-5.0, abs=0.5)
+        assert err >= 0.0
+
+    def test_estimate_shift_is_brightness_invariant(self):
+        """H&E 灰階與 bin 密度的量級差好幾個數量級，估計不可受此影響。"""
+        from backend.src.registration.align import estimate_shift
+
+        ref = _textured_image()
+        mov = np.roll(ref, (4, 3), axis=(0, 1)) * 1000.0 + 500.0
+
+        dy, dx, _ = estimate_shift(ref, mov)
+
+        assert dy == pytest.approx(4.0, abs=0.5)
+        assert dx == pytest.approx(3.0, abs=0.5)
+
+    def test_estimate_shift_zero_for_identical(self):
+        from backend.src.registration.align import estimate_shift
+
+        ref = _textured_image()
+        dy, dx, _ = estimate_shift(ref, ref.copy())
+
+        assert (dy, dx) == pytest.approx((0.0, 0.0), abs=1e-6)
+
+
+# ── 位移 → 仿射矩陣（軸序與單位防呆）────────────────────────────────────────
+
+class TestShiftToMatrix:
+    """row/col ↔ x/y 交換與 downsample 倍率是此類程式最常見的靜默錯誤來源"""
+
+    def test_shift_to_matrix_axis_order(self):
+        """`shift_to_matrix(dy=10, dx=-5)` 套到原點 → (x, y) = (-5, 10)。"""
+        from backend.src.registration.align import shift_to_matrix
+
+        al = shift_to_matrix(dy=10.0, dx=-5.0)
+        out = al.apply(np.array([[0.0, 0.0]]))
+
+        assert out[0, 0] == pytest.approx(-5.0)
+        assert out[0, 1] == pytest.approx(10.0)
+
+    def test_shift_to_matrix_scales_by_downsample(self):
+        """估計值在 downsample 圖上時，須乘回倍率才是 fullres px。"""
+        from backend.src.registration.align import shift_to_matrix
+
+        al = shift_to_matrix(dy=2.0, dx=1.0, downsample=32)
+        out = al.apply(np.array([[100.0, 200.0]]))
+
+        assert out[0, 0] == pytest.approx(100.0 + 32.0)
+        assert out[0, 1] == pytest.approx(200.0 + 64.0)

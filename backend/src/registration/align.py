@@ -10,11 +10,126 @@ RNA 與影像還剩多少殘餘偏移？」20-50 px 的殘餘位移不會觸發
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 logger = logging.getLogger("pipeline.registration.align")
+
+
+@dataclass
+class AffineAlignment:
+    """
+    2×3 仿射變換，作用於 **(x, y)** 座標（不是 (row, col)）。
+
+    軸序在此類程式中是頭號靜默錯誤來源 —— `phase_cross_correlation` 回傳
+    `(row, col)`，而座標與仿射一律 `(x, y)`。本類別的介面**只接受 (x, y)**，
+    轉換由 `shift_to_matrix` 一處負責。
+    """
+
+    matrix: list[list[float]] = field(
+        default_factory=lambda: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    source: str = "spaceranger_fullres"
+    target: str = "raw_btf"
+    estimated_error: float | None = None
+
+    @classmethod
+    def identity(cls) -> "AffineAlignment":
+        return cls()
+
+    @property
+    def array(self) -> np.ndarray:
+        return np.asarray(self.matrix, dtype=float).reshape(2, 3)
+
+    def apply(self, coords_xy: np.ndarray) -> np.ndarray:
+        """對 (N, 2) 的 `(x, y)` 座標套用變換。"""
+        pts = np.asarray(coords_xy, dtype=float)
+        m = self.array
+        return pts @ m[:, :2].T + m[:, 2]
+
+    def to_3x3(self) -> np.ndarray:
+        """轉為 3×3 homography，供 `bin_attribution(transform=...)` 使用。"""
+        return np.vstack([self.array, [0.0, 0.0, 1.0]])
+
+    def is_identity(self, atol: float = 1e-12) -> bool:
+        return bool(np.allclose(self.array, [[1, 0, 0], [0, 1, 0]], atol=atol))
+
+    def to_dict(self) -> dict:
+        return {
+            "matrix": [[float(v) for v in row] for row in self.array],
+            "source": self.source,
+            "target": self.target,
+            "estimated_error": self.estimated_error,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AffineAlignment":
+        return cls(
+            matrix=[[float(v) for v in row] for row in d.get("matrix", [[1, 0, 0], [0, 1, 0]])],
+            source=str(d.get("source", "spaceranger_fullres")),
+            target=str(d.get("target", "raw_btf")),
+            estimated_error=(
+                None if d.get("estimated_error") is None else float(d["estimated_error"])
+            ),
+        )
+
+
+def shift_to_matrix(
+    dy: float,
+    dx: float,
+    downsample: int = 1,
+    estimated_error: float | None = None,
+) -> AffineAlignment:
+    """
+    把 `estimate_shift` 的 `(dy, dx)` 轉成作用於 `(x, y)` 的平移矩陣。
+
+    **兩個轉換都在這裡一次做完**，因為它們都不會報錯、只會靜默出錯：
+
+    1. **軸序**：`phase_cross_correlation` 回傳 `(row, col)` = `(dy, dx)`，
+       而仿射與座標一律 `(x, y)` = `(col, row)` → 必須交換。
+    2. **單位**：估計值在 downsample 圖上，需乘回倍率才是 fullres px。
+    """
+    tx, ty = dx * downsample, dy * downsample
+    return AffineAlignment(
+        matrix=[[1.0, 0.0, float(tx)], [0.0, 1.0, float(ty)]],
+        estimated_error=estimated_error,
+    )
+
+
+def estimate_shift(
+    ref: np.ndarray, mov: np.ndarray, upsample_factor: int = 10
+) -> tuple[float, float, float]:
+    """
+    以相位相關估計 `mov` 相對 `ref` 的次像素位移。
+
+    Returns
+    -------
+    tuple[float, float, float]
+        `(dy, dx, error)`，單位為**輸入圖的像素**。語意為
+        `mov ≈ np.roll(ref, (dy, dx))` —— 即 mov 的內容相對 ref 往
+        下 `dy`、右 `dx` 移動了多少。
+
+    Notes
+    -----
+    兩張圖先各自 z-score 標準化。H&E 灰階與 bin 密度的量級差好幾個數量級，
+    未標準化時直流分量會主導頻譜，讓相關峰失準。
+    """
+    from skimage.registration import phase_cross_correlation
+
+    a, b = _zscore(ref), _zscore(mov)
+    shift, error, _ = phase_cross_correlation(a, b, upsample_factor=upsample_factor)
+    # skimage 回傳「要把 mov 移多少才能對上 ref」→ 取負號即 mov 相對 ref 的位移
+    return float(-shift[0]), float(-shift[1]), float(error)
+
+
+def _zscore(img: np.ndarray) -> np.ndarray:
+    arr = np.asarray(img, dtype=np.float32)
+    std = float(arr.std())
+    if std == 0:
+        return np.zeros_like(arr)
+    return (arr - float(arr.mean())) / std
 
 
 def render_bin_density(
