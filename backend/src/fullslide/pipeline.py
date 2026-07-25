@@ -120,9 +120,17 @@ def resolve_bin_to_image_transform(
     """
     scale = resolve_bin_to_mask_scale(config, mask_shape)
     align_cfg = config.get("alignment") or {}
+    residual = _resolve_residual_alignment(align_cfg)
 
     if not align_cfg.get("use_alignment_json", True):
-        return None, scale, f"近似縮放（設定停用對位 JSON）scale={scale[0]:.4f}, {scale[1]:.4f}"
+        base = np.diag([scale[0], scale[1], 1.0])
+        if residual is None:
+            return None, scale, f"近似縮放（設定停用對位 JSON）scale={scale[0]:.4f}, {scale[1]:.4f}"
+        return (
+            residual.to_3x3() @ base,
+            (1.0, 1.0),
+            f"近似縮放（停用對位 JSON）＋人工修正 scale={scale[0]:.4f}, {scale[1]:.4f}",
+        )
 
     try:
         transform, source = _compose_from_alignment_json(config, scale)
@@ -136,9 +144,37 @@ def resolve_bin_to_image_transform(
             "此值由 hires 尺寸 ÷ scalef 推導，**為近似值** —— SR 畫布相對影像有 padding "
             "時會把 bin 橫向壓縮。建議提供 Loupe 對位 JSON（alignment.extra_alignment_json）。"
         )
-        return None, scale, f"近似縮放 scale={scale[0]:.4f}, {scale[1]:.4f}"
+        if residual is None:
+            return None, scale, f"近似縮放 scale={scale[0]:.4f}, {scale[1]:.4f}"
+        transform = np.diag([scale[0], scale[1], 1.0])
+        source = f"近似縮放 scale={scale[0]:.4f}, {scale[1]:.4f}"
 
-    return transform, scale, source
+    if residual is not None:
+        transform = residual.to_3x3() @ transform
+        tx, ty = residual.array[0, 2], residual.array[1, 2]
+        logger.info(f"疊加人工/估計修正：平移 ({tx:+.1f}, {ty:+.1f}) px")
+        source = f"{source} ＋人工修正"
+
+    return transform, (1.0, 1.0) if residual is not None else scale, source
+
+
+def _resolve_residual_alignment(align_cfg: dict):
+    """
+    取 `alignment.matrix` 的殘餘修正；**未啟用或為單位矩陣時回 None**。
+
+    預設 `enabled: false` —— 估計錯誤而被靜默套用，比不修正更糟。使用者必須
+    看過 residual 後手動啟用（`/api/registration/apply` 只寫入不啟用）。
+    """
+    if not align_cfg.get("enabled", False):
+        return None
+    try:
+        from backend.src.registration.align import AffineAlignment
+
+        al = AffineAlignment.from_dict(align_cfg)
+    except (ValueError, TypeError, KeyError) as e:
+        logger.warning(f"alignment.matrix 無法解析（{e}），忽略人工修正")
+        return None
+    return None if al.is_identity() else al
 
 
 def _compose_from_alignment_json(
@@ -213,6 +249,7 @@ def bin_attribution(
     out_path: str | Path | None = None,
     scale: tuple[float, float] = (1.0, 1.0),
     transform: np.ndarray | None = None,
+    alignment=None,
 ) -> "pd.DataFrame":
     """
     將 Visium HD 2µm bins 對應到 MCseg v2 細胞遮罩。
@@ -241,6 +278,10 @@ def bin_attribution(
         `registration.alignment.compose_bin_to_image` 取得。這是**幾何正確**
         的路徑；`scale` 僅為找不到對位 JSON 時的近似回退。兩者同時給定時
         `transform` 優先並記 warning。
+    alignment : AffineAlignment | None
+        殘餘位移／仿射修正（`registration.align.AffineAlignment`），疊加在
+        `transform`／`scale` **之後**（即影像 px 空間內的微調）。預設 None →
+        行為完全不變。
 
     Returns
     -------
@@ -266,6 +307,15 @@ def bin_attribution(
     h, w = mask.shape
     src_row = tp["pxl_row_in_fullres"].values.astype(float)
     src_col = tp["pxl_col_in_fullres"].values.astype(float)
+
+    if alignment is not None and not alignment.is_identity():
+        # 殘餘修正疊在主變換之後 → 先把主變換也表達成 3×3 再左乘
+        base = (
+            np.asarray(transform, dtype=float) if transform is not None
+            else np.diag([scale[0], scale[1], 1.0])
+        )
+        transform = alignment.to_3x3() @ base
+        scale = (1.0, 1.0)   # 已併入 transform，避免重複套用
 
     if transform is not None:
         if scale != (1.0, 1.0):

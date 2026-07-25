@@ -63,6 +63,14 @@ alignment:                  # bins → 分割影像 的座標對位（Stage 2 �
   use_alignment_json: true  # 優先讀 Loupe/CytAssist 對位 JSON（幾何正確）；false 則強制走近似縮放
   extra_alignment_json: null# Loupe 對高解析圖重新對位後產生的 JSON（H_new）；null = 自動從 spatial/ 偵測
   bin_to_mask_scale: null   # [sx, sy] 人工覆寫近似縮放（僅在無對位 JSON 時生效）
+  # 殘餘位移的人工／估計修正，疊加在上述變換**之後**（影像 px 空間）。
+  # enabled: false 時全流程行為與未設定完全一致 —— 壞估計被靜默套用比不修正更糟，
+  # 因此一律要求使用者看過 residual 再手動啟用（/api/registration/apply 不會自動開啟）。
+  enabled: false
+  matrix: [[1, 0, 0], [0, 1, 0]]   # 2×3 仿射，作用於 (x, y)
+  source: spaceranger_fullres
+  target: raw_btf
+  estimated_error: null
 
 rna_counting:
   dilation_px: 6            # 1.64 µm — xenium_he_seg PQ=0.432 最佳參數

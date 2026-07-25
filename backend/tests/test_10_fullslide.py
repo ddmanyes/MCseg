@@ -899,3 +899,90 @@ class TestFullSlideEndpoints:
         body = r.json()
         assert body["status"] == "error"
         assert "請先完成全圖分割" in body["message"]
+
+
+class TestBinAttributionAlignment:
+    """`alignment`（殘餘修正）疊加在主變換之後"""
+
+    def test_bin_attribution_with_translation_shifts_assignment(self, tmp_path):
+        from backend.src.fullslide.pipeline import bin_attribution
+        from backend.src.registration.align import AffineAlignment
+
+        mask = np.zeros((10, 10), dtype=np.int32)
+        mask[8, 3] = 9
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, [(3, 1)])   # (row=3, col=1)
+
+        # 無修正 → 落在背景（被丟棄）
+        assert bin_attribution(mask, tp, 0, 0).empty
+        # 平移 (x+2, y+5) → (col=3, row=8) → 命中 label 9
+        al = AffineAlignment(matrix=[[1, 0, 2], [0, 1, 5]])
+        assert bin_attribution(mask, tp, 0, 0, alignment=al)["cell_id"].tolist() == [9]
+
+    def test_alignment_stacks_on_top_of_scale(self, tmp_path):
+        """修正作用在**影像 px 空間**：先縮放、再平移。"""
+        from backend.src.fullslide.pipeline import bin_attribution
+        from backend.src.registration.align import AffineAlignment
+
+        mask = np.zeros((20, 20), dtype=np.int32)
+        mask[11, 7] = 4
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, [(3, 2)])   # ×2 → (6, 4)；+ (3, 5) → (11, 7)
+
+        al = AffineAlignment(matrix=[[1, 0, 3], [0, 1, 5]])
+        attr = bin_attribution(mask, tp, 0, 0, scale=(2.0, 2.0), alignment=al)
+
+        assert attr["cell_id"].tolist() == [4]
+
+    def test_identity_alignment_is_noop(self, tmp_path):
+        """單位矩陣不得改變任何結果（enabled 但未估計時的常態）。"""
+        from backend.src.fullslide.pipeline import bin_attribution
+        from backend.src.registration.align import AffineAlignment
+
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, [(1, 1), (6, 6)])
+        mask = _make_mask()
+
+        a = bin_attribution(mask, tp, 0, 0)
+        b = bin_attribution(mask, tp, 0, 0, alignment=AffineAlignment.identity())
+
+        assert a["cell_id"].tolist() == b["cell_id"].tolist()
+
+
+class TestResidualAlignmentConfig:
+    """`alignment.enabled` 預設 false → 零回歸"""
+
+    def test_disabled_by_default(self, tmp_path):
+        from backend.src.fullslide.pipeline import resolve_bin_to_image_transform
+
+        binned = tmp_path / "b002"
+        _write_spatial(binned, hires_size=(1000, 2000), scalef=0.1)
+        config = {
+            "paths": {"binned_002": str(binned)},
+            "alignment": {"matrix": [[1, 0, 500], [0, 1, 500]]},   # 未 enabled
+        }
+
+        transform, scale, _ = resolve_bin_to_image_transform(config, mask_shape=(20000, 10000))
+
+        assert transform is None
+        assert scale == pytest.approx((1.0, 1.0))
+
+    def test_enabled_residual_is_composed(self, tmp_path):
+        from backend.src.fullslide.pipeline import resolve_bin_to_image_transform
+
+        binned = tmp_path / "b002"
+        _write_spatial(binned, hires_size=(1000, 2000), scalef=0.1)
+        config = {
+            "paths": {"binned_002": str(binned)},
+            "alignment": {"enabled": True, "matrix": [[1, 0, 12], [0, 1, -7]]},
+        }
+
+        transform, scale, source = resolve_bin_to_image_transform(
+            config, mask_shape=(20000, 10000)
+        )
+
+        assert transform is not None
+        assert transform[0, 2] == pytest.approx(12.0)
+        assert transform[1, 2] == pytest.approx(-7.0)
+        assert scale == pytest.approx((1.0, 1.0))   # 已併入 transform，不可重複套用
+        assert "人工修正" in source
