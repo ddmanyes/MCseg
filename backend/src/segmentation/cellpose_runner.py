@@ -484,14 +484,35 @@ _ROI_OVERRIDE_FIELDS: frozenset[str] = frozenset({
 })
 
 
+def validate_roi_overrides(roi_overrides: dict) -> "tuple[dict, list[str]]":
+    """檢查單一 ROI 的覆寫欄位。
+
+    「哪些分割參數可以被 ROI 覆寫」是分割領域的知識，這裡是對外的唯一入口——
+    呼叫端（API 驗證、參數合併）不需要也不應該直接碰 _ROI_OVERRIDE_FIELDS。
+
+    Returns
+    -------
+    (clean, invalid)
+        clean   : 可套用的覆寫（欄位名合法，值非 None）
+        invalid : 未知欄位名清單，順序同輸入
+    """
+    clean = {
+        k: v for k, v in roi_overrides.items()
+        if k in _ROI_OVERRIDE_FIELDS and v is not None
+    }
+    invalid = [k for k in roi_overrides if k not in _ROI_OVERRIDE_FIELDS]
+    return clean, invalid
+
+
 def _merge_roi_params(global_seg_cfg: dict, roi_overrides: dict) -> dict:
     """將 ROI 個別覆寫合併進全域分割設定（深複製，不改原始 dict）。"""
     import copy
     cfg = copy.deepcopy(global_seg_cfg)
     mcseg = cfg.setdefault("mcseg_v2", {})
-    for key, val in roi_overrides.items():
-        if key in _ROI_OVERRIDE_FIELDS and val is not None:
-            mcseg[key] = val
+    clean, invalid = validate_roi_overrides(roi_overrides)
+    if invalid:
+        logger.warning(f"  忽略未知的 ROI 覆寫欄位：{invalid}")
+    mcseg.update(clean)
     return cfg
 
 

@@ -312,7 +312,7 @@ async def get_roi_overrides():
 
 @router.put("/roi_overrides")
 async def put_roi_overrides(body: dict):
-    from backend.src.segmentation.cellpose_runner import _ROI_OVERRIDE_FIELDS
+    from backend.src.segmentation.cellpose_runner import validate_roi_overrides
 
     # 驗證 ROI 名稱：只允許已存在於 config 的 ROI，防止路徑穿越攻擊
     config = load_config()
@@ -321,11 +321,11 @@ async def put_roi_overrides(body: dict):
     if invalid_names:
         return {"status": "error", "message": f"未知的 ROI 名稱：{invalid_names}"}
 
-    # 驗證每個 ROI 的覆寫欄位名稱
+    # 驗證每個 ROI 的覆寫欄位名稱（哪些欄位可覆寫由分割領域決定）
     for roi_name, overrides in body.items():
         if not isinstance(overrides, dict):
             return {"status": "error", "message": f"ROI '{roi_name}' 的覆寫值必須是 dict"}
-        invalid_fields = [k for k in overrides if k not in _ROI_OVERRIDE_FIELDS]
+        _, invalid_fields = validate_roi_overrides(overrides)
         if invalid_fields:
             return {"status": "error", "message": f"ROI '{roi_name}' 包含未知欄位：{invalid_fields}"}
 
