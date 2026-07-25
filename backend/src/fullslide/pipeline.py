@@ -140,3 +140,49 @@ def aggregate_cells(attribution: "pd.DataFrame", h5_path: str | Path) -> "ad.Ann
     del adata_crop, adata_valid, A
     gc.collect()
     return cells
+
+
+def add_centroids(
+    cells: "ad.AnnData",
+    mask: np.ndarray,
+    pixel_size_um: float,
+    origin_xy: tuple[int, int] = (0, 0),
+) -> None:
+    """
+    就地補上細胞重心（三種座標系並存）。
+
+    | 欄位 | 座標系 | 用途 |
+    |------|--------|------|
+    | `obs['centroid_x_px']` / `_y_px`           | 裁切局部 px | 遮罩內定位（維持 CLI 既有語意） |
+    | `obs['centroid_x_fullres']` / `_y_fullres` | 全片 fullres px | 跨 ROI／全片框選（Stage 3.5 區域選取） |
+    | `obsm['spatial']`                          | µm（由局部換算） | 匯出與繪圖（維持既有語意） |
+
+    fullres 欄位在此處落地，而非留給下游每次讀 metadata sidecar 自行補償 ——
+    後者是重複且易錯的轉換（座標系錯配會讓框選偏移一整個裁切原點）。
+
+    Parameters
+    ----------
+    cells : ad.AnnData
+        `aggregate_cells` 的輸出，需含 `obs['cell_id']`。就地修改。
+    mask : np.ndarray
+        (H, W) 遮罩，座標原點為裁切左上角。
+    pixel_size_um : float
+        µm/px（建議由 `resolve_pixel_size` 取得樣本實際值）。
+    origin_xy : tuple[int, int]
+        裁切左上角於原始影像 fullres 座標系的位置 `(x0, y0)`。
+    """
+    from scipy.ndimage import center_of_mass
+
+    unique_cells = cells.obs["cell_id"].values.astype(np.int64)
+    cen = np.asarray(
+        center_of_mass(mask > 0, labels=mask, index=unique_cells.tolist()),
+        dtype=float,
+    )
+    cy_px, cx_px = cen[:, 0], cen[:, 1]
+    x0, y0 = origin_xy
+
+    cells.obs["centroid_x_px"] = cx_px
+    cells.obs["centroid_y_px"] = cy_px
+    cells.obs["centroid_x_fullres"] = cx_px + x0
+    cells.obs["centroid_y_fullres"] = cy_px + y0
+    cells.obsm["spatial"] = np.stack([cx_px * pixel_size_um, cy_px * pixel_size_um], axis=1)

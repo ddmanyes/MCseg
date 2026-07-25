@@ -194,10 +194,10 @@ def step_count_cells(
     h5_path: Path,
     out_dir: Path,
     pixel_size_um: float,
+    origin_xy: tuple[int, int] = (0, 0),
 ) -> Path:
     """[4/6] 由 bin attribution 聚合 cells×genes，附加重心，輸出 cells.h5ad。"""
-    import numpy as np
-    from scipy.ndimage import center_of_mass
+    from backend.src.fullslide.pipeline import add_centroids, aggregate_cells
 
     h5ad_path = out_dir / "cells.h5ad"
     if h5ad_path.exists():
@@ -205,25 +205,12 @@ def step_count_cells(
         return h5ad_path
 
     log.info("[4/6] 聚合 cells×genes 矩陣")
-    from backend.src.fullslide.pipeline import aggregate_cells
-
     log.info(f"  讀取 h5 矩陣: {h5_path.name}")
     cells = aggregate_cells(attribution, h5_path)
     log.info(f"  unique cells with RNA: {cells.n_obs:,}")
-    unique_cells = cells.obs["cell_id"].values.astype(np.int64)
 
-    # 重心（mask 局部 px，原點 = 裁切左上角）→ µm
     log.info("  計算細胞重心…")
-    cen = np.asarray(
-        center_of_mass(mask > 0, labels=mask, index=unique_cells.tolist()),
-        dtype=float,
-    )
-    cy_px, cx_px = cen[:, 0], cen[:, 1]
-    cells.obs["centroid_x_px"] = cx_px
-    cells.obs["centroid_y_px"] = cy_px
-    cells.obsm["spatial"] = np.stack(
-        [cx_px * pixel_size_um, cy_px * pixel_size_um], axis=1
-    )
+    add_centroids(cells, mask, pixel_size_um, origin_xy=origin_xy)
 
     cells.write_h5ad(str(h5ad_path))
     log.info(f"  儲存: {h5ad_path.name}  ({cells.n_obs:,} cells × {cells.n_vars:,} genes)")
@@ -490,7 +477,8 @@ def main(argv: list[str] | None = None) -> int:
     cells_h5ad = None
     if attribution is not None:
         cells_h5ad = step_count_cells(
-            mask, attribution, args.h5, out_dir, pixel_size_um
+            mask, attribution, args.h5, out_dir, pixel_size_um,
+            origin_xy=(btf_col0, crop_y0),
         )
 
         # ── Step 5: CellTypist
