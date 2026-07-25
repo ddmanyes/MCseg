@@ -312,6 +312,20 @@ export const translations: TransDict = {
   'roi.hint.pan':       { zh: '拖曳平移 · 滾輪縮放 · 雙擊放大', en: 'Drag to pan · Scroll to zoom · Double-click to zoom in' },
   'roi.hint.draw':      { zh: '按住拖曳框選 ROI 範圍，放開後座標自動填入表單', en: 'Drag to draw ROI region; coordinates auto-fill on release' },
   'roi.loading':        { zh: '載入影像中...', en: 'Loading image...' },
+
+  // ── RegionSelector（Stage 0 / Stage 3.5 共用）─────────────────────────────
+  'region.polygon_mode':   { zh: '⬡ 多邊形',   en: '⬡ Polygon' },
+  'region.finish_polygon': { zh: '完成多邊形', en: 'Finish Polygon' },
+  'region.clear':          { zh: '清除選取',   en: 'Clear' },
+  'region.hint.polygon':   { zh: '逐點點擊圈出區域，至少 3 點後按「完成多邊形」', en: 'Click to add vertices; press "Finish Polygon" after ≥3 points' },
+  'region.selected':       { zh: '已選取區域', en: 'Selected region' },
+  'region.none':           { zh: '未選取（分析全部細胞）', en: 'No selection (all cells)' },
+  'region.stats':          { zh: '區域統計',   en: 'Region Stats' },
+  'region.stats.cells':    { zh: '細胞數',     en: 'Cells' },
+  'region.stats.counts':   { zh: 'counts 中位數', en: 'Median counts' },
+  'region.stats.genes':    { zh: '基因數中位數', en: 'Median genes' },
+  'region.stats.clusters': { zh: '族群組成',   en: 'Cluster composition' },
+  'region.stats.loading':  { zh: '統計中...',  en: 'Computing...' },
   'data.output.description':  { zh: '所有分析結果（ROI 裁切、分割遮罩、計數矩陣、圖表）將存放於此目錄下的', en: 'All analysis results (ROI crops, segmentation masks, count matrix, charts) will be stored under' },
 
   // ── Stage 3: missing translations ────────────────────────────────────────
