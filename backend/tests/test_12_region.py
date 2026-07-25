@@ -166,3 +166,91 @@ def test_no_region_selects_all():
 
     adata = _make_adata(GRID)
     assert _filter_by_region(adata, None, None, {}, None).all()
+
+
+# ── API：gene_plot 區域欄位與 region_stats ─────────────────────────────────
+
+def _write_h5ad(tmp_path, adata, clusters=None):
+    """把合成 AnnData 寫成 cellpose_cells.h5ad，並回傳可用的 config。"""
+    if clusters is not None:
+        adata.obs["leiden"] = [str(c) for c in clusters]
+    out = tmp_path / "roi" / "r1"
+    out.mkdir(parents=True, exist_ok=True)
+    adata.write_h5ad(str(out / "cellpose_cells.h5ad"))
+    return {"paths": {"output_dir": str(tmp_path)}, "rois": [{"name": "r1"}], "analysis": {}}
+
+
+class TestRegionAPI:
+    """/api/spatial/region_stats 與 gene_plot 的 region 欄位"""
+
+    @pytest.mark.asyncio
+    async def test_gene_plot_rejects_tiny_region(self, monkeypatch, tmp_path):
+        """框到不足 10 個細胞時回 400 —— 少數細胞的圖只會誤導。"""
+        from httpx import ASGITransport, AsyncClient
+
+        import backend.src.api.spatial as sp
+        from backend.main import app
+
+        adata = _make_adata(GRID)
+        config = _write_h5ad(tmp_path, adata)
+        monkeypatch.setattr(sp, "load_config", lambda: config)
+        monkeypatch.setattr(sp, "_get_roi_h5ad", lambda c, n: tmp_path / "roi/r1/cellpose_cells.h5ad")
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.post("/api/spatial/gene_plot", json={
+                "roi_name": "r1", "genes": ["GENE_A"],
+                "region": {"x0": 90, "y0": 90, "x1": 110, "y1": 110},
+            })
+
+        assert r.status_code == 400
+        assert "細胞數不足" in r.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_region_stats_returns_cluster_breakdown(self, monkeypatch, tmp_path):
+        from httpx import ASGITransport, AsyncClient
+
+        import backend.src.api.spatial as sp
+        from backend.main import app
+
+        adata = _make_adata(GRID)
+        config = _write_h5ad(tmp_path, adata, clusters=[0, 0, 0, 1, 1, 1, 2, 2, 2])
+        monkeypatch.setattr(sp, "load_config", lambda: config)
+        monkeypatch.setattr(sp, "_get_roi_h5ad", lambda c, n: tmp_path / "roi/r1/cellpose_cells.h5ad")
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.post("/api/spatial/region_stats", json={
+                "roi_name": "r1",
+                "region": {"x0": 150, "y0": 150, "x1": 350, "y1": 250},
+            })
+
+        data = r.json()["data"]
+        assert data["n_cells"] == 2
+        assert data["cluster_counts"] == {"1": 2}
+        assert data["median_counts"] == pytest.approx(2.0)   # 每個細胞 2 個基因各 1 count
+        assert data["median_genes"] == pytest.approx(2.0)
+
+    @pytest.mark.asyncio
+    async def test_region_stats_empty_selection_is_ok(self, monkeypatch, tmp_path):
+        """框到空白區不是錯誤 —— 前端據此提示「此區無細胞」。"""
+        from httpx import ASGITransport, AsyncClient
+
+        import backend.src.api.spatial as sp
+        from backend.main import app
+
+        adata = _make_adata(GRID)
+        config = _write_h5ad(tmp_path, adata)
+        monkeypatch.setattr(sp, "load_config", lambda: config)
+        monkeypatch.setattr(sp, "_get_roi_h5ad", lambda c, n: tmp_path / "roi/r1/cellpose_cells.h5ad")
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.post("/api/spatial/region_stats", json={
+                "region": {"x0": 9000, "y0": 9000, "x1": 9100, "y1": 9100},
+            })
+
+        assert r.json()["data"] == {
+            "n_cells": 0, "median_counts": 0.0, "median_genes": 0.0,
+            "cluster_counts": {}, "roi_name": None,
+        }

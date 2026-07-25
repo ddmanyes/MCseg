@@ -20,6 +20,17 @@ router = APIRouter()
 CMAPS = ["viridis", "magma", "plasma", "inferno", "Reds", "Blues", "YlOrRd"]
 
 
+MIN_REGION_CELLS = 10
+
+
+class RegionRequest(BaseModel):
+    """框選區域（座標一律為**全片 fullres px**，與 RegionSelector 一致）。"""
+
+    roi_name: Optional[str] = None
+    region: Optional[dict] = None                  # {x0, y0, x1, y1}
+    polygon: Optional[list[list[float]]] = None    # [[x, y], ...]
+
+
 class GenePlotRequest(BaseModel):
     roi_name: Optional[str] = None
     genes: list[str]
@@ -29,6 +40,9 @@ class GenePlotRequest(BaseModel):
     cmap: str = "viridis"
     alpha: float = 0.8
     dpi: int = 300
+    # 框選區域（全片 fullres px）；None = 全部細胞
+    region: Optional[dict] = None
+    polygon: Optional[list[list[float]]] = None
 
 
 # ── 路徑輔助 ────────────────────────────────────────────────────────────────
@@ -361,6 +375,18 @@ async def post_gene_plot(req: GenePlotRequest):
         if invalid:
             raise HTTPException(status_code=400, detail=f"基因不存在：{invalid}")
 
+        if req.region is not None or req.polygon is not None:
+            sel = _filter_by_region(adata, req.region, req.polygon, config, req.roi_name)
+            n_sel = int(sel.sum())
+            # 細胞太少時做出的圖只會誤導（單一細胞的表現不代表任何空間結構）
+            if n_sel < MIN_REGION_CELLS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"選取區域細胞數不足（{n_sel} < {MIN_REGION_CELLS}），請放大選取範圍",
+                )
+            logger.info(f"框選區域：{n_sel}/{adata.n_obs} 個細胞")
+            adata = adata[sel].copy()
+
         merge_mode = config.get("analysis", {}).get("merge_rois", False)
         is_merge = merge_mode and "roi" in adata.obs.columns
 
@@ -521,4 +547,65 @@ async def post_gene_plot(req: GenePlotRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"gene_plot 失敗：{e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/region_stats")
+async def post_region_stats(req: RegionRequest):
+    """
+    回報框選區域的細胞組成，讓使用者**先看組成再決定做圖**。
+
+    回傳 `n_cells`、`median_counts`、`median_genes`、`cluster_counts`
+    （取 `obs['leiden']`，無則 `obs['celltypist_label']`，皆無則空 dict）。
+    """
+    config = load_config()
+    try:
+        import numpy as np
+        import scanpy as sc
+        from scipy.sparse import issparse
+
+        adata = sc.read_h5ad(_get_roi_h5ad(config, req.roi_name))
+        sel = _filter_by_region(adata, req.region, req.polygon, config, req.roi_name)
+        n_cells = int(sel.sum())
+        if n_cells == 0:
+            return {
+                "status": "ok",
+                "data": {
+                    "n_cells": 0, "median_counts": 0.0, "median_genes": 0.0,
+                    "cluster_counts": {}, "roi_name": req.roi_name,
+                },
+            }
+
+        sub = adata[sel]
+        x = sub.X
+        counts = np.asarray(x.sum(axis=1)).ravel() if issparse(x) else np.asarray(x).sum(axis=1)
+        genes = (
+            np.asarray((x > 0).sum(axis=1)).ravel() if issparse(x)
+            else (np.asarray(x) > 0).sum(axis=1)
+        )
+
+        cluster_counts: dict[str, int] = {}
+        for col in ("leiden", "celltypist_label"):
+            if col in sub.obs.columns:
+                cluster_counts = {
+                    str(k): int(v) for k, v in sub.obs[col].value_counts().items() if int(v) > 0
+                }
+                break
+
+        return {
+            "status": "ok",
+            "data": {
+                "n_cells": n_cells,
+                "median_counts": float(np.median(counts)),
+                "median_genes": float(np.median(genes)),
+                "cluster_counts": cluster_counts,
+                "roi_name": req.roi_name,
+            },
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"region_stats 失敗：{e}")
         raise HTTPException(status_code=500, detail=str(e))
