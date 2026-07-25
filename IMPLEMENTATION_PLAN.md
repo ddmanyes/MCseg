@@ -462,46 +462,58 @@ B 即使損失右緣落在影像外的 bin，仍多命中 **13.4% bins / 17.5% �
 
 ## P3 — Registration 模組正式化（預估 2-3 天）
 
-- [ ] **P3-1 【紅燈】AffineAlignment 測試**
+- [x] **P3-1 【紅燈】AffineAlignment 測試**
   - 預期行為：`test_affine_identity_is_noop`、`test_affine_translation_applies`、`test_affine_roundtrip_dict`：單位矩陣不動座標；平移矩陣正確位移；`to_dict`→`from_dict` 還原一致。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_11_registration.py -q` → FAILED
   - commit：`test(registration): AffineAlignment 紅燈測試`
 
-- [ ] **P3-2 【綠燈】AffineAlignment dataclass**
+- [x] **P3-2 【綠燈】AffineAlignment dataclass**
   - 預期行為：`matrix: list[list[float]]`（2×3）、`source: str`、`target: str`、`estimated_error: float | None`。方法 `apply(coords_xy: np.ndarray) -> np.ndarray`、`to_dict()`、`from_dict()`、`identity()`。
   - 驗證：同上 → PASSED
   - 檔案：`backend/src/registration/align.py`
   - commit：`feat(registration): AffineAlignment 資料結構`
 
-- [ ] **P3-3 pipeline.yaml 新增 alignment 區塊**
+- [x] **P3-3 pipeline.yaml 新增 alignment 區塊**
   - 預期行為：`alignment: {enabled: false, matrix: [[1,0,0],[0,1,0]], source: spaceranger_fullres, target: raw_btf, estimated_error: null}`。`enabled: false` 時全流程行為與現在**完全一致**（零回歸風險）。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_01_infra.py -q`
   - 檔案：`config/pipeline.yaml`
   - commit：`feat(config): 新增 alignment 設定區塊`
 
-- [ ] **P3-4 bin_attribution 套用變換**
+- [x] **P3-4 bin_attribution 套用變換**
   - 預期行為：`bin_attribution` 新增 `alignment: AffineAlignment | None = None` 參數；非 None 且 enabled 時，先對 `(col, row)` 套 affine 再減裁切原點。預設 None → 行為不變。
   - 驗證：`test_bin_attribution_with_translation_shifts_assignment`（平移 5 px 後 cell_id 改變符合預期）
   - 檔案：`backend/src/fullslide/pipeline.py`
   - commit：`feat(registration): bin attribution 套用 affine 變換`
 
-- [ ] **P3-5 仿射估計（含旋轉縮放）**
+- [x] **P3-5 仿射估計（含旋轉縮放）**
   - 預期行為：`estimate_affine(ref, mov) -> AffineAlignment`：先 `estimate_shift` 取平移初值，再以 `skimage.transform.estimate_transform('affine', src, dst)` 對多個分塊（4×4 grid，每塊各自 phase correlation）的對應點擬合；離群塊（誤差 > 3×median）剔除後重擬。
   - 驗證：`test_estimate_affine_recovers_rotation`（合成 2° 旋轉，斷言回推矩陣誤差 < 1%）
   - 檔案：`backend/src/registration/align.py`
   - commit：`feat(registration): 仿射變換估計（平移+旋轉+縮放）`
 
-- [ ] **P3-6 API：估計→寫入設定**
+- [x] **P3-6 API：估計→寫入設定**
   - 預期行為：`POST /api/registration/apply` 執行 `estimate_affine`，把結果寫入 `state.json` 的 `alignment`（`save_state`），並回傳矩陣與 residual 供前端顯示。**不自動啟用**——回傳後由使用者按「套用」才設 `enabled: true`（避免壞估計靜默污染資料）。
   - 驗證：`test_registration_apply_writes_state`
   - 檔案：`backend/src/api/registration.py`
   - commit：`feat(api): 配準結果寫入 state`
 
-- [ ] **P3-7 前端：對位面板**
+- [x] **P3-7 前端：對位面板**
   - 預期行為：Stage 0 或 Stage 2 加「對位檢查」面板：顯示 QC 疊圖、估計出的 dy/dx/residual、「套用此變換」按鈕（含二次確認）。
   - 驗證：`cd frontend && npm run build`
   - 檔案：`frontend/src/pages/Stage0_ROI.tsx`、`frontend/src/i18n/translations.ts`、`frontend/src/api/client.ts`
   - commit：`feat(ui): 對位檢查與套用面板`
+
+---
+
+### P3 完成紀錄（2026-07-25）
+
+**7 項全部完成**。與計畫的偏離：
+
+1. **P3-1/P3-2 縮減為「補測試」**：`AffineAlignment` 已於 P1-5c 落地（見 P1 紀錄）。
+2. **`alignment` 設定併入 P0.5 已建立的區塊**，多了 `enabled` / `matrix` / `source` / `target` / `estimated_error` 五個鍵；`enabled: false` 時 `resolve_bin_to_image_transform` 完全不碰 transform（測試 `test_disabled_by_default` 釘死零回歸）。
+3. **修正疊加在主變換之後而非之前**。計畫寫「先對 (col, row) 套 affine 再減裁切原點」，但 P0.5 之後主變換（homography）才是把 bin 帶進影像空間的那一步 —— 殘餘修正必須在**影像 px 空間**作用，否則會被主變換的 scale ≈ 2 放大一倍。實作為 `residual.to_3x3() @ base`，並把 `scale` 歸一避免重複套用。
+4. **`estimate_shift` 新增 `window` 參數（Hann 窗）**，`estimate_affine` 一律開啟。這是實作時才發現的必要條件：64×64 區塊在無窗時 16 塊有 12 塊回報 0 位移（正確值 (−4, +6)）—— 區塊邊緣的內容不連續會在零位移處製造假峰。加窗後只剩 3 塊失敗，由離群剔除處理。**不加窗的話 P3-5 的旋轉估計會低估 3 倍**（2° → 0.65°）。
+5. **`/apply` 的估計在 1/ds 縮圖上做，回傳前把平移項乘回 fullres px**（線性部分與尺度無關）。計畫未提及此換算；漏掉會讓修正小 32 倍。
 
 ---
 
