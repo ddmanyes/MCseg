@@ -34,7 +34,8 @@
 | P0 | 全圖分割接上 pipeline | UI 按鈕存在但輸出是死路，Stage 2 讀不到 | 全圖遮罩可直接產出 `cells.h5ad`，UI 可傳裁切座標 |
 | P1 | 對位問題可視化 | 只有「>30% bins 超出範圍」的粗警告 | QC 疊圖 + 次像素位移估計數值 |
 | P2 | 區域選取做圖分析 | 區域選取只存在於 Stage 0（分割前） | 全圖遮罩上可無限次框選區域做圖，不需重跑分割 |
-| P3 | Registration 模組 | 無，attribution 假設座標系相同 | `alignment:` 設定 + affine 變換，可版控可重現 |
+| **P0.5** | **對位 JSON 支援** | **不讀 Loupe/CytAssist JSON，只用近似縮放** | **組合 homography 精確對位（實測多命中 13.4% bins）** |
+| P3 | Registration 模組 | 無，attribution 假設座標系相同 | 殘餘位移估計（**降為驗證用**，主對位交給 P0.5） |
 | P4 | NDPI 讀取 | 零支援，strip 解析邏輯綁死 BigTIFF | `SlideReader` 抽象層，支援 .ndpi/.svs/.mrxs |
 | P5 | 串流 tiled 分割 | 整圖進 RAM，>6 GB 直接拒絕 | tile 串流 + memmap label map，不受 RAM 限制 |
 
@@ -202,6 +203,109 @@ MSseg/
 3. **多做了 `resolve_full_count_inputs`**：計畫的 P0-13 把輸入解析寫在端點內；實作時抽成 `fullslide.pipeline` 的純函式，才能在不啟動背景任務的情況下測錯誤路徑（4 項測試）。錯誤訊息一律不含絕對路徑。
 
 sidecar 缺失的處理也在實作時定案為 **warning 而非 error**（原點退為 `(0,0)`），因為舊遮罩沒有 sidecar，而全圖模式的原點本來就是 `(0,0)`。
+
+### P0 完成後補修：座標系縮放與等距擴張（commit `21fc26c`）
+
+P0 收尾後查 EP 既有全片紀錄（`f981cda1`，dpcp01_vh_v114_02_hd_r004），發現 P0 交付的 `bin_attribution` 有**三個會靜默出錯**的缺陷，已修並用 EP 結果驗證：
+
+1. **缺 SR fullres → 遮罩(TIFF) px 的縮放**。Space Ranger 的 fullres 校準到餵給它的影像，未必等於分割用的 raw TIFF。dpcp01：SR 0.5464 µm/px vs TIFF ~0.2737 → 差近 2 倍，原本每個 bin 都落在約一半位置。CRC 官方樣本因 mpp 恰為 0.2737（scale=1）巧合正確，所以一直沒被發現 —— **這就是「有時候需要 Space Ranger 重定位」的成因**。
+2. **越界 bin 被 `.clip(0, h-1)` 夾到邊緣**，把界外 RNA 誤記到邊界細胞且不留痕跡 → 改為排除 + 越界 >30% 時警告。
+3. **全圖路徑漏了 `expand_labels`**（ROI 路徑 `counter.py` 有）→ 兩者不可比，改為共用 `rna_counting.dilation_px`。
+
+驗證鏈（EP 基準 1,545,019 bins / 35.3%）：
+
+| 設定 | bins | 細胞 |
+|------|------|------|
+| `scale=1` 無擴張（修正前） | 746,020 (17.0%) | 9,653 |
+| ＋自動推導 scale | 914,338 (20.9%) | 43,066 |
+| EP 自己的 `vfr_CORRECTED` 遮罩 ＋ `scale=1` | 914,909 (20.9%) | 43,068 |
+| ＋`dilation 6px` | **1,545,019 (35.3%)** | 43,212 |
+
+中間兩列為**兩條獨立路徑交叉驗證**（差 2 個細胞為捨入）。注意 EP 摘要的「86,314 cells」是遮罩總分割細胞數（max label），非拿到 RNA 的細胞數。
+
+---
+
+## P0.5 — Loupe / CytAssist 對位 JSON 支援（預估 半天，**優先於 P1**）
+
+> **本節取代 P3-3 / P3-4 的設計。** 那兩項假設「預設單位矩陣 + 估小位移」，實測不成立。
+
+### 為何必須做（附量測證據）
+
+使用者實際工作流程：**outs 內的高解析圖不夠清晰 → 另外輸出更高解析的圖 → 用 Loupe Browser 重新對位產生 JSON**。要讓 RNA 貼合那張新圖，必須讀該 JSON。
+
+⚠️ **同時修正上面那條「自動推導 scale」的評價**：`resolve_bin_to_mask_scale`（hires 尺寸 ÷ scalef）在 **SR 畫布相對影像有 padding 時幾何上是錯的** —— 它把 bin 橫向壓縮進影像寬度。EP 的 `vfr_CORRECTED` resample 用同一慣例，所以兩者逐位元吻合卻**一起偏離真實幾何**，因此 **EP 的 35.3% 也偏低，不該當天花板**。
+
+JSON 結構（`*_alignment_file.json` 與 `*-fiducials-image-registration.json` schema 相同），各帶兩個 3×3 homography：
+
+| 欄位 | 映射 | dpcp01 實測 |
+|------|------|------------|
+| `transform` | slide µm → CytAssist px | scale 0.2158（CytAssist mpp 4.635） |
+| `cytAssistInfo.transformImages` | 影像 px → CytAssist px | 0.1179（低解析）/ 0.0590（高解析），rot +90° 含鏡射 |
+
+**已驗證的推導式**：`mpp_image = scale(transformImages) / scale(transform)`
+dpcp01 無後綴 → 0.5465（scalefactors 記 0.5464 ✓）；`_0105` → 0.2732（＝ 47104×21504 高解析 TIFF）。
+**dpcp01 的 `spatial/` 已存在一組 old + new 實例**，該流程等於做過。
+
+正確變換：`高解析圖 px = inv(H_new) @ H_old @ (SR fullres px)`
+dpcp01 組合結果：**等向 scale 2.00001、rot −0.0001°、平移 (−0.90, −0.85) px**。
+
+量測比較（TIFF 空間遮罩，無 dilation）：
+
+| 變換來源 | bins | 細胞 |
+|---------|------|------|
+| hires 推導 `(1.9088, 2.0)`（已 ship） | 914,347 (20.88%) | 43,066 |
+| **JSON 組合 homography** | **1,036,566 (23.67%)** | **50,598** |
+
+B 即使損失右緣落在影像外的 bin，仍多命中 **13.4% bins / 17.5% 細胞**。
+
+`transformImages` 的 rot +90° 與鏡射由 Space Ranger 產生 `pxl_*_in_fullres` 時已套入，**不需再套**；但若有人拿方向不同的影像分割，scale-only 會靜默失敗，JSON 是唯一偵測依據。
+
+### 任務
+
+- [ ] **P0.5-1 【紅燈】load_alignment 測試**
+  - 預期行為：`test_11_registration.py::test_load_alignment_derives_mpp`：以合成 JSON（`transform` scale 0.2、`transformImages` scale 0.1）斷言 `mpp == 0.5`、且回傳 `serial_number` / `area`。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_11_registration.py -q` → FAILED
+  - commit：`test(registration): 對位 JSON 解析紅燈測試`
+
+- [ ] **P0.5-2 【綠燈】實作 load_alignment**
+  - 預期行為：`registration/alignment.py` 的 `load_alignment(path) -> Alignment`（dataclass：`transform` 3×3、`transform_images` 3×3、`mpp`、`serial_number`、`area`、`checksum`）。`mpp` 由上述推導式算出。損壞/缺鍵 raise `ValueError`（含檔名但不含完整路徑）。
+  - 驗證：同上 → PASSED
+  - 檔案：`backend/src/registration/alignment.py`
+  - commit：`feat(registration): 解析 Loupe/CytAssist 對位 JSON`
+
+- [ ] **P0.5-3 pick_source_alignment 自動選出 H_old**
+  - 預期行為：`pick_source_alignment(paths, target_mpp, tol=0.01) -> (source, others)`：推導 mpp 與 `scalefactors.microns_per_pixel` 相對誤差 < tol 者即為 `H_old`。**同時解掉兩個陷阱**：EP 踩過的「套用不屬於本樣本的註冊檔」，以及 dpcp01 的「同 serial 兩版本 scale 差正好 2 倍」。無命中則 raise 並列出各候選的 mpp。
+  - 驗證：`test_pick_source_alignment_matches_scalefactors_mpp`（兩份合成 JSON mpp 0.5465 / 0.2732，target 0.5464 → 選中前者）
+  - commit：`feat(registration): 依 scalefactors mpp 自動選出來源對位檔`
+
+- [ ] **P0.5-4 provenance 驗證**
+  - 預期行為：`validate_pair(h_old, h_new)`：`serial_number` 或 `area` 不一致時 raise（訊息含兩邊的值）。防止把別片玻片的對位檔套進來。
+  - 驗證：`test_validate_pair_rejects_serial_mismatch`
+  - commit：`feat(registration): 對位檔 provenance 驗證`
+
+- [ ] **P0.5-5 compose_bin_to_image**
+  - 預期行為：`compose_bin_to_image(h_old, h_new) -> np.ndarray`（3×3，正規化 `M[2,2]=1`）＝ `inv(h_new.transform_images) @ h_old.transform_images`。
+  - 驗證：`test_compose_recovers_isotropic_2x`：用 dpcp01 的真實兩份 JSON（`@pytest.mark.skipif` 檔案不存在時跳過），斷言 scale ≈ 2.0（±1e-3）、rot ≈ 0（±0.01°）
+  - commit：`feat(registration): 組合 homography 得 bin→影像 變換`
+
+- [ ] **P0.5-6 bin_attribution 改吃 3×3 homography**
+  - 預期行為：新增 `transform: np.ndarray | None = None` 參數。給定時以 homography 映射 bin 座標（齊次除法），否則沿用現有 `scale` 對角特例 —— **不破壞既有呼叫端**。`scale` 與 `transform` 同時給時 `transform` 優先並記 warning。
+  - 驗證：`test_bin_attribution_with_homography_equals_scale_for_diagonal`（對角 homography 結果須與 `scale` 路徑完全相同）
+  - 檔案：`backend/src/fullslide/pipeline.py`
+  - commit：`feat(fullslide): bin attribution 支援 3×3 homography`
+
+- [ ] **P0.5-7 涵蓋率回報**
+  - 預期行為：`bin_attribution` 回傳的 DataFrame 加 `.attrs["coverage"]`：`{n_total, n_in_bounds, n_assigned, frac_out_of_image}`。全圖計數完成訊息附「X% bins 落在影像範圍外」。
+  - **為何需要**：dpcp01 正確變換下，SR 右緣約 980 TIFF px 寬的 bin 確實在高解析圖之外（SR 畫布 11266×2 = 22532 > TIFF 寬 21504；高度 23552×2 = 47104 完全吻合）。這是真實限制而非 bug，**必須明確回報而非靠壓縮硬塞**。
+  - 驗證：`test_coverage_attrs_reports_out_of_image_fraction`
+  - commit：`feat(fullslide): 回報 bin 影像涵蓋率`
+
+- [ ] **P0.5-8 接進全圖計數流程並降級 fallback**
+  - 預期行為：`resolve_full_count_inputs` 掃 `binned_002/spatial/*.json` 與 `alignment.extra_alignment_json`（新設定，指向 Loupe 新產生的檔），能組出 homography 就用；否則回退 `resolve_bin_to_mask_scale` 並 **log 標明為近似值**。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/ -q` 全綠
+  - commit：`feat(count): 全圖計數優先採用對位 JSON`
+
+> **P3 影響**：P3-3/P3-4 的 `alignment.matrix` 改為「JSON 缺失時的人工覆寫」；P1 的殘餘位移估計從**主要對位手段降為驗證手段**（範圍縮小到「JSON 正確但仍有殘餘偏移」的情況）。
 
 ---
 
