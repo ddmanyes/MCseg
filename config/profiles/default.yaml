@@ -1,0 +1,30 @@
+# ============================================================
+# Tissue Profile: Default（未指定組織時的通用基底）
+# ============================================================
+# 合併順序：本 profile（基底）← pipeline.yaml（覆寫）← state.json（執行期覆寫）
+#
+# 這份 profile 的存在理由：CLI 的 `--tissue default` 過去對應
+# `cli/segment.py` 內一份硬編碼的 dict，與本目錄的 profile 各走一套而漂移
+# （實測 LUAD 有 4 個參數不一致）。參數集中於此後，CLI 與 Web UI 才真正
+# 共用同一組預設值（CLAUDE.md §15）。
+
+profile_name: Default
+description: "Generic H&E baseline — 未針對特定組織最佳化"
+
+# ── Stage 1: MCseg v2 覆寫值（通用中等直徑）────────────────
+segmentation:
+  mcseg_v2:
+    dia_small: 13.0           # px — 小核／淋巴細胞
+    dia_mid: 17.0             # px — 主要推論基底
+    dia_large: 22.0           # px — 較大型細胞
+    use_hematoxylin: true
+    voronoi_distance: 9       # px，約 2.5µm（VISIUM_UM_PX=0.2737）
+    flow_threshold: 0.4
+    cellprob_threshold: -2.0
+    min_size: 20              # px²
+    max_size: 6000            # px²
+    clahe_clip_limit: 3.0
+
+# ── Stage 2: RNA 計數 ──────────────────────────────────────────
+rna_counting:
+  dilation_px: 6              # 1.64 µm — 與 CRC/LUAD 一致

@@ -11,6 +11,7 @@ P0-4/P0-6 把 CLI 內部函式搬進 `fullslide/pipeline.py` 時沒有回歸網�
    且以**來源影像**尺寸推導變換（不是裁切後的遮罩尺寸）。
 """
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -202,6 +203,105 @@ class TestCliSmoke:
         ])
 
         assert seen == {"tile_size": 256, "overlap": 64}
+
+
+class TestCliTissuePresets:
+    """CLI 的組織參數必須與 Web UI 同源（`config/profiles/`）
+
+    CLI 原本硬編碼一份 `TISSUE_PRESETS`，與 profile 各走一套而**靜默漂移**：
+    CRC `voronoi_distance` 8 vs 9、LUAD 有 4 個參數不一致（且 voronoi 在兩個組織
+    是反方向差異）。後果是同一個 `crc` preset 在 CLI 與 UI 產出不同遮罩，
+    而 README 卻聲稱兩者「use exactly the same engine with consistent
+    parameter semantics」。
+    """
+
+    PARAM_KEYS = ("dia_small", "dia_mid", "dia_large", "voronoi_distance",
+                  "clahe_clip_limit", "flow_threshold", "cellprob_threshold",
+                  "min_size", "max_size", "use_hematoxylin")
+
+    def test_no_hardcoded_preset_dict_remains(self):
+        """CLI 不得再有硬編碼的參數表（CLAUDE.md §15）。"""
+        from backend.src.cli import segment as cli
+
+        assert not hasattr(cli, "TISSUE_PRESETS"), (
+            "硬編碼參數表已被 config/profiles/ 取代，重新引入會再次漂移"
+        )
+
+    @pytest.mark.parametrize("tissue", ["crc", "luad", "default"])
+    def test_preset_matches_profile_yaml(self, tissue):
+        """CLI 取到的每個參數都必須等於 profile YAML 的值。"""
+        import yaml
+
+        from backend.src.cli.segment import load_tissue_preset
+
+        raw = yaml.safe_load(
+            Path(f"config/profiles/{tissue}.yaml").read_text(encoding="utf-8")
+        )
+        expected = raw["segmentation"]["mcseg_v2"]
+        actual = load_tissue_preset(tissue)
+
+        for key in self.PARAM_KEYS:
+            assert actual.get(key) == expected.get(key), (
+                f"{tissue}.{key}：CLI 取到 {actual.get(key)!r}，"
+                f"profile 是 {expected.get(key)!r}"
+            )
+
+    def test_available_tissues_ignores_appledouble_files(self, tmp_path, monkeypatch):
+        """`._*` AppleDouble 檔不得變成一個幽靈組織選項（CLAUDE.md §4）。
+
+        實測過：在 ExFAT 上寫入 `default.yaml` 會連帶產生 `._default.yaml`，
+        使 `--tissue` 的 choices 多出 `._default`。
+        """
+        from backend.src.cli import segment as cli
+        from backend.src.utils import config as cfg_mod
+
+        (tmp_path / "crc.yaml").write_text("x: 1", encoding="utf-8")
+        (tmp_path / "._crc.yaml").write_bytes(b"\x00\x05\x16\x07")
+        monkeypatch.setattr(cfg_mod, "_PROFILES_DIR", tmp_path)
+
+        assert cli.available_tissues() == ["crc"]
+
+    def test_missing_mcseg_block_fails_loudly(self, tmp_path, monkeypatch):
+        """profile 缺 `segmentation.mcseg_v2` 時必須中止，不得靜默跑空參數。
+
+        空參數等同 cellpose 預設值 —— 使用者會拿到一份看似正常、參數卻完全
+        不對的遮罩，比直接失敗糟得多。
+        """
+        from backend.src.cli.segment import load_tissue_preset
+        from backend.src.utils import config as cfg_mod
+
+        (tmp_path / "broken.yaml").write_text("profile_name: X", encoding="utf-8")
+        monkeypatch.setattr(cfg_mod, "_PROFILES_DIR", tmp_path)
+
+        with pytest.raises(SystemExit, match="缺少 segmentation.mcseg_v2"):
+            load_tissue_preset("broken")
+
+    def test_cli_flags_still_override_profile(self, cli_sample, fake_cellpose, monkeypatch):
+        """`--voronoi-d` 等旗標仍須蓋過 profile —— 論文基準用 d=8 就靠這條路。"""
+        from backend.src.cli import segment as cli
+        from backend.src.segmentation import cellpose_runner
+
+        seen = {}
+        real = cellpose_runner.run_tiled_mcseg_v2
+
+        def spy(img=None, cfg=None, **kwargs):
+            seen.update(cfg or {})
+            return real(img, cfg, **kwargs)
+
+        monkeypatch.setattr(cellpose_runner, "run_tiled_mcseg_v2", spy)
+
+        cli.main([
+            "--btf", str(cli_sample["btf"]),
+            "--out", str(cli_sample["out"]),
+            "--tissue", "crc", "--voronoi-d", "8", "--dia-mid", "19",
+            "--no-gpu", "--skip-celltypist",
+            "--tile-size", "256", "--overlap", "64",
+        ])
+
+        assert seen["voronoi_distance"] == 8, "旗標未蓋過 profile 的 9"
+        assert seen["dia_mid"] == 19.0
+        # 未指定的參數仍應來自 profile
+        assert seen["clahe_clip_limit"] == 3.0
 
 
 class TestCliBinToImageTransform:

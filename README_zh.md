@@ -241,7 +241,10 @@ uv run python -m backend.src.cli.segment --help
 > CLI 支援**斷點續跑**：每個輸出檔若已存在則自動跳過該步驟，可隨時中斷後重新執行。
 
 > [!NOTE]
-> CLI 和 Web UI 使用**完全相同的 `cellpose_runner.py` 引擎**，參數語義一致。Web UI 做的任何 ROI 參數覆寫都可以直接翻譯成 `--dia-mid` / `--voronoi-d` 等 CLI 旗標。
+> CLI 和 Web UI 使用**完全相同的 `cellpose_runner.py` 引擎**，且組織預設值讀取
+> **同一份 `config/profiles/{tissue}.yaml`**，因此 `--tissue crc` 與 Web UI 的 CRC
+> profile 保證一致（由 `test_preset_matches_profile_yaml` 釘死）。Web UI 做的任何
+> ROI 參數覆寫都可以直接翻譯成 `--dia-mid` / `--voronoi-d` 等 CLI 旗標。
 
 ---
 
@@ -543,7 +546,8 @@ MCseg 輸出可直接載入的 Xenium Explorer 套件（`experiment.xenium` + za
    · cpsam @ 17 px，以蘇木精通道為輸入（1 輪，use_hematoxylin=true，預設啟用）
    · cpsam @ auto / 16 px / 蘇木精（最多 3 輪，use_cpsam=false，預設停用）
 3. 集成合併（IoU 重疊閾值 < 15%）
-4. Voronoi 邊界擴張（預設 d=9 px；論文基準測試使用 d=8 px）
+4. Voronoi 邊界擴張（CRC 預設 d=9 px、LUAD d=8 px，見 `config/profiles/`；
+   欲重現 CRC 論文基準請加 `--voronoi-d 8`）
 5. 品質過濾（20–6000 px²）
 ```
 

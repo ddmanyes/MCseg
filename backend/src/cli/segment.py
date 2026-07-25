@@ -44,41 +44,51 @@ logging.basicConfig(
 log = logging.getLogger("msseg.cli")
 
 # ─── Tissue presets ───────────────────────────────────────────────────────────
-TISSUE_PRESETS: dict[str, dict] = {
-    "crc": {
-        "dia_small": 13.0,
-        "dia_mid": 17.0,
-        "dia_large": 22.0,
-        "voronoi_distance": 8,
-        "clahe_clip_limit": 3.0,
-        "flow_threshold": 0.4,
-        "cellprob_threshold": -2.0,
-        "min_size": 20,
-        "max_size": 6000,
-    },
-    "luad": {
-        "dia_small": 10.0,
-        "dia_mid": 14.0,
-        "dia_large": 18.0,
-        "voronoi_distance": 9,
-        "clahe_clip_limit": 2.5,
-        "flow_threshold": 0.4,
-        "cellprob_threshold": -1.5,
-        "min_size": 20,
-        "max_size": 5000,
-    },
-    "default": {
-        "dia_small": 13.0,
-        "dia_mid": 17.0,
-        "dia_large": 22.0,
-        "voronoi_distance": 9,
-        "clahe_clip_limit": 3.0,
-        "flow_threshold": 0.4,
-        "cellprob_threshold": -2.0,
-        "min_size": 20,
-        "max_size": 6000,
-    },
-}
+# 參數一律取自 `config/profiles/{tissue}.yaml`（CLAUDE.md §15：禁止硬編碼）。
+#
+# 這裡曾有一份硬編碼的 `TISSUE_PRESETS`，與 profile 各走一套而**靜默漂移**：
+# 實測 CRC 的 `voronoi_distance` 差 1（8 vs 9）、LUAD 有 4 個參數不一致
+# （voronoi 9/8、clahe 2.5/2.02、flow 0.4/0.415、max_size 5000/4000），
+# 且 voronoi 在兩個組織是**反方向**差異 —— 看得出是某次複製貼上寫錯而非刻意調參。
+# 後果是 CLI 與 Web UI 對「同一個 crc preset」會產出不同遮罩，而 README 卻聲稱
+# 兩者「use exactly the same engine with consistent parameter semantics」。
+#
+# profile 的值才是有依據的那一組：LUAD 的 clahe 2.02 / flow 0.415 都標註為
+# 「xenium_he_seg 最佳參數」，CLI 那組整數是最佳化**之前**的預設值。
+
+
+def available_tissues() -> list[str]:
+    """
+    列出 `config/profiles/` 下可用的 tissue profile 名稱。
+
+    必須濾掉 macOS 在 ExFAT/外接磁碟產生的 `._*` AppleDouble 檔（CLAUDE.md §4）
+    —— 否則 `--tissue` 的選項會多出一個 `._default` 之類的幽靈組織。
+    """
+    from backend.src.utils.config import _PROFILES_DIR
+
+    return sorted(
+        p.stem for p in _PROFILES_DIR.glob("*.yaml")
+        if not p.name.startswith("._")
+    )
+
+
+def load_tissue_preset(tissue: str) -> dict:
+    """
+    從 `config/profiles/{tissue}.yaml` 取 `segmentation.mcseg_v2` 參數。
+
+    profile 缺少該區塊時視為設定錯誤而中止 —— 靜默跑一組空參數（等同 cellpose
+    預設值）比直接失敗更糟，使用者會拿到一份看似正常但參數完全不對的遮罩。
+    """
+    from backend.src.utils.config import _load_profile
+
+    profile = _load_profile(tissue)
+    preset = (profile.get("segmentation") or {}).get("mcseg_v2") or {}
+    if not preset:
+        raise SystemExit(
+            f"config/profiles/{tissue}.yaml 缺少 segmentation.mcseg_v2 區塊，"
+            f"無法取得分割參數。可用 profile：{', '.join(available_tissues())}"
+        )
+    return dict(preset)
 
 
 def _load_cli_config() -> dict:
@@ -392,8 +402,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── 分割參數
     seg = p.add_argument_group("分割參數")
-    seg.add_argument("--tissue",  choices=list(TISSUE_PRESETS), default="crc",
-                     help="組織類型 preset（crc / luad / default），預設 crc")
+    _tissues = available_tissues()
+    seg.add_argument("--tissue",  choices=_tissues, default="crc",
+                     help=f"組織類型 profile（{' / '.join(_tissues)}），預設 crc。"
+                          "參數取自 config/profiles/{tissue}.yaml")
     seg.add_argument("--cpsam",   action="store_true",
                      help="啟用 cpsam（7-pass，需更長時間）")
     seg.add_argument("--no-gpu",  action="store_true",
@@ -447,12 +459,14 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     log.info(f"MSseg CLI — 輸出目錄: {out_dir}")
 
-    # ── 建立分割設定
-    cfg = dict(TISSUE_PRESETS[args.tissue])
+    # ── 建立分割設定（基底來自 config/profiles/{tissue}.yaml）
+    cfg = load_tissue_preset(args.tissue)
     cfg["use_gpu"]              = not args.no_gpu
     cfg["batch_size"]           = args.batch_size
     cfg["use_cpsam"]            = args.cpsam
-    cfg["use_hematoxylin"]      = True
+    # use_hematoxylin 由 profile 決定（缺少時才預設啟用）—— 原本在此硬編碼 True，
+    # 會讓刻意關閉它的 profile 被安靜忽略
+    cfg.setdefault("use_hematoxylin", True)
     cfg["use_transcript_rescue"] = False
     if args.dia_small  is not None: cfg["dia_small"]           = args.dia_small
     if args.dia_mid    is not None: cfg["dia_mid"]             = args.dia_mid
