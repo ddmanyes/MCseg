@@ -17,6 +17,21 @@ DPCP01_OLD = DPCP01_SPATIAL / "H1-WGR3TC4-D1-fiducials-image-registration.json"
 DPCP01_NEW = DPCP01_SPATIAL / "H1-WGR3TC4-D1-fiducials-image-registration_0105.json"
 
 
+def _write_tissue_positions(path, rows_cols, in_tissue=None):
+    """寫出 tissue_positions.parquet；rows_cols 為 [(row, col), ...]。"""
+    import pandas as pd
+
+    n = len(rows_cols)
+    df = pd.DataFrame({
+        "barcode": [f"BC{i}" for i in range(n)],
+        "in_tissue": [1] * n if in_tissue is None else in_tissue,
+        "pxl_row_in_fullres": [rc[0] for rc in rows_cols],
+        "pxl_col_in_fullres": [rc[1] for rc in rows_cols],
+    })
+    df.to_parquet(str(path), index=False)
+    return path
+
+
 # ── 合成對位 JSON ────────────────────────────────────────────────────────────
 
 def _write_alignment_json(
@@ -213,3 +228,45 @@ class TestComposeBinToImage:
         assert abs(rot_deg) < 0.01
         # 平移應為個位數 px（實測 ≈ (−0.90, −0.85)）
         assert abs(m[0, 2]) < 5 and abs(m[1, 2]) < 5
+
+
+# ── bin 密度光柵化 ───────────────────────────────────────────────────────────
+
+class TestRenderBinDensity:
+    """把 bin 質心累加成低解析密度圖，作為相位相關的移動影像"""
+
+    def test_render_bin_density_shape_and_mass(self, tmp_path):
+        """只保留 in_tissue==1；總質量須等於有效 bin 數。"""
+        from backend.src.registration.align import render_bin_density
+
+        tp = _write_tissue_positions(
+            tmp_path / "tp.parquet",
+            [(0, 0), (10, 20), (30, 40), (50, 60)],
+            in_tissue=[1, 1, 1, 0],
+        )
+
+        dens = render_bin_density(tp, full_shape=(64, 64), downsample=8)
+
+        assert dens.shape == (8, 8)
+        assert dens.sum() == pytest.approx(3.0)
+
+    def test_render_bin_density_accumulates_same_cell(self, tmp_path):
+        """落在同一個 downsample 格的 bin 須累加，而非覆寫。"""
+        from backend.src.registration.align import render_bin_density
+
+        tp = _write_tissue_positions(
+            tmp_path / "tp.parquet", [(1, 1), (2, 2), (3, 3)]
+        )
+        dens = render_bin_density(tp, full_shape=(64, 64), downsample=8)
+
+        assert dens[0, 0] == pytest.approx(3.0)
+        assert dens.sum() == pytest.approx(3.0)
+
+    def test_render_bin_density_drops_out_of_range(self, tmp_path):
+        """超出 full_shape 的 bin 須丟棄，不可 wrap 或夾邊。"""
+        from backend.src.registration.align import render_bin_density
+
+        tp = _write_tissue_positions(tmp_path / "tp.parquet", [(5, 5), (999, 999)])
+        dens = render_bin_density(tp, full_shape=(64, 64), downsample=8)
+
+        assert dens.sum() == pytest.approx(1.0)
