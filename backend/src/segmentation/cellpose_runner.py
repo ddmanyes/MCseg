@@ -189,6 +189,166 @@ def relabel_sequential(mask: np.ndarray) -> np.ndarray:
 
 
 # ─────────────────────────────────────────────────────────
+# 分塊處理工具（全片規模：遮罩可能落在 memmap，不可整份進 RAM）
+# ─────────────────────────────────────────────────────────
+
+DEFAULT_BLOCK = 4096
+# margin 必須 ≥ voronoi_distance；256 是其最大合理值（9）的 28 倍，留足餘裕
+DEFAULT_MARGIN = 256
+
+
+def iter_blocks(h: int, w: int, block: int = DEFAULT_BLOCK):
+    """逐塊產生 `(y0, x0, y1, x1)`。"""
+    for y0 in range(0, h, block):
+        for x0 in range(0, w, block):
+            yield y0, x0, min(y0 + block, h), min(x0 + block, w)
+
+
+def global_label_sizes(labels, block: int = DEFAULT_BLOCK) -> np.ndarray:
+    """
+    逐塊累加各 label 的像素數，回傳 `counts[label]`。
+
+    跨塊的細胞會被正確加總 —— 這是分塊處理仍能做**全域**面積過濾的前提。
+    """
+    h, w = labels.shape
+    counts = np.zeros(1, dtype=np.int64)
+    for y0, x0, y1, x1 in iter_blocks(h, w, block):
+        c = np.bincount(np.asarray(labels[y0:y1, x0:x1]).ravel())
+        if len(c) > len(counts):
+            grown = np.zeros(len(c), dtype=np.int64)
+            grown[: len(counts)] = counts
+            counts = grown
+        counts[: len(c)] += c
+    return counts
+
+
+def apply_lut_blocked(labels, lut: np.ndarray, block: int = DEFAULT_BLOCK) -> None:
+    """就地套用 label → label 的查表（分塊，適用 memmap）。"""
+    h, w = labels.shape
+    for y0, x0, y1, x1 in iter_blocks(h, w, block):
+        labels[y0:y1, x0:x1] = lut[np.asarray(labels[y0:y1, x0:x1])]
+
+
+def clean_and_relabel_blocked(
+    labels, min_size: int, max_size: int, block: int = DEFAULT_BLOCK
+) -> int:
+    """
+    分塊版的「面積過濾 ＋ 連續重新編號」，回傳保留的細胞數。
+
+    等價於 `clean_mask` ＋ `relabel_sequential`，但面積統計是**全域**的
+    （見 `global_label_sizes`），因此跨塊細胞不會被誤判為過小。
+    """
+    sizes = global_label_sizes(labels, block)
+    keep = (sizes >= min_size) & (sizes <= max_size)
+    keep[0] = False                       # 背景
+    n_keep = int(keep.sum())
+
+    lut = np.zeros(len(sizes), dtype=np.int32)
+    lut[keep] = np.arange(1, n_keep + 1, dtype=np.int32)
+    apply_lut_blocked(labels, lut, block)
+    return n_keep
+
+
+def blocked_voronoi(
+    labels,
+    out,
+    max_distance: int,
+    tissue_fn=None,
+    block: int = DEFAULT_BLOCK,
+    margin: int = DEFAULT_MARGIN,
+) -> None:
+    """
+    分塊 Voronoi 擴張：`labels` → `out`，避免一次建立全圖距離場。
+
+    **為何是精確的**：`voronoi_expand` 只會把距離 ≤ `max_distance` 的背景像素
+    指派出去，因此任一像素的結果只取決於半徑 `max_distance` 內的內容。只要
+    `margin ≥ max_distance`，帶 margin 的塊內結果與全圖計算**完全一致**，
+    跨塊細胞不會產生接縫。
+
+    **必須寫到另一個陣列**：若原地覆寫，後續塊讀到的 margin 會是已擴張的值，
+    等於把擴張結果再擴張一次。
+
+    Parameters
+    ----------
+    tissue_fn : Callable[[int, int, int, int], np.ndarray] | None
+        `(y0, x0, y1, x1) -> bool 陣列`，回傳該區域的組織遮罩。全片模式下
+        組織遮罩不整份保存（21504×47104 bool ≈ 1 GB），改為按需重算。
+    """
+    if margin < max_distance:
+        raise ValueError(f"margin ({margin}) 必須 ≥ voronoi 距離 ({max_distance})")
+
+    h, w = labels.shape
+    for y0, x0, y1, x1 in iter_blocks(h, w, block):
+        ey0, ex0 = max(0, y0 - margin), max(0, x0 - margin)
+        ey1, ex1 = min(h, y1 + margin), min(w, x1 + margin)
+
+        sub = np.asarray(labels[ey0:ey1, ex0:ex1])
+        tissue = tissue_fn(ey0, ex0, ey1, ex1) if tissue_fn is not None else None
+        expanded = voronoi_expand(sub, max_distance=max_distance, tissue_mask=tissue)
+
+        out[y0:y1, x0:x1] = expanded[y0 - ey0:y1 - ey0, x0 - ex0:x1 - ex0]
+
+
+FULL_SEG_PROGRESS_FILENAME = "full_seg_progress.json"
+
+
+def _save_seg_progress(path: Path, cfg_hash: str, done, current_max: int) -> None:
+    """記錄已完成的 tile 與目前最大 label ID（供中斷續跑）。"""
+    import json
+
+    payload = {
+        "config_hash": cfg_hash,
+        "done_tiles": sorted([int(a), int(b)] for a, b in done),
+        "current_max": int(current_max),
+    }
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    tmp.replace(path)          # 原子替換：避免寫到一半被中斷而讀到半份進度
+
+
+def _load_seg_progress(path: Path, cfg_hash: str) -> dict | None:
+    """
+    讀取續跑進度；**config hash 不符即視為無效**。
+
+    參數改過就必須重跑 —— 否則會把兩組參數的 tile 拼在一起，產出一份看起來
+    正常但實際錯誤的遮罩。
+    """
+    import json
+
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        logger.warning(f"續跑進度檔損壞，改為重新開始：{e}")
+        return None
+
+    if data.get("config_hash") != cfg_hash:
+        logger.info(
+            f"分割參數已變更（{data.get('config_hash')} → {cfg_hash}），忽略舊進度重新開始"
+        )
+        return None
+    return {
+        "done_tiles": data.get("done_tiles", []),
+        "current_max": int(data.get("current_max", 0)),
+    }
+
+
+def config_hash(cfg: dict, *extra) -> str:
+    """
+    分割設定的短雜湊，用於命名續跑用的暫存檔。
+
+    參數不同的兩次執行必須拿到不同的 hash —— 否則中斷後重跑會把兩組參數的
+    結果拼在一起，產出一份**看起來正常但實際錯誤**的遮罩。
+    """
+    import hashlib
+    import json
+
+    payload = json.dumps([cfg, *extra], sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+# ─────────────────────────────────────────────────────────
 # 轉錄本密度補救（可選）
 # ─────────────────────────────────────────────────────────
 
@@ -633,18 +793,22 @@ def _run_single_roi(he_crop_path: Path, _roi_name: str,
 # ─────────────────────────────────────────────────────────
 
 def run_tiled_mcseg_v2(
-    img: np.ndarray,
-    cfg: dict,
+    img: np.ndarray | None = None,
+    cfg: dict | None = None,
     tile_size: int = 1024,
     overlap: int = 128,
     progress_callback=None,
+    tile_reader=None,
+    full_shape: tuple[int, int] | None = None,
+    work_dir: str | Path | None = None,
+    resume: bool = True,
 ) -> np.ndarray:
     """
-    全圖 tiled MCseg v2 分割。
+    全圖 tiled MCseg v2 分割（支援串流讀取、memmap 落地、中斷續跑）。
 
     兩階段設計（避免 Voronoi 在 tile 邊界產生接縫）：
-      Phase 1（per-tile）：Cellpose 多直徑推論 + merge_masks_fast
-      Phase 2（全圖）：拼接 → Voronoi 擴張 → clean_mask
+      Phase 1（per-tile）：讀圖 → CLAHE → Cellpose 多直徑推論 → merge_masks_fast
+      Phase 2（分塊）：全域面積過濾 → 重新編號 → 分塊 Voronoi 擴張
 
     MPS 安全設定：
       - tile_size=1024（預設），比 2048 佔用更少 GPU 記憶體
@@ -653,18 +817,47 @@ def run_tiled_mcseg_v2(
       - 捕捉 MPS RuntimeError 後自動 fallback 到 CPU
 
     Args:
-        img:               (H, W, 3) uint8 RGB H&E 影像（全圖或大 ROI）
+        img:               (H, W, 3) uint8 RGB 影像。與 `tile_reader` 二擇一。
         cfg:               mcseg_v2 設定 dict
         tile_size:         每塊大小（px），MPS 安全建議 1024
         overlap:           相鄰塊重疊寬度（px）
         progress_callback: fn(progress: float, message: str)
+        tile_reader:       `fn(x, y, w, h) -> (h, w, 3) uint8`，串流讀取單塊影像。
+                           給定時**整張影像不進 RAM**，全片（>6 GB）才跑得動。
+        full_shape:        `(H, W)`；使用 `tile_reader` 時必填。
+        work_dir:          給定時，標籤圖落在 `tmp_labels_{hash}.npy` memmap
+                           （21504×47104 int32 ≈ 4 GB 走磁碟而非 RAM），
+                           並啟用中斷續跑。
+        resume:            `work_dir` 存在且 config hash 相符時跳過已完成的 tile。
 
     Returns:
         int32 細胞分割遮罩 (H, W)
+
+    Notes:
+        影像預處理（CLAHE、組織遮罩、Hematoxylin）改為 **per-tile（含 overlap）**，
+        兩條路徑（ndarray / tile_reader）走同一份程式碼，結果逐位元一致。
+        這同時讓全圖路徑與 ROI 路徑更可比 —— ROI 的 CLAHE 本來就是在一小塊
+        影像上做的，而舊版全圖 CLAHE 的 8×8 網格落在整張片子上，等於近乎全域
+        等化，與 ROI 結果不可直接比較。
     """
     from cellpose import core, models
 
     t0 = time.time()
+    cfg = cfg or {}
+
+    # ── 輸入來源：ndarray 或串流 reader ──────────────────────
+    if (img is None) == (tile_reader is None):
+        raise ValueError("`img` 與 `tile_reader` 必須且只能提供其中一個")
+
+    if tile_reader is None:
+        H, W = img.shape[:2]
+
+        def tile_reader(x, y, w, h, _img=img):     # noqa: ARG001 - 統一介面
+            return _img[y:y + h, x:x + w]
+    else:
+        if full_shape is None:
+            raise ValueError("使用 `tile_reader` 時必須提供 `full_shape`")
+        H, W = int(full_shape[0]), int(full_shape[1])
 
     # ── 參數 ────────────────────────────────────────────────
     use_gpu         = bool(cfg.get("use_gpu", True)) and core.use_gpu()
@@ -687,7 +880,6 @@ def run_tiled_mcseg_v2(
     cellprob_cpsam_small = float(cfg.get("cellprob_cpsam_small", -3.0))
     cellprob_cpsam_hema  = float(cfg.get("cellprob_cpsam_hema",  -1.0))
 
-    H, W = img.shape[:2]
     y_starts = list(range(0, H, tile_size))
     x_starts = list(range(0, W, tile_size))
     total_tiles = len(y_starts) * len(x_starts)
@@ -695,19 +887,39 @@ def run_tiled_mcseg_v2(
     logger.info(
         f"[Tiled MCseg v2] 全圖 {W}×{H}px  "
         f"tile={tile_size}px overlap={overlap}px  "
-        f"tiles={total_tiles}  gpu={use_gpu}"
+        f"tiles={total_tiles}  gpu={use_gpu}  "
+        f"{'串流' if img is None else 'in-memory'}"
     )
 
-    # ── 預處理（全圖一次性，節省重複計算）────────────────────
-    enhanced     = apply_clahe(img, clip_limit=clahe_clip, tile_size=8)
-    tissue_mask  = create_tissue_mask(img)
-    hema_full: np.ndarray | None = None
-    if use_hematoxylin:
-        hema_full = color_deconvolution_he(img)
+    # ── 標籤圖：memmap 落地（可續跑）或 RAM ──────────────────
+    cfg_hash = config_hash(cfg, H, W, tile_size, overlap)
+    labels_path: Path | None = None
+    state = {"done_tiles": [], "current_max": 0}
 
-    # ── Phase 1：per-tile Cellpose ────────────────────────
-    stitched = np.zeros((H, W), dtype=np.int32)
-    current_max = 0
+    if work_dir is not None:
+        work_dir = Path(work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        labels_path = work_dir / f"tmp_labels_{cfg_hash}.npy"
+        progress_path = work_dir / FULL_SEG_PROGRESS_FILENAME
+        loaded = _load_seg_progress(progress_path, cfg_hash) if resume else None
+
+        if loaded is not None and labels_path.exists():
+            state = loaded
+            stitched = np.lib.format.open_memmap(str(labels_path), mode="r+")
+            logger.info(
+                f"  續跑：已完成 {len(state['done_tiles'])}/{total_tiles} 個 tile"
+                f"（config hash {cfg_hash}）"
+            )
+        else:
+            stitched = np.lib.format.open_memmap(
+                str(labels_path), mode="w+", dtype=np.int32, shape=(H, W)
+            )
+    else:
+        progress_path = None
+        stitched = np.zeros((H, W), dtype=np.int32)
+
+    done = {tuple(t) for t in state["done_tiles"]}
+    current_max = int(state["current_max"])
 
     logger.info(f"  載入 cyto3 模型 (gpu={use_gpu})")
     cyto3 = models.CellposeModel(model_type="cyto3", gpu=use_gpu)
@@ -732,22 +944,31 @@ def run_tiled_mcseg_v2(
         resample=True,
     )
 
+    # ── Phase 1：per-tile 讀圖 → 前處理 → Cellpose ──────────
     for ti, y in enumerate(y_starts):
         y0e = y - overlap if y > 0 else 0
         y1e = min(y + tile_size + overlap, H)
 
         for tj, x in enumerate(x_starts):
             tile_idx = ti * len(x_starts) + tj + 1
+            if (ti, tj) in done:
+                logger.info(f"  [SKIP] Tile {tile_idx}/{total_tiles} ({x},{y}) 已完成")
+                continue
+
             x0e = x - overlap if x > 0 else 0
             x1e = min(x + tile_size + overlap, W)
-
-            enh_tile  = enhanced[y0e:y1e, x0e:x1e]
-            hema_tile = hema_full[y0e:y1e, x0e:x1e] if hema_full is not None else None
 
             msg = f"Tile {tile_idx}/{total_tiles} ({x},{y})"
             if progress_callback:
                 progress_callback(tile_idx / total_tiles * 0.85, msg)
             logger.info(f"  [{time.time()-t0:.0f}s] {msg}")
+
+            raw_tile = np.ascontiguousarray(
+                tile_reader(x0e, y0e, x1e - x0e, y1e - y0e)
+            )
+            enh_tile = apply_clahe(raw_tile, clip_limit=clahe_clip, tile_size=8)
+            tissue_tile = create_tissue_mask(raw_tile)
+            hema_tile = color_deconvolution_he(raw_tile) if use_hematoxylin else None
 
             # per-tile 多直徑推論 + merge（不做 Voronoi）
             tile_results: dict[str, np.ndarray] = {}
@@ -819,6 +1040,9 @@ def run_tiled_mcseg_v2(
                     m = cv2.resize(m, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
                 base, _ = merge_masks_fast(base, m)
 
+            # 組織遮罩就地套用：全片模式下不保留整份 tissue mask（bool 全圖 ≈ 1 GB）
+            if tissue_tile.shape == base.shape:
+                base[~tissue_tile] = 0
 
             # 裁掉 overlap，只保留有效區域
             act_top   = y - y0e
@@ -837,13 +1061,13 @@ def run_tiled_mcseg_v2(
             # 邊界 ID 對齊（上方 + 左方）
             mappings: dict[int, int] = {}
             if y > 0:
-                prev_row = stitched[y - 1, x:x + valid.shape[1]]
+                prev_row = np.asarray(stitched[y - 1, x:x + valid.shape[1]])
                 curr_row = valid[0, :len(prev_row)]
                 mm = (prev_row > 0) & (curr_row > 0)
                 for p, c in zip(prev_row[mm], curr_row[mm]):
                     mappings.setdefault(int(c), int(p))
             if x > 0:
-                prev_col = stitched[y:y + valid.shape[0], x - 1]
+                prev_col = np.asarray(stitched[y:y + valid.shape[0], x - 1])
                 curr_col = valid[:len(prev_col), 0]
                 mm = (prev_col > 0) & (curr_col > 0)
                 for p, c in zip(prev_col[mm], curr_col[mm]):
@@ -860,33 +1084,66 @@ def run_tiled_mcseg_v2(
             # 新增細胞 = ID 超過上一塊 max 者（邊界合併的細胞已被重映射到舊 ID）
             n_new_tile = int(np.unique(valid[valid > prev_max]).size)
             logger.info(f"    cells in tile (new): {n_new_tile}  total: {current_max}")
+            done.add((ti, tj))
+
+        # 每完成一列就存檔：中斷後可自此列續跑
+        if progress_path is not None:
+            if hasattr(stitched, "flush"):
+                stitched.flush()
+            _save_seg_progress(progress_path, cfg_hash, done, current_max)
 
     del cyto3
     if cpsam is not None:
         del cpsam
-    del enhanced
-    if hema_full is not None:
-        del hema_full
     gc.collect()
     _clear_gpu_cache()
 
-    # ── Phase 2：全圖 Voronoi + 清理 ─────────────────────
+    # ── Phase 2：分塊清理 + Voronoi ──────────────────────────
     if progress_callback:
-        progress_callback(0.90, "Voronoi 擴張（全圖）...")
-    logger.info(f"  [{time.time()-t0:.0f}s] Phase 2：清理 + Voronoi 擴張")
+        progress_callback(0.90, "Voronoi 擴張（分塊）...")
+    logger.info(f"  [{time.time()-t0:.0f}s] Phase 2：清理 + Voronoi 擴張（分塊）")
 
-    stitched[~tissue_mask] = 0
-    stitched = clean_mask(stitched, min_size=min_size, max_size=max_size)
-    stitched = relabel_sequential(stitched)
-    logger.info(f"  擴張前：{stitched.max()} cells")
+    n_before = clean_and_relabel_blocked(stitched, min_size, max_size)
+    logger.info(f"  擴張前：{n_before} cells")
 
-    final = voronoi_expand(stitched, max_distance=voronoi_dist, tissue_mask=tissue_mask)
-    final = clean_mask(final, min_size=min_size, max_size=max_size)
-    n_final = int(len(np.unique(final)) - 1)
+    def _tissue_fn(by0, bx0, by1, bx1):
+        return create_tissue_mask(
+            np.ascontiguousarray(tile_reader(bx0, by0, bx1 - bx0, by1 - by0))
+        )
+
+    if labels_path is not None:
+        expanded_path = labels_path.with_name(f"tmp_expanded_{cfg_hash}.npy")
+        final = np.lib.format.open_memmap(
+            str(expanded_path), mode="w+", dtype=np.int32, shape=(H, W)
+        )
+    else:
+        expanded_path = None
+        final = np.zeros((H, W), dtype=np.int32)
+
+    blocked_voronoi(stitched, final, max_distance=voronoi_dist, tissue_fn=_tissue_fn)
+    n_final = clean_and_relabel_blocked(final, min_size, max_size)
 
     if progress_callback:
         progress_callback(1.0, f"完成：{n_final:,} 個細胞")
     logger.info(f"  [{time.time()-t0:.0f}s] 全圖分割完成：{n_final:,} cells")
+
+    if expanded_path is not None:
+        final.flush()
+        result = np.array(final)     # 呼叫端需要一份可自由使用的陣列
+        del final, stitched
+        gc.collect()
+        # 暫存檔只在最終遮罩確實產出後才刪 —— 提早刪會讓中斷的執行無從續跑
+        for p in (labels_path, expanded_path):
+            try:
+                p.unlink()
+            except OSError as e:
+                logger.warning(f"  暫存檔清理失敗（不影響結果）：{p.name} — {e}")
+        if progress_path is not None:
+            try:
+                progress_path.unlink()
+            except OSError:
+                pass
+        return result.astype(np.int32)
 
     return final.astype(np.int32)
 

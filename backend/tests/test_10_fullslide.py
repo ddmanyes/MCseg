@@ -986,3 +986,266 @@ class TestResidualAlignmentConfig:
         assert transform[1, 2] == pytest.approx(-7.0)
         assert scale == pytest.approx((1.0, 1.0))   # 已併入 transform，不可重複套用
         assert "人工修正" in source
+
+
+# ── P5：串流 tiled 分割 ──────────────────────────────────────────────────────
+
+class _FakeCellposeModel:
+    """以固定規則產生 label 的假模型 —— 讓 tiled 流程可在無 GPU/無模型下測試。
+
+    規則：把輸入切成 32×32 網格，每格中央 16×16 給一個 label。結果只取決於
+    tile 尺寸，因此「同一份影像走不同讀取路徑」必須得到相同輸出。
+    """
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def eval(self, img, diameter=None, **kwargs):
+        import numpy as _np
+
+        h, w = img.shape[:2]
+        m = _np.zeros((h, w), dtype=_np.int32)
+        lbl = 1
+        for y in range(0, h - 31, 32):
+            for x in range(0, w - 31, 32):
+                m[y + 8:y + 24, x + 8:x + 24] = lbl
+                lbl += 1
+        return m, None, None
+
+
+@pytest.fixture
+def fake_cellpose(monkeypatch):
+    """替換 cellpose 模型與 GPU 偵測，讓 tiled 流程可離線執行。"""
+    from cellpose import core, models
+
+    monkeypatch.setattr(models, "CellposeModel", _FakeCellposeModel)
+    monkeypatch.setattr(core, "use_gpu", lambda *a, **k: False)
+    return _FakeCellposeModel
+
+
+def _tiled_cfg():
+    return {
+        "use_gpu": False, "batch_size": 1,
+        "dia_small": 13.0, "dia_mid": 17.0, "dia_large": 22.0,
+        "use_hematoxylin": False, "use_cpsam": False,
+        "voronoi_distance": 4, "min_size": 20, "max_size": 6000,
+        "clahe_clip_limit": 3.0,
+    }
+
+
+def _tissue_image(size=384, seed=0):
+    """整片都算「組織」（灰階 < 220）的合成影像。"""
+    rng = np.random.default_rng(seed)
+    return rng.integers(30, 180, (size, size, 3), dtype=np.uint8)
+
+
+class TestTiledStreaming:
+    """`tile_reader` 串流讀取：結果須與傳整張 ndarray 完全相同"""
+
+    def test_run_tiled_accepts_tile_reader(self, fake_cellpose):
+        from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
+
+        img = _tissue_image(384)
+        cfg = _tiled_cfg()
+
+        by_array = run_tiled_mcseg_v2(img, cfg, tile_size=128, overlap=32)
+        by_reader = run_tiled_mcseg_v2(
+            cfg=cfg, tile_size=128, overlap=32,
+            tile_reader=lambda x, y, w, h: img[y:y + h, x:x + w],
+            full_shape=img.shape[:2],
+        )
+
+        assert np.array_equal(by_array, by_reader)
+        assert by_array.max() > 0
+
+    def test_requires_exactly_one_source(self, fake_cellpose):
+        from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
+
+        img = _tissue_image(128)
+        with pytest.raises(ValueError):
+            run_tiled_mcseg_v2(cfg=_tiled_cfg())                    # 兩者皆無
+        with pytest.raises(ValueError):
+            run_tiled_mcseg_v2(img, _tiled_cfg(),
+                               tile_reader=lambda *a: img)          # 兩者皆有
+
+    def test_tile_reader_requires_full_shape(self, fake_cellpose):
+        from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
+
+        with pytest.raises(ValueError) as exc:
+            run_tiled_mcseg_v2(cfg=_tiled_cfg(), tile_reader=lambda *a: None)
+        assert "full_shape" in str(exc.value)
+
+
+class TestTiledMemmapAndResume:
+    """memmap 落地與中斷續跑"""
+
+    def test_memmap_result_matches_in_memory(self, fake_cellpose, tmp_path):
+        from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
+
+        img = _tissue_image(384)
+        cfg = _tiled_cfg()
+
+        in_ram = run_tiled_mcseg_v2(img, cfg, tile_size=128, overlap=32)
+        on_disk = run_tiled_mcseg_v2(img, cfg, tile_size=128, overlap=32, work_dir=tmp_path)
+
+        assert np.array_equal(in_ram, on_disk)
+
+    def test_temp_files_removed_only_after_success(self, fake_cellpose, tmp_path):
+        """暫存檔在最終遮罩產出後才刪；提早刪會讓中斷的執行無從續跑。"""
+        from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
+
+        run_tiled_mcseg_v2(_tissue_image(256), _tiled_cfg(),
+                           tile_size=128, overlap=32, work_dir=tmp_path)
+
+        assert list(tmp_path.glob("tmp_labels_*.npy")) == []
+        assert list(tmp_path.glob("tmp_expanded_*.npy")) == []
+        assert not (tmp_path / "full_seg_progress.json").exists()
+
+    def test_resume_skips_done_tiles(self, fake_cellpose, tmp_path, monkeypatch):
+        """續跑時已完成的 tile 不可再讀圖（reader 不應被呼叫於該區域）。"""
+        import backend.src.segmentation.cellpose_runner as cr
+
+        img = _tissue_image(256)
+        cfg = _tiled_cfg()
+
+        # 第一趟：跑完第一列後「中斷」（以例外模擬）
+        boom = RuntimeError("simulated interruption")
+        calls: list[tuple[int, int, int, int]] = []
+        real_clahe = cr.apply_clahe
+
+        n_tiles = {"count": 0}
+
+        def flaky_clahe(image, **kw):
+            n_tiles["count"] += 1
+            if n_tiles["count"] > 2:      # 128px tile、256px 影像 → 一列 2 塊
+                raise boom
+            return real_clahe(image, **kw)
+
+        monkeypatch.setattr(cr, "apply_clahe", flaky_clahe)
+        with pytest.raises(RuntimeError):
+            cr.run_tiled_mcseg_v2(img, cfg, tile_size=128, overlap=32, work_dir=tmp_path)
+
+        progress = tmp_path / "full_seg_progress.json"
+        assert progress.exists(), "中斷前應已寫出第一列的進度"
+
+        # 第二趟：續跑 —— 已完成的 tile 不得再進 reader
+        monkeypatch.setattr(cr, "apply_clahe", real_clahe)
+
+        def counting_reader(x, y, w, h):
+            calls.append((x, y, w, h))
+            return img[y:y + h, x:x + w]
+
+        cr.run_tiled_mcseg_v2(
+            cfg=cfg, tile_size=128, overlap=32, work_dir=tmp_path,
+            tile_reader=counting_reader, full_shape=img.shape[:2],
+        )
+
+        # Phase 2 也會用 reader 重算組織遮罩（整塊 256×256），故以 tile 尺寸區分
+        phase1 = [(x, y) for x, y, w, h in calls if w <= 160 and h <= 160]
+        assert all(y > 0 for _, y in phase1), f"第一列已完成，不應重新讀取：{phase1}"
+        assert len(phase1) == 2, f"應只重跑第二列的 2 塊，實得 {phase1}"
+
+    def test_changed_config_invalidates_resume(self, fake_cellpose, tmp_path):
+        """參數變更後舊進度必須作廢 —— 否則會拼出混合兩組參數的錯誤遮罩。"""
+        import json
+
+        from backend.src.segmentation.cellpose_runner import (
+            _load_seg_progress,
+            _save_seg_progress,
+            config_hash,
+        )
+
+        p = tmp_path / "full_seg_progress.json"
+        h1 = config_hash({"dia_mid": 17.0}, 100, 100)
+        h2 = config_hash({"dia_mid": 22.0}, 100, 100)
+        _save_seg_progress(p, h1, {(0, 0), (0, 1)}, 42)
+
+        assert h1 != h2
+        assert _load_seg_progress(p, h1)["current_max"] == 42
+        assert _load_seg_progress(p, h2) is None
+        assert json.loads(p.read_text())["done_tiles"] == [[0, 0], [0, 1]]
+
+    def test_corrupt_progress_falls_back_to_restart(self, tmp_path):
+        from backend.src.segmentation.cellpose_runner import _load_seg_progress
+
+        p = tmp_path / "full_seg_progress.json"
+        p.write_text("{ not json", encoding="utf-8")
+
+        assert _load_seg_progress(p, "abc123") is None
+
+
+class TestBlockedPostprocessing:
+    """分塊 Voronoi 與全域面積過濾"""
+
+    def test_blocked_voronoi_matches_whole_image(self):
+        """分塊結果須與整圖 Voronoi 完全相同（margin ≥ 擴張距離即為精確）。"""
+        from backend.src.segmentation.cellpose_runner import (
+            blocked_voronoi,
+            voronoi_expand,
+        )
+
+        rng = np.random.default_rng(3)
+        labels = np.zeros((256, 256), dtype=np.int32)
+        for i in range(1, 21):
+            cy, cx = rng.integers(10, 246, 2)
+            labels[cy - 3:cy + 3, cx - 3:cx + 3] = i
+
+        whole = voronoi_expand(labels, max_distance=6)
+        out = np.zeros_like(labels)
+        blocked_voronoi(labels, out, max_distance=6, block=64, margin=16)
+
+        assert np.array_equal(whole, out)
+
+    def test_blocked_voronoi_no_seam(self):
+        """跨塊邊界的細胞必須維持同一個 label，不可被切成兩個。"""
+        from backend.src.segmentation.cellpose_runner import blocked_voronoi
+
+        labels = np.zeros((128, 128), dtype=np.int32)
+        labels[60:68, 60:68] = 7           # 正好跨在 block=64 的邊界上
+
+        out = np.zeros_like(labels)
+        blocked_voronoi(labels, out, max_distance=5, block=64, margin=16)
+
+        assert set(np.unique(out)) == {0, 7}
+        assert out[64, 64] == 7            # 邊界兩側同一 label
+
+    def test_blocked_voronoi_rejects_small_margin(self):
+        """margin < 擴張距離時結果不再精確 —— 必須明確報錯而非靜默出錯。"""
+        from backend.src.segmentation.cellpose_runner import blocked_voronoi
+
+        labels = np.zeros((32, 32), dtype=np.int32)
+        with pytest.raises(ValueError):
+            blocked_voronoi(labels, np.zeros_like(labels),
+                            max_distance=10, block=16, margin=4)
+
+    def test_global_label_sizes_counts_across_blocks(self):
+        """跨塊細胞的面積須加總，否則會被誤判為過小而刪除。"""
+        from backend.src.segmentation.cellpose_runner import global_label_sizes
+
+        labels = np.zeros((128, 128), dtype=np.int32)
+        labels[60:68, 60:68] = 5           # 跨 block=64 邊界，共 64 px
+
+        sizes = global_label_sizes(labels, block=64)
+
+        assert sizes[5] == 64
+
+    def test_clean_and_relabel_blocked_matches_whole_image(self):
+        from backend.src.segmentation.cellpose_runner import (
+            clean_and_relabel_blocked,
+            clean_mask,
+            relabel_sequential,
+        )
+
+        rng = np.random.default_rng(4)
+        labels = np.zeros((128, 128), dtype=np.int32)
+        for i in range(1, 15):
+            cy, cx = rng.integers(5, 120, 2)
+            r = int(rng.integers(1, 6))
+            labels[cy - r:cy + r, cx - r:cx + r] = i
+
+        expected = relabel_sequential(clean_mask(labels.copy(), min_size=20, max_size=60))
+        got = labels.copy()
+        n = clean_and_relabel_blocked(got, min_size=20, max_size=60, block=64)
+
+        assert np.array_equal(expected, got)
+        assert n == int(got.max())
