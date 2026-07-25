@@ -125,6 +125,8 @@ export const getRegistrationEstimate = (roiName?: string) =>
 export const makeRegistrationQcPatches = (body?: { n?: number; size?: number; seed?: number }) =>
   api.post('/registration/qc_patches', body ?? {})
 export const getRegistrationQcImages = () => api.get('/registration/qc_images')
+export const applyRegistration = (body?: { downsample?: number; enable?: boolean }) =>
+  api.post('/registration/apply', body ?? {})
 
 // Stage 3: Step 4 — Heatmap
 export const runHeatmap = (params: object) => api.post('/analysis/run_heatmap', params)

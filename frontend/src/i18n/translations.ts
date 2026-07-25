@@ -326,6 +326,18 @@ export const translations: TransDict = {
   'region.stats.genes':    { zh: '基因數中位數', en: 'Median genes' },
   'region.stats.clusters': { zh: '族群組成',   en: 'Cluster composition' },
   'region.stats.loading':  { zh: '統計中...',  en: 'Computing...' },
+
+  // ── 對位檢查面板（Stage 0）────────────────────────────────────────────────
+  'align.title':          { zh: '對位檢查', en: 'Alignment Check' },
+  'align.subtitle':       { zh: 'RNA（bins）與 H&E 影像是否對齊；殘餘位移會讓 RNA 落到隔壁細胞', en: 'Whether RNA bins align with the H&E image; residual shift puts RNA in neighbouring cells' },
+  'align.estimate':       { zh: '估計殘餘位移', en: 'Estimate Residual Shift' },
+  'align.estimating':     { zh: '估計中...', en: 'Estimating...' },
+  'align.qc_patches':     { zh: '產生 QC 疊圖', en: 'Render QC Patches' },
+  'align.rendering':      { zh: '產圖中...', en: 'Rendering...' },
+  'align.compute_affine': { zh: '計算仿射修正', en: 'Compute Affine' },
+  'align.apply':          { zh: '套用此變換', en: 'Apply Transform' },
+  'align.confirm_apply':  { zh: '確定要啟用此對位修正？錯誤的修正會讓 RNA 靜默錯位。', en: 'Enable this alignment correction? A wrong correction silently misplaces RNA.' },
+  'align.spread_hint':    { zh: 'spread < 3 px 表示三個窗格估計一致，可信度高；偏大代表可能有旋轉/縮放或組織形變', en: 'spread < 3 px means the three windows agree (reliable); larger suggests rotation/scale or tissue deformation' },
   'data.output.description':  { zh: '所有分析結果（ROI 裁切、分割遮罩、計數矩陣、圖表）將存放於此目錄下的', en: 'All analysis results (ROI crops, segmentation masks, count matrix, charts) will be stored under' },
 
   // ── Stage 3: missing translations ────────────────────────────────────────

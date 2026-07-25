@@ -6,6 +6,7 @@ import { listRois, addRoi, deleteRoi, runRoiExtract, getRoiStatus, getConfig } f
 import type { RoiDefinition } from '../types/pipeline'
 import useStageLog from '../hooks/useStageLog'
 import RoiSelector from '../components/roi/RoiSelector'
+import AlignmentPanel from '../components/shared/AlignmentPanel'
 import { useStageStatus } from '../hooks/useStageStatus'
 import { useT } from '../i18n'
 
@@ -88,6 +89,13 @@ export default function Stage0_ROI() {
             existingRois={rois as any}
             onSelect={(roi) => setForm(f => ({ ...f, ...roi }))}
           />
+        </div>
+
+        {/* 對位檢查 */}
+        <div className="border-t border-surface-border pt-4">
+          <p className="text-xs text-gray-400 font-medium uppercase tracking-wide">{t('align.title')}</p>
+          <p className="text-xs text-gray-500 mb-3">{t('align.subtitle')}</p>
+          <AlignmentPanel />
         </div>
 
         {/* Add ROI form */}
