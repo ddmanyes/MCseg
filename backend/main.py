@@ -25,6 +25,7 @@ from backend.src.api import (
     cellpose_count,
     data,
     export,
+    registration,
     roi,
     segmentation,
     spatial,
@@ -69,6 +70,7 @@ app.include_router(cellpose_count.router,prefix="/api/count",       tags=["Stage
 app.include_router(analysis.router,      prefix="/api/analysis",    tags=["Stage 3: Analysis"])
 app.include_router(spatial.router,       prefix="/api/spatial",     tags=["Stage 3.5: Spatial Explorer"])
 app.include_router(export.router,        prefix="/api/export",      tags=["Stage 4: Export"])
+app.include_router(registration.router,  prefix="/api/registration",tags=["Alignment QC"])
 
 
 @app.get("/api/health")

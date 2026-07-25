@@ -448,3 +448,82 @@ class TestRenderOverlayPatches:
         )
 
         assert [p.read_bytes() for p in a] == [p.read_bytes() for p in b]
+
+
+# ── API 端點 ────────────────────────────────────────────────────────────────
+
+class TestRegistrationAPI:
+    """/api/registration/*"""
+
+    @pytest.mark.asyncio
+    async def test_qc_images_returns_empty_list_when_none(self, monkeypatch, tmp_path):
+        """尚未產圖時回空陣列（不是錯誤）—— 前端據此顯示「請先產生」。"""
+        from httpx import ASGITransport, AsyncClient
+
+        import backend.src.api.registration as reg
+        from backend.main import app
+
+        monkeypatch.setattr(
+            reg, "load_config", lambda: {"paths": {"output_dir": str(tmp_path)}}
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/api/registration/qc_images")
+
+        assert r.status_code == 200
+        assert r.json() == {"status": "ok", "data": []}
+
+    @pytest.mark.asyncio
+    async def test_estimate_reports_missing_inputs(self, monkeypatch, tmp_path):
+        """缺 H&E 或 tissue_positions 時明確回錯，而非丟 500。"""
+        from httpx import ASGITransport, AsyncClient
+
+        import backend.src.api.registration as reg
+        from backend.main import app
+
+        monkeypatch.setattr(
+            reg, "load_config",
+            lambda: {"paths": {"he_image": str(tmp_path / "nope.btf"),
+                               "binned_002": str(tmp_path),
+                               "output_dir": str(tmp_path)}},
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/api/registration/estimate")
+
+        body = r.json()
+        assert body["status"] == "error"
+        assert "tissue_positions" in body["message"]
+
+    @pytest.mark.asyncio
+    async def test_qc_patches_then_images_roundtrip(self, monkeypatch, tmp_path):
+        """產圖 → 取圖：回傳 base64 data URI，數量與產出一致。"""
+        from httpx import ASGITransport, AsyncClient
+
+        import backend.src.api.registration as reg
+        from backend.main import app
+
+        btf, tp = _make_synthetic_slide(tmp_path, size=1024, shift=(0, 0), seed=3)
+        spatial = tmp_path / "b002" / "spatial"
+        spatial.mkdir(parents=True)
+        tp.rename(spatial / "tissue_positions.parquet")
+
+        out = tmp_path / "out"
+        monkeypatch.setattr(
+            reg, "load_config",
+            lambda: {"paths": {"he_image": str(btf),
+                               "binned_002": str(tmp_path / "b002"),
+                               "output_dir": str(out)}},
+        )
+        monkeypatch.setattr(reg, "resolve_path", lambda p: Path(p))
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            made = await c.post("/api/registration/qc_patches", json={"n": 2, "size": 256})
+            got = await c.get("/api/registration/qc_images")
+
+        assert made.json()["status"] == "ok"
+        assert made.json()["data"]["n"] == 2
+        images = got.json()["data"]
+        assert len(images) == 2
+        assert all(im["data"].startswith("data:image/png;base64,") for im in images)
