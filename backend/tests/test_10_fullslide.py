@@ -3,7 +3,6 @@
 全部使用合成資料 —— 不需真實 CRC/BTF 資料，Windows 亦可執行。
 """
 import numpy as np
-import pytest
 
 
 # ── 合成資料輔助 ─────────────────────────────────────────────────────────────
@@ -103,3 +102,81 @@ class TestBinAttribution:
 
         assert out.exists()
         pd.testing.assert_frame_equal(pd.read_parquet(str(out)), attr)
+
+
+# ── aggregate_cells ─────────────────────────────────────────────────────────
+
+def _write_h5(path, barcodes, gene_names, counts):
+    """寫出可被 sc.read_10x_h5 讀取的替身：直接寫 h5ad 並回傳路徑。
+
+    aggregate_cells 內部用 scanpy 讀 10x h5；測試改以 monkeypatch 注入
+    AnnData，避免建構 10x HDF5 二進位格式。
+    """
+    import anndata as ad
+    import numpy as np
+    import scipy.sparse as sp
+
+    adata = ad.AnnData(
+        X=sp.csr_matrix(np.asarray(counts, dtype=np.float32)),
+    )
+    adata.obs_names = list(barcodes)
+    adata.var_names = list(gene_names)
+    adata.write_h5ad(str(path))
+    return path
+
+
+class TestAggregateCells:
+    """bins → cells×genes 聚合"""
+
+    def test_aggregate_cells_sums_bins_per_cell(self, tmp_path, monkeypatch):
+        """3 bins → 2 cells：counts 須加總，n_bins 須為 [2, 1]。"""
+        import pandas as pd
+        import scanpy as sc
+
+        from backend.src.fullslide import pipeline
+
+        h5 = _write_h5(
+            tmp_path / "m.h5ad",
+            barcodes=["BC0", "BC1", "BC2"],
+            gene_names=["GeneA", "GeneB"],
+            counts=[[1, 0], [2, 3], [5, 5]],
+        )
+        # aggregate_cells 內部呼叫 sc.read_10x_h5；測試改讀 h5ad
+        monkeypatch.setattr(pipeline_sc(), "read_10x_h5", lambda p: sc.read_h5ad(str(p)))
+
+        attr = pd.DataFrame({"barcode": ["BC0", "BC1", "BC2"], "cell_id": [7, 7, 9]})
+        cells = pipeline.aggregate_cells(attr, h5)
+
+        assert cells.n_obs == 2
+        assert cells.n_vars == 2
+        assert cells.obs["cell_id"].tolist() == [7, 9]
+        assert cells.obs["n_bins"].tolist() == [2, 1]
+        # cell 7 = BC0 + BC1 = [3, 3]；cell 9 = BC2 = [5, 5]
+        assert cells.X.toarray().tolist() == [[3.0, 3.0], [5.0, 5.0]]
+
+    def test_aggregate_cells_ignores_unlisted_barcodes(self, tmp_path, monkeypatch):
+        """attribution 未列出的 barcode 不得進入結果。"""
+        import pandas as pd
+        import scanpy as sc
+
+        from backend.src.fullslide import pipeline
+
+        h5 = _write_h5(
+            tmp_path / "m.h5ad",
+            barcodes=["BC0", "BC1"],
+            gene_names=["GeneA"],
+            counts=[[4], [9]],
+        )
+        monkeypatch.setattr(pipeline_sc(), "read_10x_h5", lambda p: sc.read_h5ad(str(p)))
+
+        attr = pd.DataFrame({"barcode": ["BC0"], "cell_id": [3]})
+        cells = pipeline.aggregate_cells(attr, h5)
+
+        assert cells.n_obs == 1
+        assert cells.X.toarray().tolist() == [[4.0]]
+
+
+def pipeline_sc():
+    """取得 aggregate_cells 實際使用的 scanpy 模組物件（供 monkeypatch）。"""
+    import scanpy as sc
+    return sc

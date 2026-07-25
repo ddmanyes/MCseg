@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:  # pragma: no cover - 僅供型別檢查，避免匯入期拉進重量級套件
+    import anndata as ad
     import pandas as pd
 
 
@@ -72,3 +73,70 @@ def bin_attribution(
     if out_path is not None:
         attr.to_parquet(str(out_path), index=False)
     return attr
+
+
+def aggregate_cells(attribution: "pd.DataFrame", h5_path: str | Path) -> "ad.AnnData":
+    """
+    依 attribution（barcode → cell_id）把 2µm bins 聚合成 cells×genes 原始 counts。
+
+    不做 normalize —— 保留原始 counts 供下游自由運用。
+
+    Parameters
+    ----------
+    attribution : pd.DataFrame
+        `bin_attribution` 的輸出（欄位 `barcode`、`cell_id`）。
+    h5_path : str | Path
+        `filtered_feature_bc_matrix.h5` 路徑。
+
+    Returns
+    -------
+    ad.AnnData
+        X = 原始 counts（稀疏 CSR），`obs_names` 為 cell_id 字串，
+        另含 `obs['cell_id']`（int）與 `obs['n_bins']`。
+    """
+    import gc
+
+    import anndata as ad
+    import scanpy as sc
+    import scipy.sparse as sp
+
+    adata_full = sc.read_10x_h5(str(h5_path))
+    adata_full.var_names_make_unique()
+
+    keep = adata_full.obs_names.isin(attribution["barcode"].values)
+    adata_crop = adata_full[keep].copy()
+    del adata_full
+    gc.collect()
+
+    barcode_to_cell = attribution.set_index("barcode")["cell_id"]
+    cell_ids = barcode_to_cell.reindex(adata_crop.obs_names).values.astype(np.int32)
+    valid = cell_ids > 0
+    adata_valid = adata_crop[valid]
+    cell_ids_v = cell_ids[valid]
+
+    unique_cells = np.unique(cell_ids_v)
+    n_cells = len(unique_cells)
+
+    # 向量化 LUT：O(max_id) 建立、O(n) 查詢，比 dict 快 10-100x
+    lut = np.zeros(int(unique_cells.max()) + 1, dtype=np.int64)
+    lut[unique_cells] = np.arange(n_cells)
+    rows = lut[cell_ids_v]
+    cols = np.arange(len(cell_ids_v))
+
+    A = sp.csr_matrix(
+        (np.ones(len(cell_ids_v), dtype=np.float32), (rows, cols)),
+        shape=(n_cells, adata_valid.n_obs),
+    )
+    x_agg = A @ adata_valid.X
+
+    cells = ad.AnnData(
+        X=x_agg.tocsr() if sp.issparse(x_agg) else sp.csr_matrix(x_agg),
+        var=adata_valid.var.copy(),
+    )
+    cells.obs_names = [str(int(c)) for c in unique_cells]
+    cells.obs["cell_id"] = unique_cells.astype(int)
+    cells.obs["n_bins"] = np.asarray(A.sum(axis=1)).ravel().astype(int)
+
+    del adata_crop, adata_valid, A
+    gc.collect()
+    return cells

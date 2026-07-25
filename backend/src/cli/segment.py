@@ -188,62 +188,6 @@ def step_bin_attribution(
     return attr
 
 
-def _aggregate_cells_raw(
-    attribution: "pd.DataFrame",  # noqa: F821
-    h5_path: Path,
-) -> "ad.AnnData":  # noqa: F821
-    """
-    依 attribution（barcode→cell_id）把 2µm bins 聚合成 cells×genes 原始 counts。
-
-    回傳 AnnData：X=原始 counts（稀疏），obs_names=cell_id 字串，
-    obs['cell_id']（int）、obs['n_bins'］。不做 normalize（供下游自由運用）。
-    """
-    import gc as _gc
-
-    import anndata as ad
-    import numpy as np
-    import scanpy as sc
-    import scipy.sparse as sp
-
-    log.info(f"  讀取 h5 矩陣: {h5_path.name}")
-    adata_full = sc.read_10x_h5(str(h5_path))
-    adata_full.var_names_make_unique()
-
-    mask_obs = adata_full.obs_names.isin(attribution["barcode"].values)
-    adata_crop = adata_full[mask_obs].copy()
-    del adata_full
-    _gc.collect()
-
-    barcode_to_cell = attribution.set_index("barcode")["cell_id"]
-    cell_ids = barcode_to_cell.reindex(adata_crop.obs_names).values.astype(np.int32)
-    valid = cell_ids > 0
-    adata_valid = adata_crop[valid]
-    cell_ids_v = cell_ids[valid]
-    unique_cells = np.unique(cell_ids_v)
-    n_cells = len(unique_cells)
-    log.info(f"  unique cells with RNA: {n_cells:,}")
-
-    lut = np.zeros(int(unique_cells.max()) + 1, dtype=np.int64)
-    lut[unique_cells] = np.arange(n_cells)
-    rows = lut[cell_ids_v]
-    cols = np.arange(len(cell_ids_v))
-    A = sp.csr_matrix(
-        (np.ones(len(cell_ids_v), dtype=np.float32), (rows, cols)),
-        shape=(n_cells, adata_valid.n_obs),
-    )
-    X_agg = A @ adata_valid.X
-    cells = ad.AnnData(
-        X=X_agg.tocsr() if sp.issparse(X_agg) else sp.csr_matrix(X_agg),
-        var=adata_valid.var.copy(),
-    )
-    cells.obs_names = [str(int(c)) for c in unique_cells]
-    cells.obs["cell_id"] = unique_cells.astype(int)
-    cells.obs["n_bins"] = np.asarray(A.sum(axis=1)).ravel().astype(int)
-    del adata_crop, adata_valid, A
-    _gc.collect()
-    return cells
-
-
 def step_count_cells(
     mask: np.ndarray,
     attribution: "pd.DataFrame",  # noqa: F821
@@ -261,7 +205,11 @@ def step_count_cells(
         return h5ad_path
 
     log.info("[4/6] 聚合 cells×genes 矩陣")
-    cells = _aggregate_cells_raw(attribution, h5_path)
+    from backend.src.fullslide.pipeline import aggregate_cells
+
+    log.info(f"  讀取 h5 矩陣: {h5_path.name}")
+    cells = aggregate_cells(attribution, h5_path)
+    log.info(f"  unique cells with RNA: {cells.n_obs:,}")
     unique_cells = cells.obs["cell_id"].values.astype(np.int64)
 
     # 重心（mask 局部 px，原點 = 裁切左上角）→ µm
