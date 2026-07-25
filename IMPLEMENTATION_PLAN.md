@@ -262,50 +262,65 @@ B 即使損失右緣落在影像外的 bin，仍多命中 **13.4% bins / 17.5% �
 
 ### 任務
 
-- [ ] **P0.5-1 【紅燈】load_alignment 測試**
+- [x] **P0.5-1 【紅燈】load_alignment 測試**
   - 預期行為：`test_11_registration.py::test_load_alignment_derives_mpp`：以合成 JSON（`transform` scale 0.2、`transformImages` scale 0.1）斷言 `mpp == 0.5`、且回傳 `serial_number` / `area`。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_11_registration.py -q` → FAILED
   - commit：`test(registration): 對位 JSON 解析紅燈測試`
 
-- [ ] **P0.5-2 【綠燈】實作 load_alignment**
+- [x] **P0.5-2 【綠燈】實作 load_alignment**
   - 預期行為：`registration/alignment.py` 的 `load_alignment(path) -> Alignment`（dataclass：`transform` 3×3、`transform_images` 3×3、`mpp`、`serial_number`、`area`、`checksum`）。`mpp` 由上述推導式算出。損壞/缺鍵 raise `ValueError`（含檔名但不含完整路徑）。
   - 驗證：同上 → PASSED
   - 檔案：`backend/src/registration/alignment.py`
   - commit：`feat(registration): 解析 Loupe/CytAssist 對位 JSON`
 
-- [ ] **P0.5-3 pick_source_alignment 自動選出 H_old**
+- [x] **P0.5-3 pick_source_alignment 自動選出 H_old**
   - 預期行為：`pick_source_alignment(paths, target_mpp, tol=0.01) -> (source, others)`：推導 mpp 與 `scalefactors.microns_per_pixel` 相對誤差 < tol 者即為 `H_old`。**同時解掉兩個陷阱**：EP 踩過的「套用不屬於本樣本的註冊檔」，以及 dpcp01 的「同 serial 兩版本 scale 差正好 2 倍」。無命中則 raise 並列出各候選的 mpp。
   - 驗證：`test_pick_source_alignment_matches_scalefactors_mpp`（兩份合成 JSON mpp 0.5465 / 0.2732，target 0.5464 → 選中前者）
   - commit：`feat(registration): 依 scalefactors mpp 自動選出來源對位檔`
 
-- [ ] **P0.5-4 provenance 驗證**
+- [x] **P0.5-4 provenance 驗證**
   - 預期行為：`validate_pair(h_old, h_new)`：`serial_number` 或 `area` 不一致時 raise（訊息含兩邊的值）。防止把別片玻片的對位檔套進來。
   - 驗證：`test_validate_pair_rejects_serial_mismatch`
   - commit：`feat(registration): 對位檔 provenance 驗證`
 
-- [ ] **P0.5-5 compose_bin_to_image**
+- [x] **P0.5-5 compose_bin_to_image**
   - 預期行為：`compose_bin_to_image(h_old, h_new) -> np.ndarray`（3×3，正規化 `M[2,2]=1`）＝ `inv(h_new.transform_images) @ h_old.transform_images`。
   - 驗證：`test_compose_recovers_isotropic_2x`：用 dpcp01 的真實兩份 JSON（`@pytest.mark.skipif` 檔案不存在時跳過），斷言 scale ≈ 2.0（±1e-3）、rot ≈ 0（±0.01°）
   - commit：`feat(registration): 組合 homography 得 bin→影像 變換`
 
-- [ ] **P0.5-6 bin_attribution 改吃 3×3 homography**
+- [x] **P0.5-6 bin_attribution 改吃 3×3 homography**
   - 預期行為：新增 `transform: np.ndarray | None = None` 參數。給定時以 homography 映射 bin 座標（齊次除法），否則沿用現有 `scale` 對角特例 —— **不破壞既有呼叫端**。`scale` 與 `transform` 同時給時 `transform` 優先並記 warning。
   - 驗證：`test_bin_attribution_with_homography_equals_scale_for_diagonal`（對角 homography 結果須與 `scale` 路徑完全相同）
   - 檔案：`backend/src/fullslide/pipeline.py`
   - commit：`feat(fullslide): bin attribution 支援 3×3 homography`
 
-- [ ] **P0.5-7 涵蓋率回報**
+- [x] **P0.5-7 涵蓋率回報**
   - 預期行為：`bin_attribution` 回傳的 DataFrame 加 `.attrs["coverage"]`：`{n_total, n_in_bounds, n_assigned, frac_out_of_image}`。全圖計數完成訊息附「X% bins 落在影像範圍外」。
   - **為何需要**：dpcp01 正確變換下，SR 右緣約 980 TIFF px 寬的 bin 確實在高解析圖之外（SR 畫布 11266×2 = 22532 > TIFF 寬 21504；高度 23552×2 = 47104 完全吻合）。這是真實限制而非 bug，**必須明確回報而非靠壓縮硬塞**。
   - 驗證：`test_coverage_attrs_reports_out_of_image_fraction`
   - commit：`feat(fullslide): 回報 bin 影像涵蓋率`
 
-- [ ] **P0.5-8 接進全圖計數流程並降級 fallback**
+- [x] **P0.5-8 接進全圖計數流程並降級 fallback**
   - 預期行為：`resolve_full_count_inputs` 掃 `binned_002/spatial/*.json` 與 `alignment.extra_alignment_json`（新設定，指向 Loupe 新產生的檔），能組出 homography 就用；否則回退 `resolve_bin_to_mask_scale` 並 **log 標明為近似值**。
   - 驗證：`.venv/bin/python -m pytest backend/tests/ -q` 全綠
   - commit：`feat(count): 全圖計數優先採用對位 JSON`
 
 > **P3 影響**：P3-3/P3-4 的 `alignment.matrix` 改為「JSON 缺失時的人工覆寫」；P1 的殘餘位移估計從**主要對位手段降為驗證手段**（範圍縮小到「JSON 正確但仍有殘餘偏移」的情況）。
+
+### P0.5 完成紀錄（2026-07-25）
+
+**8 項全部完成**，6 個 commit（`54b9241` → `74f6b71`），backend 全套 **169 passed**。
+
+真實 dpcp01 兩份 JSON 端到端重現計畫記載的數值：組合後 **scale 2.00001、rot −0.0001°、平移 (−0.90, −0.85) px**，`pick_source_alignment` 也正確在「同 serial、scale 差 2 倍」的兩份檔中選出 mpp 0.5465 那份（與 scalefactors 0.5464 差 0.01%）。CRC 樣本 `spatial/` 無對位 JSON → 回退近似縮放 `(1.0, 1.0)`，行為與 P0.5 前完全一致（零回歸）。
+
+與計畫的偏離：
+
+1. **P0.5-4 與 P0.5-5 併為一個 commit**（`760ffca`）。兩者都只動 `alignment.py` 且 compose 的測試本來就要先 `validate_pair`，拆開的 commit 邊界沒有意義。
+2. **`H_new` 自動偵測多納入 `H_old` 自己為候選**。計畫只考慮「另外一張圖」，但若分割用的就是產生 `pxl_*_in_fullres` 的那張（CRC 這類樣本），候選集只有一份 —— 此時應回傳**單位矩陣**而非退回近似縮放。
+3. **新增 `alignment.use_alignment_json` 開關**。計畫沒有這一項；對照除錯（想量測「JSON vs 近似縮放差多少」）時需要能強制走舊路徑，否則得改碼。
+4. **`H_new` 自動偵測的容差設 5%**（非 `pick_source_alignment` 的 1%）。用來比對的 `implied_mpp` 是拿**近似縮放**反推的，本身就不準；這裡只需「辨識出是哪一份檔」，精確幾何仍由 JSON 本身提供。
+
+`transform` 與 `scale` 在 `resolve_full_count_inputs` 的輸出中互斥：採用 homography 時 `scale` 會被設為 `(1.0, 1.0)`，避免下游誤把兩者相乘。
 
 ---
 
