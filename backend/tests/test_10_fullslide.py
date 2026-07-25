@@ -1313,3 +1313,28 @@ class TestRunFullStreaming:
         await seg._run_full_segmentation(config, seg.FullSegParams())
 
         assert seg._full_status["status"] == "error"
+
+
+class TestMemmapLabelsOnDisk:
+    """標籤圖確實落在磁碟（全片 21504×47104 int32 ≈ 4 GB，不可留在 RAM）"""
+
+    def test_labels_are_memmapped_during_run(self, fake_cellpose, tmp_path, monkeypatch):
+        import backend.src.segmentation.cellpose_runner as cr
+
+        img = _tissue_image(256)
+        seen: dict = {}
+        real_clahe = cr.apply_clahe
+
+        def peeking_clahe(image, **kw):
+            # 執行中：暫存檔應已存在，且大小等於 H×W×4（int32）
+            files = list(tmp_path.glob("tmp_labels_*.npy"))
+            if files:
+                seen["path"] = files[0]
+                seen["size"] = files[0].stat().st_size
+            return real_clahe(image, **kw)
+
+        monkeypatch.setattr(cr, "apply_clahe", peeking_clahe)
+        cr.run_tiled_mcseg_v2(img, _tiled_cfg(), tile_size=128, overlap=32, work_dir=tmp_path)
+
+        assert "path" in seen, "執行期間應存在 memmap 暫存檔"
+        assert seen["size"] >= 256 * 256 * 4      # npy header 之外即為 int32 陣列
