@@ -103,7 +103,10 @@ $env:UV_LINK_MODE = "copy"; uv sync
 # 3. Install frontend dependencies
 cd frontend; npm install; cd ..
 
-# 4. Launch backend + frontend (two terminals)
+# 4a. One-click launch (recommended, equivalent to macOS start.sh)
+powershell -ExecutionPolicy Bypass -File start.ps1
+
+# 4b. Or launch manually (two terminals)
 # Terminal 1:
 uv run uvicorn backend.main:app --port 8001
 # Terminal 2:

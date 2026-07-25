@@ -103,7 +103,10 @@ $env:UV_LINK_MODE = "copy"; uv sync
 # 3. 安裝前端相依套件
 cd frontend; npm install; cd ..
 
-# 4. 啟動後端 + 前端（需兩個終端機視窗）
+# 4a. 一鍵啟動（推薦，等同 macOS 的 start.sh）
+powershell -ExecutionPolicy Bypass -File start.ps1
+
+# 4b. 或手動啟動（兩個終端機視窗）
 # 終端機 1：
 uv run uvicorn backend.main:app --port 8001
 # 終端機 2：
