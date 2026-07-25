@@ -127,3 +127,89 @@ class TestPickSourceAlignment:
         with pytest.raises(ValueError) as exc:
             pick_source_alignment([p], target_mpp=0.5464)
         assert "0.2732" in str(exc.value)
+
+
+# ── provenance 驗證 ─────────────────────────────────────────────────────────
+
+class TestValidatePair:
+    """拒絕把別片玻片的對位檔組合在一起"""
+
+    def test_validate_pair_accepts_same_slide(self, tmp_path):
+        from backend.src.registration.alignment import load_alignment, validate_pair
+
+        a = load_alignment(_write_alignment_json(tmp_path / "a.json"))
+        b = load_alignment(
+            _write_alignment_json(tmp_path / "b.json", scale_images=0.05)
+        )
+        validate_pair(a, b)   # 不應 raise
+
+    def test_validate_pair_rejects_serial_mismatch(self, tmp_path):
+        from backend.src.registration.alignment import load_alignment, validate_pair
+
+        a = load_alignment(
+            _write_alignment_json(tmp_path / "a.json", serial_number="H1-AAA")
+        )
+        b = load_alignment(
+            _write_alignment_json(tmp_path / "b.json", serial_number="H1-BBB")
+        )
+        with pytest.raises(ValueError) as exc:
+            validate_pair(a, b)
+        assert "H1-AAA" in str(exc.value) and "H1-BBB" in str(exc.value)
+
+    def test_validate_pair_rejects_area_mismatch(self, tmp_path):
+        from backend.src.registration.alignment import load_alignment, validate_pair
+
+        a = load_alignment(_write_alignment_json(tmp_path / "a.json", area="D1"))
+        b = load_alignment(_write_alignment_json(tmp_path / "b.json", area="A1"))
+        with pytest.raises(ValueError):
+            validate_pair(a, b)
+
+
+# ── compose_bin_to_image ────────────────────────────────────────────────────
+
+class TestComposeBinToImage:
+    """組合 homography：SR fullres px → 新影像 px"""
+
+    def test_compose_synthetic_halved_mpp_gives_2x(self, tmp_path):
+        """新影像解析度為舊的一半 µm/px → 座標放大 2 倍。"""
+        from backend.src.registration.alignment import (
+            compose_bin_to_image,
+            load_alignment,
+        )
+
+        old = load_alignment(
+            _write_alignment_json(tmp_path / "old.json", scale_images=0.1)
+        )
+        new = load_alignment(
+            _write_alignment_json(tmp_path / "new.json", scale_images=0.05)
+        )
+        m = compose_bin_to_image(old, new)
+
+        np.testing.assert_allclose(m, np.diag([2.0, 2.0, 1.0]), atol=1e-9)
+
+    @pytest.mark.skipif(
+        not (DPCP01_OLD.exists() and DPCP01_NEW.exists()),
+        reason="需要 dpcp01 真實對位 JSON",
+    )
+    def test_compose_recovers_isotropic_2x(self):
+        """真實 dpcp01 兩份對位檔 → 等向 2×、幾乎無旋轉。"""
+        from backend.src.registration.alignment import (
+            compose_bin_to_image,
+            load_alignment,
+            validate_pair,
+        )
+
+        old = load_alignment(DPCP01_OLD)
+        new = load_alignment(DPCP01_NEW)
+        validate_pair(old, new)
+        m = compose_bin_to_image(old, new)
+
+        sx = np.hypot(m[0, 0], m[1, 0])
+        sy = np.hypot(m[0, 1], m[1, 1])
+        rot_deg = np.degrees(np.arctan2(m[1, 0], m[0, 0]))
+
+        assert sx == pytest.approx(2.0, abs=1e-3)
+        assert sy == pytest.approx(2.0, abs=1e-3)
+        assert abs(rot_deg) < 0.01
+        # 平移應為個位數 px（實測 ≈ (−0.90, −0.85)）
+        assert abs(m[0, 2]) < 5 and abs(m[1, 2]) < 5

@@ -177,3 +177,54 @@ def pick_source_alignment(
         f"與 scalefactors {target_mpp:.4f} 差 {best_err:.2%}）"
     )
     return best, others
+
+
+def validate_pair(h_old: Alignment, h_new: Alignment) -> None:
+    """
+    確認兩份對位檔出自**同一片玻片的同一區**，否則組合出的變換毫無意義。
+
+    `serialNumber` / `area` 不一致即 raise —— 把別片玻片的對位檔套進來會讓
+    RNA 整體錯位卻**不報錯**，是最難察覺的一類故障。
+
+    Raises
+    ------
+    ValueError
+        provenance 不符；訊息含兩邊的值。
+    """
+    mismatches = []
+    if h_old.serial_number != h_new.serial_number:
+        mismatches.append(
+            f"serialNumber（{h_old.name}={h_old.serial_number!r} vs "
+            f"{h_new.name}={h_new.serial_number!r}）"
+        )
+    if h_old.area != h_new.area:
+        mismatches.append(
+            f"area（{h_old.name}={h_old.area!r} vs {h_new.name}={h_new.area!r}）"
+        )
+    if mismatches:
+        raise ValueError(
+            "兩份對位檔不屬於同一片玻片，拒絕組合：" + "；".join(mismatches)
+        )
+
+
+def compose_bin_to_image(h_old: Alignment, h_new: Alignment) -> np.ndarray:
+    """
+    組合出「Space Ranger fullres px → 新影像 px」的 3×3 homography。
+
+    ```text
+    新影像 px = inv(H_new.transform_images) @ H_old.transform_images @ (SR fullres px)
+    ```
+
+    兩者都以 CytAssist 影像為中介座標系，因此無需重跑 Space Ranger。
+
+    Notes
+    -----
+    `transformImages` 內含的 rot +90° 與鏡射，Space Ranger 在產生
+    `pxl_*_in_fullres` 時**已經套入**，兩份相除會互相抵銷 —— 這正是既有
+    scale-only 修正能重現 EP 數字的原因。但若有人拿方向不同的影像來分割，
+    scale-only 會靜默失敗，而組合式會如實反映該旋轉。
+    """
+    m = np.linalg.inv(h_new.transform_images) @ h_old.transform_images
+    if m[2, 2] == 0 or not np.isfinite(m).all():
+        raise ValueError("組合後的 homography 無效（transformImages 可能奇異）")
+    return m / m[2, 2]
