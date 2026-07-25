@@ -14,6 +14,12 @@ logger = logging.getLogger("pipeline.api.cellpose_count")
 _status = {"status": "idle", "progress": 0.0, "message": ""}
 _lock   = asyncio.Lock()
 
+_full_status = {"status": "idle", "progress": 0.0, "message": ""}
+_full_lock   = asyncio.Lock()
+
+FULL_COUNT_SUBDIR = "fullslide"
+FULL_COUNT_FILENAME = "cells.h5ad"
+
 
 class CountParams(BaseModel):
     roi_name: Optional[str] = None   # None = 全部 ROI
@@ -62,6 +68,100 @@ async def run_count(background_tasks: BackgroundTasks, params: Optional[CountPar
     roi_name = params.roi_name if params else None
     background_tasks.add_task(_run_count, config, roi_name)
     return {"status": "ok", "message": "RNA 計數已啟動"}
+
+
+@router.get("/full_status")
+async def get_full_count_status():
+    return _full_status
+
+
+@router.post("/run_full")
+async def run_full_count(background_tasks: BackgroundTasks):
+    """
+    對全圖分割遮罩執行 RNA 計數，輸出 `{output_dir}/fullslide/cells.h5ad`。
+
+    走 `fullslide.pipeline` 共用流程（bin_attribution → aggregate_cells →
+    add_centroids），與 CLI 全片流程同一份實作。
+    """
+    from backend.src.fullslide.pipeline import resolve_full_count_inputs
+
+    config = load_config()
+    inputs, err = resolve_full_count_inputs(config)
+    if err:
+        return {"status": "error", "message": err}
+
+    async with _full_lock:
+        if _full_status["status"] == "running":
+            return {"status": "error", "message": "全圖計數任務執行中"}
+        _full_status.update({"status": "running", "progress": 0.0, "message": "初始化..."})
+        background_tasks.add_task(_run_full_count, inputs)
+    return {"status": "ok", "message": "全圖 RNA 計數已啟動"}
+
+
+def _full_count_sync(inputs: dict, progress) -> tuple[int, int]:
+    """同步執行全圖計數（在 executor 中跑），回傳 (n_cells, n_genes)。"""
+    import numpy as np
+
+    from backend.src.fullslide.pipeline import (
+        add_centroids,
+        aggregate_cells,
+        bin_attribution,
+    )
+
+    progress(0.05, "載入全圖遮罩...")
+    mask = np.load(str(inputs["mask_path"]))
+
+    progress(0.25, "對應 2µm bins 至細胞...")
+    origin_x, origin_y = inputs["origin_xy"]
+    attribution = bin_attribution(
+        mask, inputs["tp_path"], crop_y0=origin_y, crop_x0=origin_x
+    )
+    if attribution.empty:
+        raise ValueError(
+            "沒有任何 bin 落在細胞內 —— 請檢查影像與 Visium 資料是否對位"
+        )
+
+    progress(0.55, f"聚合 {len(attribution):,} 個 bins 為細胞矩陣...")
+    cells = aggregate_cells(attribution, inputs["h5_path"])
+
+    progress(0.85, "計算細胞重心...")
+    add_centroids(
+        cells, mask, inputs["pixel_size_um"], origin_xy=inputs["origin_xy"]
+    )
+
+    out_dir = inputs["output_dir"] / FULL_COUNT_SUBDIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cells.write_h5ad(str(out_dir / FULL_COUNT_FILENAME))
+    return cells.n_obs, cells.n_vars
+
+
+async def _run_full_count(inputs: dict) -> None:
+    global _full_status
+    set_current_stage("count")
+
+    def _progress(p: float, msg: str) -> None:
+        _full_status.update({"progress": p, "message": msg})
+
+    try:
+        if inputs["meta_missing"]:
+            logger.warning(
+                "找不到 full_image_segmentation_meta.json，裁切原點視為 (0, 0)。"
+                "若分割時有指定裁切窗格，座標將會偏移。"
+            )
+        n_cells, n_genes = await asyncio.get_running_loop().run_in_executor(
+            None, _full_count_sync, inputs, _progress
+        )
+        _full_status = {
+            "status": "done", "progress": 1.0,
+            "message": f"全圖計數完成：{n_cells:,} cells × {n_genes:,} genes"
+                       f"  →  {FULL_COUNT_SUBDIR}/{FULL_COUNT_FILENAME}",
+            "n_cells": n_cells,
+        }
+    except Exception as e:
+        logger.error(f"全圖 RNA 計數失敗：{e}", exc_info=True)
+        # ValueError 為流程可預期的診斷訊息（不含路徑），可安全回傳
+        safe_msg = str(e) if isinstance(e, ValueError) else "全圖 RNA 計數失敗，請查閱 log"
+        _full_status = {"status": "error", "progress": 0.0, "message": safe_msg}
 
 
 @router.get("/available_rois")

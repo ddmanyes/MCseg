@@ -431,3 +431,139 @@ class TestResolvePixelSize:
         config = {"paths": {"binned_002": str(tmp_path)}}
 
         assert resolve_pixel_size(config) == pytest.approx(VISIUM_UM_PX)
+
+
+# ── 全圖計數輸入解析 ─────────────────────────────────────────────────────────
+
+class TestFullCountInputs:
+    """/api/count/run_full 的輸入檢查（純函式，不啟動背景任務）"""
+
+    def test_missing_mask_is_reported(self, tmp_path):
+        """未跑全圖分割時須明確要求先完成分割。"""
+        from backend.src.fullslide.pipeline import resolve_full_count_inputs
+
+        config = {"paths": {"output_dir": str(tmp_path), "binned_002": str(tmp_path)}}
+
+        inputs, err = resolve_full_count_inputs(config)
+
+        assert inputs is None
+        assert "請先完成全圖分割" in err
+
+    def test_missing_tissue_positions_is_reported(self, tmp_path):
+        """遮罩有了但缺 tissue_positions 時須指出缺哪個檔。"""
+        from backend.src.fullslide.pipeline import (
+            FULL_SEG_MASK_FILENAME,
+            resolve_full_count_inputs,
+        )
+
+        out = tmp_path / "out"
+        out.mkdir()
+        np.save(str(out / FULL_SEG_MASK_FILENAME), np.ones((4, 4), dtype=np.int32))
+        config = {"paths": {"output_dir": str(out), "binned_002": str(tmp_path / "nope")}}
+
+        inputs, err = resolve_full_count_inputs(config)
+
+        assert inputs is None
+        assert "tissue_positions" in err
+
+    def test_resolves_all_paths_and_origin(self, tmp_path):
+        """齊備時回傳遮罩/tp/h5 路徑與 sidecar 的裁切原點。"""
+        from backend.src.fullslide.pipeline import (
+            FULL_SEG_MASK_FILENAME,
+            resolve_full_count_inputs,
+            write_full_seg_meta,
+        )
+
+        out = tmp_path / "out"
+        out.mkdir()
+        np.save(str(out / FULL_SEG_MASK_FILENAME), np.ones((4, 4), dtype=np.int32))
+        write_full_seg_meta(
+            out, crop_x0=11, crop_y0=22, width=4, height=4,
+            n_cells=1, pixel_size_um=0.2737, passes=4,
+        )
+        binned = tmp_path / "b002"
+        (binned / "spatial").mkdir(parents=True)
+        (binned / "spatial" / "tissue_positions.parquet").write_bytes(b"stub")
+        (binned / "filtered_feature_bc_matrix.h5").write_bytes(b"stub")
+        config = {"paths": {"output_dir": str(out), "binned_002": str(binned)}}
+
+        inputs, err = resolve_full_count_inputs(config)
+
+        assert err is None
+        assert inputs["origin_xy"] == (11, 22)
+        assert inputs["mask_path"].name == FULL_SEG_MASK_FILENAME
+        assert inputs["tp_path"].name == "tissue_positions.parquet"
+        assert inputs["h5_path"].name == "filtered_feature_bc_matrix.h5"
+
+    def test_origin_defaults_to_zero_without_sidecar(self, tmp_path):
+        """sidecar 缺失時原點視為 (0,0)，並附帶警示旗標而非直接失敗。"""
+        from backend.src.fullslide.pipeline import (
+            FULL_SEG_MASK_FILENAME,
+            resolve_full_count_inputs,
+        )
+
+        out = tmp_path / "out"
+        out.mkdir()
+        np.save(str(out / FULL_SEG_MASK_FILENAME), np.ones((4, 4), dtype=np.int32))
+        binned = tmp_path / "b002"
+        (binned / "spatial").mkdir(parents=True)
+        (binned / "spatial" / "tissue_positions.parquet").write_bytes(b"stub")
+        (binned / "filtered_feature_bc_matrix.h5").write_bytes(b"stub")
+        config = {"paths": {"output_dir": str(out), "binned_002": str(binned)}}
+
+        inputs, err = resolve_full_count_inputs(config)
+
+        assert err is None
+        assert inputs["origin_xy"] == (0, 0)
+        assert inputs["meta_missing"] is True
+
+
+# ── 端點層級 ────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+class TestFullSlideEndpoints:
+    """/api/segmentation/run_full 與 /api/count/run_full 的請求層行為"""
+
+    async def _client(self):
+        from httpx import ASGITransport, AsyncClient
+
+        from backend.main import app
+        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+    async def test_run_full_rejects_bad_crop(self):
+        """裁切座標非法時須在啟動背景任務前就回錯。"""
+        async with await self._client() as c:
+            r = await c.post(
+                "/api/segmentation/run_full",
+                json={"crop_x0": 100, "crop_x1": 50},
+            )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "error"
+        assert "crop_x1 必須大於 crop_x0" in body["message"]
+
+    async def test_run_full_rejects_negative_origin(self):
+        async with await self._client() as c:
+            r = await c.post("/api/segmentation/run_full", json={"crop_y0": -5})
+        assert r.json()["status"] == "error"
+
+    async def test_count_full_status_shape(self):
+        """/api/count/full_status 須回傳標準狀態欄位。"""
+        async with await self._client() as c:
+            r = await c.get("/api/count/full_status")
+        body = r.json()
+        assert set(body) >= {"status", "progress", "message"}
+
+    async def test_count_run_full_requires_mask(self, monkeypatch, tmp_path):
+        """未跑全圖分割時 POST /api/count/run_full 須要求先完成分割。"""
+        from backend.src.api import cellpose_count
+
+        monkeypatch.setattr(
+            cellpose_count, "load_config",
+            lambda: {"paths": {"output_dir": str(tmp_path), "binned_002": str(tmp_path)}},
+        )
+        async with await self._client() as c:
+            r = await c.post("/api/count/run_full")
+        body = r.json()
+        assert body["status"] == "error"
+        assert "請先完成全圖分割" in body["message"]

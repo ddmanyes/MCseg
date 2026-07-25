@@ -244,6 +244,47 @@ def read_full_seg_meta(output_dir: str | Path) -> dict | None:
         return None
 
 
+def resolve_full_count_inputs(config: dict) -> tuple[dict | None, str | None]:
+    """
+    解析全圖 RNA 計數所需的輸入，回傳 `(inputs, error)`。
+
+    成功時 `inputs` 含 `mask_path`、`tp_path`、`h5_path`、`origin_xy`、
+    `pixel_size_um`、`meta_missing`；失敗時 `inputs` 為 None 且 `error` 為
+    可直接回傳給前端的訊息（不含絕對路徑）。
+
+    `meta_missing=True` 代表找不到 sidecar，原點退為 (0, 0)。這是**警示而非
+    錯誤** —— 舊版遮罩沒有 sidecar，且全圖模式的原點本來就是 (0, 0)。
+    """
+    from backend.src.utils.config import resolve_path
+
+    paths = config.get("paths", {})
+    output_dir = resolve_path(paths["output_dir"])
+    mask_path = output_dir / FULL_SEG_MASK_FILENAME
+    if not mask_path.exists():
+        return None, "找不到全圖分割遮罩，請先完成全圖分割（Stage 1）"
+
+    binned = paths.get("binned_002", "")
+    tp_path = Path(binned) / "spatial" / "tissue_positions.parquet"
+    if not tp_path.exists():
+        return None, "找不到 tissue_positions.parquet，請確認 paths.binned_002 設定"
+    h5_path = Path(binned) / "filtered_feature_bc_matrix.h5"
+    if not h5_path.exists():
+        return None, "找不到 filtered_feature_bc_matrix.h5，請確認 paths.binned_002 設定"
+
+    meta = read_full_seg_meta(output_dir)
+    origin_xy = (0, 0) if meta is None else (int(meta["crop_x0"]), int(meta["crop_y0"]))
+
+    return {
+        "mask_path": mask_path,
+        "tp_path": tp_path,
+        "h5_path": h5_path,
+        "origin_xy": origin_xy,
+        "pixel_size_um": resolve_pixel_size(config),
+        "meta_missing": meta is None,
+        "output_dir": output_dir,
+    }, None
+
+
 def resolve_pixel_size(config: dict) -> float:
     """
     取樣本實際的 µm/px：`scalefactors_json.json` 的 `microns_per_pixel` 優先，
