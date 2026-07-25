@@ -550,6 +550,40 @@ See [Supplementary Note 1](analysis/supplementary/Supplementary_Note_1.md) for f
 
 ---
 
+## Supported Image Formats
+
+| Format | Description | Notes |
+|--------|-------------|-------|
+| `.btf` / `.tif` / `.tiff` | H&E image from Visium HD SpaceRanger | Must be a tiled BigTIFF; compressed tiles are **not** supported |
+| `.ndpi` | Hamamatsu NanoZoomer | Has its own pyramid; thumbnails and low-zoom views read from pyramid levels |
+| `.svs` | Aperio | Same as above |
+| `.mrxs` | 3DHISTECH | Same as above |
+
+Reading is dispatched by `open_slide()` in `backend/src/utils/slide_reader.py`, built on
+`tifffile` — neither openslide nor tiffslide is required (the former needs `brew install` /
+a Windows DLL, the latter is incompatible with this project's `tifffile 2026.2.24`).
+
+### ⚠️ NDPI/SVS require registration first
+
+NDPI/SVS files are usually **separately scanned** high-resolution images that share **no
+coordinate system** with the Visium slide:
+
+| | Pixel size |
+|---|---|
+| Hamamatsu 40x | ~0.226 µm/px |
+| Visium HD fullres | 0.2737 µm/px |
+
+So after segmenting on such an image, RNA bins will not land in the right place. Two options:
+
+1. **Supply a Loupe alignment JSON** (recommended): re-align the image in Loupe Browser and
+   point `alignment.extra_alignment_json` at the resulting JSON. The composed homography then
+   maps bins exactly (see "Alignment and coordinate systems").
+2. **Estimate via the alignment panel**: Stage 0's "Alignment Check" estimates the residual
+   shift/affine; apply it manually after reviewing the residual. `alignment.enabled` defaults
+   to `false` — a wrong correction applied silently is worse than no correction at all.
+
+---
+
 ## Configuration
 
 All parameters are managed in `config/pipeline.yaml`. Switch tissue type with one line:

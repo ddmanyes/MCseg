@@ -551,6 +551,39 @@ MCseg 輸出可直接載入的 Xenium Explorer 套件（`experiment.xenium` + za
 
 ---
 
+## 支援的影像格式
+
+| 格式 | 說明 | 備註 |
+|------|------|------|
+| `.btf` / `.tif` / `.tiff` | Visium HD SpaceRanger 輸出的 H&E 影像 | 必須為 tiled BigTIFF；**不支援**壓縮 tile |
+| `.ndpi` | Hamamatsu NanoZoomer | 自帶金字塔，縮圖與低倍檢視直接取自金字塔層 |
+| `.svs` | Aperio | 同上 |
+| `.mrxs` | 3DHISTECH | 同上 |
+
+讀取由 `backend/src/utils/slide_reader.py` 的 `open_slide()` 統一分派，底層是
+`tifffile`（不需安裝 openslide 或 tiffslide —— 前者需 `brew install` / Windows DLL，
+後者與本專案的 `tifffile 2026.2.24` 不相容）。
+
+### ⚠️ NDPI/SVS 必須先完成配準
+
+NDPI/SVS 通常是**另外掃描**的高解析影像，與 Visium 玻片**沒有共同座標系**：
+
+| | 像素尺寸 |
+|---|---|
+| Hamamatsu 40× | ≈ 0.226 µm/px |
+| Visium HD fullres | 0.2737 µm/px |
+
+因此在這類影像上跑分割後，RNA（bins）不會自動落在正確位置。可行的兩條路：
+
+1. **提供 Loupe 對位 JSON**（建議）：用 Loupe Browser 對該影像重新對位，把產生的
+   JSON 指到 `alignment.extra_alignment_json`。系統會組合 homography 精確換算
+   （見「對位與座標系」）。
+2. **用對位檢查面板估計**：Stage 0 的「對位檢查」可估出殘餘位移／仿射，確認
+   residual 後手動套用。`alignment.enabled` 預設為 `false` —— 錯誤的估計被靜默
+   套用，比完全不修正更糟。
+
+---
+
 ## 設定
 
 所有參數均在 `config/pipeline.yaml` 中管理。切換組織類型只需修改一行：
