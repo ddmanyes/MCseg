@@ -81,6 +81,23 @@ TISSUE_PRESETS: dict[str, dict] = {
 }
 
 
+def _load_cli_config() -> dict:
+    """
+    取設定檔中與 CLI 相關的非路徑設定（目前為 `alignment:`）。
+
+    CLI 的樣本一律由引數指定，故**不採用**設定檔的 `paths:` —— 設定檔與
+    `state.json` 指向的可能是另一個樣本。讀不到設定檔時回空 dict，
+    `resolve_bin_to_image_transform` 的預設值（自動偵測對位 JSON）仍然適用。
+    """
+    try:
+        from backend.src.utils.config import load_config
+
+        return {"alignment": load_config().get("alignment") or {}}
+    except (OSError, ValueError, KeyError) as e:
+        log.warning(f"讀取設定檔失敗（{e}），alignment 設定改用預設值")
+        return {}
+
+
 # ─── Step helpers ─────────────────────────────────────────────────────────────
 
 def step_crop_btf(
@@ -93,7 +110,8 @@ def step_crop_btf(
 ) -> np.ndarray:
     """從 BTF 裁切 H&E 影像，若已存在則直接載入。"""
     import tifffile
-    import zarr
+
+    from backend.src.utils.slide_reader import open_slide
 
     crop_tif = out_dir / "he_crop.tif"
     if crop_tif.exists():
@@ -106,11 +124,12 @@ def step_crop_btf(
 
     log.info(f"[1/4] 從 BTF 裁切 H&E (row {crop_y0}:{crop_y1}, col {btf_col0}:{btf_col1})")
     t0 = time.time()
-    with tifffile.TiffFile(str(btf_path)) as tif:
-        store = tif.aszarr()
-    z = zarr.open(store, mode="r")
-    arr = z[0] if z.ndim == 4 else z
-    img = np.asarray(arr[crop_y0:crop_y1, btf_col0:btf_col1])
+    # 與 API `/run_full` 共用 SlideReader：只解壓被請求的 tile。
+    # （原本走 `tifffile.aszarr()`，但它要求 zarr >= 3，而 anndata/scanpy 這條鏈
+    #   還在 zarr 2.18.7 —— 在本環境會直接拋 ValueError，CLI 的 --btf 路徑全斷。）
+    img = open_slide(btf_path).read_region(
+        btf_col0, crop_y0, btf_col1 - btf_col0, crop_y1 - crop_y0
+    )
     if img.ndim == 3 and img.shape[-1] == 4:
         img = img[..., :3]
     log.info(f"  shape: {img.shape}  ({time.time() - t0:.0f}s)")
@@ -130,7 +149,13 @@ def step_load_he_crop(he_crop_path: Path) -> np.ndarray:
     return img
 
 
-def step_segment(img: np.ndarray, cfg: dict, out_dir: Path) -> np.ndarray:
+def step_segment(
+    img: np.ndarray,
+    cfg: dict,
+    out_dir: Path,
+    tile_size: int = 1024,
+    overlap: int = 128,
+) -> np.ndarray:
     """MCseg v2 分割，輸出 mcseg_mask.npy。"""
     mask_path = out_dir / "mcseg_mask.npy"
     if mask_path.exists():
@@ -152,8 +177,8 @@ def step_segment(img: np.ndarray, cfg: dict, out_dir: Path) -> np.ndarray:
     mask = run_tiled_mcseg_v2(
         img,
         cfg,
-        tile_size=1024,
-        overlap=128,
+        tile_size=tile_size,
+        overlap=overlap,
         progress_callback=_progress,
     )
     elapsed = time.time() - t0
@@ -171,6 +196,8 @@ def step_bin_attribution(
     crop_y0: int,
     btf_col0: int,
     scale: tuple[float, float] = (1.0, 1.0),
+    transform: "np.ndarray | None" = None,
+    transform_source: str = "",
 ) -> "pd.DataFrame":  # noqa: F821
     """將 Visium HD 2µm bins 對齊到細胞遮罩（快取 + log 包裝）。"""
     import pandas as pd
@@ -183,9 +210,12 @@ def step_bin_attribution(
         return pd.read_parquet(str(attr_path))
 
     log.info("[3/4] Bin attribution")
-    log.info(f"  SR fullres → 遮罩縮放: x={scale[0]:.4f}, y={scale[1]:.4f}")
+    log.info(f"  bins → 影像變換來源: {transform_source or '未指定'}")
+    if transform is None:
+        log.info(f"  近似縮放: x={scale[0]:.4f}, y={scale[1]:.4f}")
     attr = bin_attribution(
-        mask, tp_path, crop_y0, btf_col0, out_path=attr_path, scale=scale
+        mask, tp_path, crop_y0, btf_col0, out_path=attr_path,
+        scale=scale, transform=transform,
     )
     log.info(f"  attributed bins: {len(attr):,}")
     log.info(f"  儲存: {attr_path.name}")
@@ -439,26 +469,27 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # ── Step 1: 取得 H&E 影像
+    # `image_shape` 是**來源影像**（未裁切）的 (h, w)，供座標變換推導使用；
+    # 拿裁切後的遮罩尺寸當畫布會算出荒謬的縮放（見 fullslide.pipeline 註解）。
     if args.he_crop:
         img = step_load_he_crop(args.he_crop)
         crop_y0  = 0
         btf_col0 = 0
+        # he_crop.tif 若本身是更大張影像的一塊，CLI 無從得知其原點與原尺寸
+        image_shape = img.shape[:2]
     else:
         import tifffile
-        if args.crop_y1 == -1 or args.btf_col1 == -1:
-            with tifffile.TiffFile(str(args.btf)) as tif:
-                full_shape = tif.pages[0].shape
-            crop_y1  = full_shape[0] if args.crop_y1  == -1 else args.crop_y1
-            btf_col1 = full_shape[1] if args.btf_col1 == -1 else args.btf_col1
-        else:
-            crop_y1  = args.crop_y1
-            btf_col1 = args.btf_col1
+        with tifffile.TiffFile(str(args.btf)) as tif:
+            full_shape = tif.pages[0].shape
+        image_shape = (int(full_shape[0]), int(full_shape[1]))
+        crop_y1  = image_shape[0] if args.crop_y1  == -1 else args.crop_y1
+        btf_col1 = image_shape[1] if args.btf_col1 == -1 else args.btf_col1
         crop_y0  = args.crop_y0
         btf_col0 = args.btf_col0
         img = step_crop_btf(args.btf, out_dir, crop_y0, crop_y1, btf_col0, btf_col1)
 
     # ── Step 2: 分割
-    mask = step_segment(img, cfg, out_dir)
+    mask = step_segment(img, cfg, out_dir, args.tile_size, args.overlap)
     del img
     gc.collect()
 
@@ -466,14 +497,23 @@ def main(argv: list[str] | None = None) -> int:
     # µm/px 取樣本實際值（scalefactors_json.json）優先，缺失才用預設常數。
     # --tp 指向 {binned_002}/spatial/tissue_positions.parquet，故其祖父層即 binned_002。
     from backend.src.fullslide.pipeline import (
-        resolve_bin_to_mask_scale,
+        resolve_bin_to_image_transform,
         resolve_pixel_size,
     )
     _binned_002 = str(args.tp.parent.parent) if args.tp else ""
-    _cfg = {"paths": {"binned_002": _binned_002}}
+    # `alignment:` 等設定取自設定檔，但 paths 一律以 CLI 引數為準（CLI 可跑任意樣本，
+    # 設定檔／state.json 指向的可能是完全不同的樣本）
+    _cfg = _load_cli_config()
+    _cfg.setdefault("paths", {})
+    _cfg["paths"]["binned_002"] = _binned_002
+    if args.btf:
+        _cfg["paths"]["he_image"] = str(args.btf)
     pixel_size_um = resolve_pixel_size(_cfg)
-    # SR fullres 與 raw TIFF 可能不同座標系（見 resolve_bin_to_mask_scale docstring）
-    bin_scale = resolve_bin_to_mask_scale(_cfg, mask.shape)
+    # SR fullres 與分割影像未必同座標系：優先用 Loupe/CytAssist 對位 JSON 組出的
+    # homography（幾何正確），找不到才回退近似分軸縮放。以**來源影像**尺寸推導。
+    bin_transform, bin_scale, transform_source = resolve_bin_to_image_transform(
+        _cfg, image_shape
+    )
     log.info(f"  pixel_size_um = {pixel_size_um}")
 
     attribution = None
@@ -484,7 +524,9 @@ def main(argv: list[str] | None = None) -> int:
             log.warning(f"h5 矩陣不存在，跳過 RNA 計數: {args.h5}")
         else:
             attribution = step_bin_attribution(
-                mask, args.tp, out_dir, crop_y0, btf_col0, scale=bin_scale
+                mask, args.tp, out_dir, crop_y0, btf_col0,
+                scale=bin_scale, transform=bin_transform,
+                transform_source=transform_source,
             )
 
     # ── Step 4: 聚合 cells×genes h5ad（有 attribution 才跑）

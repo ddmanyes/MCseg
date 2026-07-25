@@ -419,6 +419,16 @@ def aggregate_cells(attribution: "pd.DataFrame", h5_path: str | Path) -> "ad.Ann
     unique_cells = np.unique(cell_ids_v)
     n_cells = len(unique_cells)
 
+    if n_cells == 0:
+        # 沒有任何 bin 落在細胞上 —— 幾乎都是座標系錯配（bin_attribution 會先警告
+        # 越界比例）。這裡必須給出可讀訊息，而不是讓下游對空陣列取 max 拋
+        # `zero-size array to reduction operation maximum`。
+        raise ValueError(
+            "沒有任何 bin 對應到細胞，無法聚合 cells×genes。"
+            "常見原因：bins 與分割影像座標系錯配（請檢查對位 JSON／裁切原點），"
+            "或裁切窗格落在組織之外。"
+        )
+
     # 向量化 LUT：O(max_id) 建立、O(n) 查詢，比 dict 快 10-100x
     lut = np.zeros(int(unique_cells.max()) + 1, dtype=np.int64)
     lut[unique_cells] = np.arange(n_cells)
