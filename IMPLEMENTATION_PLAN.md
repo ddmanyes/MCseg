@@ -328,35 +328,35 @@ B 即使損失右緣落在影像外的 bin，仍多命中 **13.4% bins / 17.5% �
 
 > 目的：先能**看見與量化**對位誤差，再談自動校正。20-50 px 的偏移不會觸發現有 30% 警告，卻會讓 RNA 落到隔壁細胞。
 
-- [ ] **P1-1 建立 registration 模組骨架**
+- [x] **P1-1 建立 registration 模組骨架**
   - 預期行為：`backend/src/registration/{__init__,align,qc}.py` 建立。
   - 驗證：`.venv/bin/python -c "import backend.src.registration.align, backend.src.registration.qc"`
   - commit：`feat(registration): 建立配準模組骨架`
 
-- [ ] **P1-2 【紅燈】bin 密度光柵化測試**
+- [x] **P1-2 【紅燈】bin 密度光柵化測試**
   - 預期行為：`test_render_bin_density_shape_and_mass`：4 個假 bin（含 1 個 `in_tissue=0` 應被排除）→ 斷言輸出 shape 正確、總和 == 3。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_11_registration.py -q` → FAILED
   - 檔案：`backend/tests/test_11_registration.py`
   - commit：`test(registration): bin 密度光柵化紅燈測試`
 
-- [ ] **P1-3 【綠燈】實作 render_bin_density**
+- [x] **P1-3 【綠燈】實作 render_bin_density**
   - 預期行為：`render_bin_density(tp_path, full_shape, downsample) -> np.ndarray`：讀 parquet 的 `pxl_row/col_in_fullres` + `in_tissue`，只留 `in_tissue==1`，以 `np.add.at` 累加到 `(H//ds, W//ds)` float32 光柵。
   - 驗證：同上 → PASSED
   - 檔案：`backend/src/registration/align.py`
   - commit：`feat(registration): bin 密度光柵化`
 
-- [ ] **P1-4 【紅燈】位移估計測試**
+- [x] **P1-4 【紅燈】位移估計測試**
   - 預期行為：`test_estimate_shift_recovers_known_offset`：造一張 128×128 有結構的圖，`np.roll` 位移 (7, -5)，斷言 `estimate_shift` 回傳 dy/dx 誤差 < 0.5 px。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_11_registration.py -q` → FAILED
   - commit：`test(registration): 位移估計紅燈測試`
 
-- [ ] **P1-5 【綠燈】實作 estimate_shift**
+- [x] **P1-5 【綠燈】實作 estimate_shift**
   - 預期行為：`estimate_shift(ref, mov, upsample_factor=10) -> tuple[float, float, float]` 回傳 `(dy, dx, error)`，單位為**輸入圖的像素**。用 `skimage.registration.phase_cross_correlation`；兩張圖先各自 z-score 標準化以抵抗亮度差（H&E 灰階 vs bin 密度量級差異極大，未標準化會失準）。
   - 驗證：同上 → PASSED
   - 檔案：`backend/src/registration/align.py`
   - commit：`feat(registration): 次像素位移估計`
 
-- [ ] **P1-5b 兩階段（coarse-to-fine）估計**
+- [x] **P1-5b 兩階段（coarse-to-fine）估計**
   - 預期行為：`estimate_shift_fullres(btf_path, tp_path, full_shape) -> tuple[float, float, float]`：
     ① **粗估**：在 `THUMB_SCALE=32` 的全片縮圖上跑 `estimate_shift`，乘 32 得 fullres 初值；
     ② **精修**：依初值在 3 個高 bin 密度區域各取 1024×1024 窗格，於 `downsample=4` 重跑 `estimate_shift`，乘 4，取 **中位數**（抗離群）。
@@ -366,30 +366,44 @@ B 即使損失右緣落在影像外的 bin，仍多命中 **13.4% bins / 17.5% �
   - 檔案：`backend/src/registration/align.py`
   - commit：`feat(registration): 兩階段 coarse-to-fine 位移估計`
 
-- [ ] **P1-5c 座標軸與單位轉換（防呆）**
+- [x] **P1-5c 座標軸與單位轉換（防呆）**
   - 預期行為：`shift_to_matrix(dy, dx) -> AffineAlignment`（P3-2 後生效；P1 階段先只寫轉換函式與測試）。明確處理兩個轉換：**① 軸序**：`phase_cross_correlation` 回傳 `(row, col)` = `(dy, dx)`，而 affine/座標一律 `(x, y)` = `(col, row)` → 必須交換；**② 單位**：估計值在 downsample 圖上，需乘回 downsample 倍率。
   - **為何獨立成一個任務**：row/col ↔ x/y 交換與 downsample 倍率是此類配準程式最常見的靜默錯誤來源（結果不會報錯，只會位移錯方向或錯 32 倍）。用一個顯式測試把它釘死。
   - 驗證：`test_shift_to_matrix_axis_order`：`shift_to_matrix(dy=10, dx=-5)` 套用到點 `(0,0)` → 得 `(-5, 10)`（x 位移 -5、y 位移 10）
   - 檔案：`backend/src/registration/align.py`
   - commit：`feat(registration): 位移→仿射矩陣的軸序與單位轉換`
 
-- [ ] **P1-6 QC 疊圖產生器**
+- [x] **P1-6 QC 疊圖產生器**
   - 預期行為：`qc.render_overlay_patches(btf_path, tp_path, out_dir, n=3, size=512, seed=0) -> list[Path]`：從有 bin 的區域隨機取 n 個 patch，用 `read_btf_crop(btf_path, x0, y0, w, h)` 取 H&E（**注意回傳是 3-tuple `(img, actual_x0, actual_y0)`**，實際原點可能因 tile 對齊而異動，散點座標必須以回傳的 `actual_x0/y0` 為基準而非請求值），散點疊上該窗內 bin 質心，300 DPI PNG 存 `{results}/qc/alignment/patch_{i}.png`。`seed` 固定以可重現。
   - 驗證：`test_render_overlay_patches_writes_n_png`（以 CRC 資料，`@pytest.mark.skipif` 資料不存在時跳過）
   - 檔案：`backend/src/registration/qc.py`
   - commit：`feat(registration): 對位 QC 疊圖`
 
-- [ ] **P1-7 API：/api/registration/estimate 與 /qc_patches**
+- [x] **P1-7 API：/api/registration/estimate 與 /qc_patches**
   - 預期行為：`GET /api/registration/estimate?roi_name=` → `{dy, dx, error, downsample}`；`POST /api/registration/qc_patches` 產圖後 `GET /api/registration/qc_images` 回 base64 清單。縮圖沿用 `DZITileServer` 的 raw-TIFF 縮圖（`THUMB_SCALE=32`），避免重建。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_11_registration.py -q`
   - 檔案：`backend/src/api/registration.py`、`backend/main.py`（掛 router）
   - commit：`feat(api): 配準估計與 QC 疊圖端點`
 
-- [ ] **P1-8 強化 counter 的偏移警告**
+- [x] **P1-8 強化 counter 的偏移警告**
   - 預期行為：`counter.py:104-111` 的 30% 警告觸發時，額外對該 ROI 呼叫 `estimate_shift` 並 log `建議偏移 dy=.. dx=..`。失敗時只 warning 不中斷（依 CLAUDE.md §11 容錯規範）。
   - 驗證：`.venv/bin/python -m pytest backend/tests/ -q` 全綠
   - 檔案：`backend/src/cellpose_counter/counter.py`
   - commit：`feat(count): 偏移警告附建議位移值`
+
+---
+
+### P1 完成紀錄（2026-07-25）
+
+**10 項全部完成**，6 個 commit，backend 全套綠燈。與計畫的偏離：
+
+1. **`AffineAlignment` 提前於 P1-5c 落地**（原訂 P3-2）。P1-5c 的 `shift_to_matrix` 依計畫就該回傳 `AffineAlignment`，不先建立它就無法寫測試 —— 循環相依。P3-1/P3-2 因此改為「補上 identity / translation / dict roundtrip 三項測試」。
+2. **`estimate_shift` 的符號語意明確定為「mov 相對 ref 的位移」**（skimage 回傳值取負）。skimage 的原生語意是「要把 mov 移多少才能對上 ref」，兩者差一個負號；不釘死就會在下游相加時方向相反。
+3. **新增 `tissue_gray()` 反相步驟**。組織在 H&E 上是**暗**的，而 bin 密度在組織處是**高**的 —— 直接相關會讓相關峰翻成負峰而抓不到。這在計畫裡沒提，實作時才發現是必要條件。
+4. **精修階段量的是「窗內的絕對位移」而非「粗估的殘餘」**。H&E 窗格與 bin 密度取的是同一個 fullres box，相位相關直接給出完整位移（只要 |shift| < window/2）。粗估因此只用於**挑窗格位置**，最終值取三窗中位數。
+5. **P1-8 的建議位移改用「遮罩 vs bin 密度」而非 BTF**。兩者都已在遮罩座標系、都在記憶體裡，不必回頭讀 BTF；遮罩側用 `block_mean` 而非逐點光柵化（全片遮罩非零像素可達數億個）。
+
+`/api/registration/estimate` 回報的是**已套用對位變換之後的殘餘位移** —— 與 P0.5 的定位一致：JSON 負責對位，本模組負責驗證。
 
 ---
 
