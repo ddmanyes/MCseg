@@ -506,12 +506,17 @@ def write_full_seg_meta(
     n_cells: int,
     pixel_size_um: float,
     passes: int,
+    image_width: int | None = None,
+    image_height: int | None = None,
 ) -> Path:
     """
     寫出全圖遮罩的 metadata sidecar。
 
     遮罩本身只有局部座標，下游（Stage 2 全圖計數、Stage 3.5 框選）必須靠
     `crop_x0/crop_y0` 才能還原回原始影像 fullres 座標系。
+
+    `image_width/height` 為**來源影像**的完整尺寸（非本次裁切窗格）。座標變換
+    的推導以它為準 —— 用窗格尺寸會算出荒謬的縮放。
     """
     import json
     from datetime import datetime, timezone
@@ -528,6 +533,9 @@ def write_full_seg_meta(
         "passes": int(passes),
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if image_width and image_height:
+        meta["image_width"] = int(image_width)
+        meta["image_height"] = int(image_height)
     path = output_dir / FULL_SEG_META_FILENAME
     path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return path
@@ -544,6 +552,38 @@ def read_full_seg_meta(output_dir: str | Path) -> dict | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return None
+
+
+def _resolve_image_shape(
+    config: dict, meta: dict | None, mask_shape: tuple[int, int]
+) -> tuple[int, int]:
+    """
+    取**來源影像**的 `(height, width)`，供座標變換推導使用。
+
+    取用順序：sidecar 記錄的影像尺寸 → 直接開 `paths.he_image` 讀 → 退回遮罩尺寸
+    ＋裁切原點（僅在前兩者都不可得時；此時只是下限，會 log 警告）。
+    """
+    if meta and meta.get("image_width") and meta.get("image_height"):
+        return int(meta["image_height"]), int(meta["image_width"])
+
+    he = config.get("paths", {}).get("he_image", "")
+    if he and Path(he).exists():
+        try:
+            from backend.src.utils.slide_reader import open_slide
+
+            w, h = open_slide(he).dimensions
+            return int(h), int(w)
+        except (ValueError, OSError) as e:
+            logger.warning(f"無法讀取 he_image 尺寸（{e}），改以遮罩尺寸推估")
+
+    oy = int(meta["crop_y0"]) if meta else 0
+    ox = int(meta["crop_x0"]) if meta else 0
+    if ox or oy:
+        logger.warning(
+            "找不到來源影像，改以「裁切原點＋遮罩尺寸」當作影像尺寸 —— "
+            "這只是下限，若遮罩並非影像右下角，座標變換會失準。"
+        )
+    return mask_shape[0] + oy, mask_shape[1] + ox
 
 
 def resolve_full_count_inputs(config: dict) -> tuple[dict | None, str | None]:
@@ -578,7 +618,12 @@ def resolve_full_count_inputs(config: dict) -> tuple[dict | None, str | None]:
 
     # 遮罩尺寸只讀 .npy header（mmap 不載入陣列本體，全片可達數 GB）
     mask_shape = np.load(str(mask_path), mmap_mode="r").shape
-    transform, scale, transform_source = resolve_bin_to_image_transform(config, mask_shape)
+    # ⚠️ 變換要以**來源影像**的尺寸推導，不是遮罩的尺寸。遮罩可能只是影像的一個
+    # 裁切窗格（Stage 1 的 crop 座標），拿它當畫布會算出荒謬的縮放
+    # （實測 800×800 窗格 → scale (0.071, 0.034)，且連帶讓 JSON 的 H_new
+    # 自動偵測失準）。遮罩在影像中的位置由 origin_xy 負責，與縮放無關。
+    image_shape = _resolve_image_shape(config, meta, mask_shape)
+    transform, scale, transform_source = resolve_bin_to_image_transform(config, image_shape)
 
     return {
         "mask_path": mask_path,

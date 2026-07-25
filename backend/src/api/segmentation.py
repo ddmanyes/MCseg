@@ -385,6 +385,8 @@ async def _run_full_segmentation(
         # 還原回原始影像 fullres 座標系
         write_full_seg_meta(
             output_dir,
+            image_width=w_img,
+            image_height=h_img,
             crop_x0=crop_x0,
             crop_y0=crop_y0,
             width=int(final_mask.shape[1]),

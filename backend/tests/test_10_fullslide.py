@@ -1338,3 +1338,82 @@ class TestMemmapLabelsOnDisk:
 
         assert "path" in seen, "執行期間應存在 memmap 暫存檔"
         assert seen["size"] >= 256 * 256 * 4      # npy header 之外即為 int32 陣列
+
+
+class TestCroppedMaskTransform:
+    """裁切窗格的遮罩不可被當成整片畫布去推導縮放
+
+    真實案例（dpcp01，2026-07-25 實測）：800×800 的裁切窗格讓
+    `resolve_bin_to_mask_scale` 算出 scale (0.071, 0.034)，並連帶讓對位 JSON 的
+    `H_new` 自動偵測推估出 mpp 11.13 而全部落空 —— 任何用裁切座標跑的全圖分割，
+    計數都會整批錯位。遮罩在影像中的位置由 `origin_xy` 負責，與縮放無關。
+    """
+
+    @staticmethod
+    def _setup(tmp_path, mask_shape, crop_xy, *, with_image=True, meta_dims=False):
+        import json as _json
+
+        import tifffile
+
+        from backend.src.fullslide.pipeline import write_full_seg_meta
+
+        binned = tmp_path / "b002"
+        _write_spatial(binned, hires_size=(2870, 6000), scalef=0.25475544, mpp=0.5464)
+        (binned / "filtered_feature_bc_matrix.h5").write_bytes(b"stub")
+        _write_tissue_positions(binned / "spatial" / "tissue_positions.parquet", [(1, 1)])
+
+        out = tmp_path / "out"
+        out.mkdir(parents=True, exist_ok=True)
+        np.save(str(out / "full_image_segmentation_masks.npy"),
+                np.zeros(mask_shape, dtype=np.int32))
+
+        he = tmp_path / "slide.btf"
+        if with_image:
+            tifffile.imwrite(str(he), np.zeros((47104, 21504, 3), dtype=np.uint8),
+                             bigtiff=True, tile=(256, 256), photometric="rgb")
+
+        kw = {"image_width": 21504, "image_height": 47104} if meta_dims else {}
+        write_full_seg_meta(out, crop_x0=crop_xy[0], crop_y0=crop_xy[1],
+                            width=mask_shape[1], height=mask_shape[0],
+                            n_cells=0, pixel_size_um=0.2737, passes=4, **kw)
+
+        return {"paths": {"output_dir": str(out), "binned_002": str(binned),
+                          "he_image": str(he) if with_image else ""},
+                "alignment": {"use_alignment_json": False}}
+
+    def test_cropped_mask_derives_same_scale_as_full_mask(self, tmp_path):
+        """800×800 窗格與整片遮罩，推導出的縮放必須相同。"""
+        from backend.src.fullslide.pipeline import resolve_full_count_inputs
+
+        # 影像真實尺寸 47104×21504；遮罩只是其中 800×800 的一塊
+        cropped = self._setup(tmp_path / "a", (800, 800), (18384, 21712))
+        full = self._setup(tmp_path / "b", (47104, 21504), (0, 0))
+
+        inp_c, _ = resolve_full_count_inputs(cropped)
+        inp_f, _ = resolve_full_count_inputs(full)
+
+        assert inp_c["scale"] == pytest.approx(inp_f["scale"])
+        assert inp_c["scale"][0] == pytest.approx(1.9088, abs=1e-3)
+        assert inp_c["origin_xy"] == (18384, 21712)
+
+    def test_sidecar_image_dims_take_priority(self, tmp_path):
+        """sidecar 記了影像尺寸就直接用，不必再開影像檔。"""
+        from backend.src.fullslide.pipeline import resolve_full_count_inputs
+
+        cfg = self._setup(tmp_path, (800, 800), (18384, 21712),
+                          with_image=False, meta_dims=True)
+        inp, err = resolve_full_count_inputs(cfg)
+
+        assert err is None
+        assert inp["scale"][0] == pytest.approx(1.9088, abs=1e-3)
+
+    def test_falls_back_to_origin_plus_mask_without_image(self, tmp_path):
+        """影像與 sidecar 尺寸都沒有時退為「原點＋遮罩」，並且不得拋錯。"""
+        from backend.src.fullslide.pipeline import _resolve_image_shape
+
+        shape = _resolve_image_shape(
+            {"paths": {"he_image": ""}},
+            {"crop_x0": 18384, "crop_y0": 21712},
+            (800, 800),
+        )
+        assert shape == (22512, 19184)
