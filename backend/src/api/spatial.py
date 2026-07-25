@@ -83,6 +83,86 @@ def _local_spatial(adata, config: dict, roi_name: Optional[str]):
     return spatial
 
 
+def _fullres_xy(adata, config: dict, roi_name: Optional[str]):
+    """
+    取細胞質心的**全片 fullres px** 座標，三層回退：
+
+    | 順序 | 來源 | 補償 |
+    |------|------|------|
+    | ① | `obs['centroid_x_fullres']` / `_y_fullres`（P0-7 全圖流程） | 無，已是全片座標 |
+    | ② | `obs['centroid_x_px']` / `_y_px`（ROI 流程，裁切局部） | ＋ ROI 原點 |
+    | ③ | `obsm['spatial']`（µm，舊資料） | ÷ pixel_size ＋ ROI 原點 |
+
+    **為何必須統一**：RegionSelector 在全片座標上框選，而 ②③ 是裁切局部座標。
+    直接比對會整批偏移一整個裁切原點（真實 ROI 可達數萬 px）—— 選到的是完全
+    錯誤的區域，而且不報錯。
+    """
+    import numpy as np
+
+    obs = adata.obs
+    if "centroid_x_fullres" in obs.columns and "centroid_y_fullres" in obs.columns:
+        return np.stack([
+            obs["centroid_x_fullres"].values.astype(float),
+            obs["centroid_y_fullres"].values.astype(float),
+        ], axis=1)
+
+    roi_cfg = next(
+        (r for r in config.get("rois", []) if r.get("name") == roi_name), None
+    ) if roi_name else None
+    ox = float(roi_cfg["x"]) if roi_cfg and roi_cfg.get("x") is not None else 0.0
+    oy = float(roi_cfg["y"]) if roi_cfg and roi_cfg.get("y") is not None else 0.0
+
+    if "centroid_x_px" in obs.columns and "centroid_y_px" in obs.columns:
+        return np.stack([
+            obs["centroid_x_px"].values.astype(float) + ox,
+            obs["centroid_y_px"].values.astype(float) + oy,
+        ], axis=1)
+
+    if "spatial" not in adata.obsm:
+        raise ValueError("細胞資料缺少質心座標（centroid_*_fullres / centroid_*_px / obsm['spatial']）")
+
+    px_um = _get_pixel_size(config, roi_name)
+    return np.asarray(adata.obsm["spatial"], dtype=float)[:, :2] / px_um + [ox, oy]
+
+
+def _filter_by_region(
+    adata,
+    region: Optional[dict],
+    polygon: Optional[list],
+    config: dict,
+    roi_name: Optional[str],
+):
+    """
+    以全片 fullres px 的 bbox 或多邊形過濾細胞，回傳布林遮罩。
+
+    `region` 與 `polygon` 同時給定時 **polygon 優先**（較精確者勝）。
+    兩者皆 None 時回傳全 True（未框選 = 全選）。邊界上的點計入。
+    """
+    import numpy as np
+
+    if region is None and polygon is None:
+        return np.ones(adata.n_obs, dtype=bool)
+
+    pts = _fullres_xy(adata, config, roi_name)
+
+    if polygon is not None:
+        if len(polygon) < 3:
+            logger.warning(f"多邊形頂點數不足（{len(polygon)}），視為未選取任何細胞")
+            return np.zeros(adata.n_obs, dtype=bool)
+        from matplotlib.path import Path as MplPath
+
+        # radius 極小正值：讓正好落在邊上的點被判為「在內」
+        return MplPath(np.asarray(polygon, dtype=float)).contains_points(pts, radius=1e-9)
+
+    # 使用者可能從右下往左上拉框 → 正規化角點，否則會回傳空集合
+    x0, x1 = sorted((float(region["x0"]), float(region["x1"])))
+    y0, y1 = sorted((float(region["y0"]), float(region["y1"])))
+    return (
+        (pts[:, 0] >= x0) & (pts[:, 0] <= x1) &
+        (pts[:, 1] >= y0) & (pts[:, 1] <= y1)
+    )
+
+
 def _get_expr(adata, genes: list[str]):
     """取得基因表現矩陣，回傳 (n_cells,) 陣列（多基因取平均 log1p）。"""
     import numpy as np
