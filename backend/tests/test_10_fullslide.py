@@ -2,6 +2,8 @@
 
 全部使用合成資料 —— 不需真實 CRC/BTF 資料，Windows 亦可執行。
 """
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -1249,3 +1251,65 @@ class TestBlockedPostprocessing:
 
         assert np.array_equal(expected, got)
         assert n == int(got.max())
+
+
+class TestRunFullStreaming:
+    """`/api/segmentation/run_full` 走串流路徑（不再整圖進 RAM）"""
+
+    @pytest.mark.asyncio
+    async def test_run_full_streams_from_slide_reader(self, fake_cellpose, tmp_path, monkeypatch):
+        """端到端：合成 BTF → 串流 tiled 分割 → 產出遮罩與 sidecar。"""
+        import json
+
+        import tifffile
+
+        import backend.src.api.segmentation as seg
+
+        rng = np.random.default_rng(0)
+        img = rng.integers(30, 180, (384, 384, 3), dtype=np.uint8)
+        btf = tmp_path / "slide.btf"
+        tifffile.imwrite(str(btf), img, bigtiff=True, tile=(128, 128), photometric="rgb")
+
+        out = tmp_path / "out"
+        config = {
+            "paths": {"he_image": str(btf), "output_dir": str(out), "binned_002": ""},
+            "segmentation": {"mcseg_v2": _tiled_cfg()},
+            "full_seg": {"tile_size": 128, "overlap": 32, "max_load_gb": 6.0,
+                         "force_disable_cpsam": True},
+        }
+        monkeypatch.setattr(seg, "resolve_path", lambda p: Path(p))
+
+        await seg._run_full_segmentation(config, seg.FullSegParams())
+
+        assert seg._full_status["status"] == "done", seg._full_status
+        mask = np.load(str(out / "full_image_segmentation_masks.npy"))
+        assert mask.shape == (384, 384)
+        assert mask.max() > 0
+
+        meta = json.loads((out / "full_image_segmentation_meta.json").read_text())
+        assert (meta["width"], meta["height"]) == (384, 384)
+        # 暫存檔已清掉（最終遮罩產出後才刪）
+        assert list(out.glob("tmp_labels_*.npy")) == []
+
+    @pytest.mark.asyncio
+    async def test_run_full_rejects_oversized_mask(self, tmp_path, monkeypatch):
+        """遮罩本身仍受 RAM 限制（int32 4 bytes/px）→ 超限須明確報錯。"""
+        import tifffile
+
+        import backend.src.api.segmentation as seg
+
+        img = np.zeros((256, 256, 3), dtype=np.uint8)
+        btf = tmp_path / "slide.btf"
+        tifffile.imwrite(str(btf), img, bigtiff=True, tile=(128, 128), photometric="rgb")
+
+        config = {
+            "paths": {"he_image": str(btf), "output_dir": str(tmp_path / "out")},
+            "segmentation": {"mcseg_v2": _tiled_cfg()},
+            "full_seg": {"tile_size": 128, "overlap": 32,
+                         "max_load_gb": 1e-6, "force_disable_cpsam": True},
+        }
+        monkeypatch.setattr(seg, "resolve_path", lambda p: Path(p))
+
+        await seg._run_full_segmentation(config, seg.FullSegParams())
+
+        assert seg._full_status["status"] == "error"

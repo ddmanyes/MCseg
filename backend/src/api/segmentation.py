@@ -302,10 +302,9 @@ async def _run_full_segmentation(
     try:
         import gc
         import numpy as np
-        import tifffile
-        import zarr as _zarr
         from backend.src.fullslide.pipeline import resolve_pixel_size, write_full_seg_meta
         from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
+        from backend.src.utils.slide_reader import open_slide
 
         paths      = config.get("paths", {})
         output_dir = resolve_path(paths["output_dir"])
@@ -319,32 +318,33 @@ async def _run_full_segmentation(
 
         params = params or FullSegParams()
 
-        _progress(0.02, "讀取 BTF 影像（tile-based）...")
-        with tifffile.TiffFile(str(btf_path)) as tif:
-            store = tif.aszarr()
-            z = _zarr.open(store, mode="r")
-            arr = z if not isinstance(z, _zarr.Group) else z[0]
-            shape = arr.shape
-            h_img, w_img = shape[0], shape[1]
-            n_ch = shape[2] if len(shape) > 2 else 1
+        _progress(0.02, "開啟影像（串流讀取）...")
+        # SlideReader 統一 BTF/TIFF 與 NDPI/SVS；read_region 只解壓被請求的 tile，
+        # 整張影像不進 RAM —— 這是全片（>6 GB）跑得動的前提。
+        reader = open_slide(btf_path)
+        w_img, h_img = reader.dimensions
 
-            crop_x0, crop_y0, crop_x1, crop_y1 = resolve_crop_window(params, w_img, h_img)
-            crop_w, crop_h = crop_x1 - crop_x0, crop_y1 - crop_y0
+        crop_x0, crop_y0, crop_x1, crop_y1 = resolve_crop_window(params, w_img, h_img)
+        crop_w, crop_h = crop_x1 - crop_x0, crop_y1 - crop_y0
 
-            estimated_gb = crop_h * crop_w * n_ch / 1024 ** 3
-            if estimated_gb > max_load_gb:
-                raise MemoryError(
-                    f"影像窗格 {crop_w}×{crop_h}px ≈ {estimated_gb:.1f} GB，"
-                    f"超過安全載入上限（{max_load_gb:g} GB）。"
-                    f"請縮小裁切範圍或改用 ROI 裁切模式（Stage 0 + Stage 1）。"
-                )
-            img = np.asarray(arr[crop_y0:crop_y1, crop_x0:crop_x1])
-        if img.ndim == 3 and img.shape[-1] == 4:
-            img = img[..., :3]
+        def tile_reader(x, y, w, h, _r=reader, _ox=crop_x0, _oy=crop_y0):
+            """裁切窗格內的相對座標 → 影像絕對座標。"""
+            tile = _r.read_region(_ox + x, _oy + y, w, h)
+            return tile[..., :3] if tile.ndim == 3 and tile.shape[-1] > 3 else tile
+
+        # 影像本身已改為串流讀取，不再受 RAM 限制；剩下的硬限制是**輸出遮罩**
+        # （int32，4 bytes/px）—— 它在寫檔前必須完整存在於記憶體一次。
+        mask_gb = crop_h * crop_w * 4 / 1024 ** 3
+        if mask_gb > max_load_gb:
+            raise MemoryError(
+                f"窗格 {crop_w}×{crop_h}px 的分割遮罩約 {mask_gb:.1f} GB（int32），"
+                f"超過安全上限（full_seg.max_load_gb = {max_load_gb:g} GB）。"
+                f"請縮小裁切範圍，或調高該設定值。"
+            )
 
         _is_full = (crop_x0, crop_y0, crop_x1, crop_y1) == (0, 0, w_img, h_img)
         _scope = "全圖" if _is_full else f"窗格 ({crop_x0},{crop_y0})"
-        _progress(0.05, f"{_scope} 尺寸 {img.shape[1]}×{img.shape[0]}px，開始 tiled 分割...")
+        _progress(0.05, f"{_scope} 尺寸 {crop_w}×{crop_h}px，開始 tiled 串流分割...")
 
         # MPS 安全設定：tile_size=1024, batch_size≤2
         tile_size = int(full_cfg.get("tile_size", 1024))
@@ -362,10 +362,18 @@ async def _run_full_segmentation(
         import functools
         final_mask = await loop.run_in_executor(
             None,
-            functools.partial(run_tiled_mcseg_v2, img, seg_cfg_safe,
-                              tile_size, overlap, _progress),
+            functools.partial(
+                run_tiled_mcseg_v2,
+                cfg=seg_cfg_safe,
+                tile_size=tile_size,
+                overlap=overlap,
+                progress_callback=_progress,
+                tile_reader=tile_reader,
+                full_shape=(crop_h, crop_w),
+                # 標籤圖落在 memmap 並記錄進度：中斷後可自上次完成的 tile 列續跑
+                work_dir=output_dir,
+            ),
         )
-        del img
         gc.collect()
 
         out_path = output_dir / "full_image_segmentation_masks.npy"
