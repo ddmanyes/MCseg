@@ -7,7 +7,7 @@
 
 **MCseg** is a no-code, end-to-end analysis platform for 10x Genomics **Visium HD** (2 µm resolution) spatial transcriptomics data. Starting from a raw gigapixel BTF image, MCseg covers the complete workflow: custom ROI cropping, high-fidelity cell segmentation, RNA counting, downstream analysis (QC → UMAP → cell-type annotation), and one-click export to Xenium Explorer or Loupe Browser — all through a web interface requiring no programming.
 
-Its core segmentation engine, **MCseg**, was developed through the **AutoResearch** paradigm — an AI-autonomous architecture search over ~80 evaluation cycles — yielding a seven-pass multi-model Cellpose ensemble with Voronoi-constrained boundary expansion. Against Xenium Prime ground truth in LUAD tissue, MCseg achieves **PQ = 0.554 ± 0.064** — a **+28% improvement** over the optimised dual-diameter baseline **2Cseg** (PQ 0.432 ± 0.037). In CRC, MCseg matches Space Ranger's transcript capture (UMI density 11.6 vs 11.7 UMI/µm²) while maintaining higher transcriptional boundary purity (NED 0.727 vs 0.712, p = 0.026). GPU is optional; full CPU fallback is supported.
+Its core segmentation engine, **MCseg**, was developed through the **AutoResearch** paradigm — an AI-autonomous architecture search over ~80 evaluation cycles — yielding a seven-pass Cellpose ensemble with Voronoi-constrained boundary expansion. Against Xenium Prime ground truth in LUAD tissue, MCseg achieves **PQ = 0.554 ± 0.064** — a **+28% improvement** over the optimised dual-diameter baseline **2Cseg** (PQ 0.432 ± 0.037). In CRC, MCseg matches Space Ranger's transcript capture (UMI density 11.6 vs 11.7 UMI/µm²) while maintaining higher transcriptional boundary purity (NED 0.727 vs 0.712, p = 0.026). GPU is optional; full CPU fallback is supported.
 
 <p align="center">
   <img src="docs/fig1a_pipeline.png" width="820" alt="MCseg pipeline overview">
@@ -215,7 +215,7 @@ uv run python -m backend.src.cli.segment --help
   --batch-size N        Cellpose batch size (default 2)
   --tile-size PX        Tile size (default 1024)
   --overlap PX          Tile overlap (default 128)
-  --dia-small/mid/large PX      Override cyto3 diameters
+  --dia-small/mid/large PX      Override ensemble diameters
   --voronoi-d PX        Override Voronoi expansion distance
   --cellprob THRESH     Override cellprob_threshold
 
@@ -459,7 +459,7 @@ After launching (`bash start.sh`), open **[http://localhost:3000](http://localho
 1. Review the default parameters (pre-filled from the tissue profile):
    | Parameter                   | Default         | Notes                                                           |
    | --------------------------- | --------------- | --------------------------------------------------------------- |
-   | `dia_small / mid / large` | 13 / 17 / 22 px | cyto3 cell diameter sweep                                       |
+   | `dia_small / mid / large` | 13 / 17 / 22 px | cell diameter sweep (one model, three diameters)                |
    | `voronoi_distance`        | 9 px            | Voronoi expansion cap                                           |
    | `use_hematoxylin`         | true            | adds H-channel passes                                           |
    | `use_cpsam`               | false           | enable for complex/dense tissue (+3 passes, ~50–60 min on CPU) |
@@ -537,14 +537,26 @@ Files are saved to `<output_dir>/export/xenium/{roi_name}/`.
 
 ```text
 1. CLAHE preprocessing (clip=3.0, tile=8×8) + Hematoxylin extraction
-2. Multi-pass multi-model detection (4–7 passes depending on options):
-   · cyto3 @ 13/17/22 px on CLAHE-RGB (3 passes, always)
-   · cyto3 @ 17 px on Hematoxylin channel (1 pass, use_hematoxylin=true by default)
+2. Multi-pass detection (4–7 passes depending on options):
+   · cpsam @ 13/17/22 px on CLAHE-RGB (3 passes, always)
+   · cpsam @ 17 px on Hematoxylin channel (1 pass, use_hematoxylin=true by default)
    · cpsam @ auto / 16 px / hematoxylin (up to 3 passes, use_cpsam=false by default)
 3. Ensemble merging (IoU overlap threshold < 15%)
 4. Voronoi boundary expansion (default d=9 px; d=8 px used in paper benchmark)
 5. Quality filtering (20–6000 px²)
 ```
+
+> **On the model name.** Earlier revisions of this document described passes 1–4 as
+> `cyto3`. That was inaccurate: `cellpose 4.0.1+` removed the `model_type` argument
+> (it logs `model_type argument is not used in v4.0.1+` and ignores it) and always
+> loads the `pretrained_model` default, `cpsam`. The `cyto3` weights were never
+> present in the environment these results were produced in.
+>
+> What the ensemble varies is therefore **diameter and cellprob threshold, not the
+> model** — `diameter` is still honoured (it rescales the image to the model's 30 px
+> cell size), so the multi-diameter ensemble works as described. All existing results
+> were produced by `cpsam`. The actual weight path is written to the run log on every
+> model load.
 
 See [Supplementary Note 1](analysis/supplementary/Supplementary_Note_1.md) for full algorithm specification.
 

@@ -7,7 +7,7 @@
 profile_name: CRC
 description: "Colorectal Cancer — epithelial, immune, stromal compartments"
 
-# ── Stage 1: MCseg v2 覆寫值（CRC 腸上皮，cyto3 適中直徑）────
+# ── Stage 1: MCseg v2 覆寫值（CRC 腸上皮，適中直徑）─────────
 segmentation:
   mcseg_v2:
     dia_small: 13.0           # px — 淋巴細胞、小核

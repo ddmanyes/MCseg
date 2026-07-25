@@ -405,11 +405,11 @@ def build_parser() -> argparse.ArgumentParser:
     seg.add_argument("--overlap",    type=int, default=128,  metavar="PX",
                      help="Tile 重疊寬度（預設 128）")
     seg.add_argument("--dia-small",  type=float, metavar="PX",
-                     help="cyto3 小直徑（覆寫 tissue preset）")
+                     help="小直徑 pass（覆寫 tissue preset）")
     seg.add_argument("--dia-mid",    type=float, metavar="PX",
-                     help="cyto3 中直徑（覆寫 tissue preset）")
+                     help="主直徑 pass（覆寫 tissue preset）")
     seg.add_argument("--dia-large",  type=float, metavar="PX",
-                     help="cyto3 大直徑（覆寫 tissue preset）")
+                     help="大直徑 pass（覆寫 tissue preset）")
     seg.add_argument("--voronoi-d",  type=int, metavar="PX",
                      help="Voronoi 擴張距離（覆寫 tissue preset）")
     seg.add_argument("--cellprob",   type=float, metavar="THRESH",

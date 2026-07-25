@@ -24,7 +24,7 @@ interface RoiOverride {
 interface SegParams {
   use_gpu: boolean
   batch_size: number
-  // cyto3 直徑
+  // 集成直徑
   dia_small: number
   dia_mid: number
   dia_large: number
@@ -552,16 +552,16 @@ export default function Stage1_Segmentation() {
             <Section title={t('stage1.sec.diameters')}>
               <NumberInput label={t('stage1.param.dia_small')} value={params.dia_small}
                 onChange={v => set('dia_small', v)} step={0.5} min={4} max={40} hint="px"
-                tooltip="cyto3 小細胞 pass 的預期直徑。用來補救主 pass 漏掉的小細胞（如淋巴細胞）。預設 13px。" />
+                tooltip="小細胞 pass 的預期直徑。用來補救主 pass 漏掉的小細胞（如淋巴細胞）。預設 13px。" />
               <NumberInput label={t('stage1.param.dia_mid')} value={params.dia_mid}
                 onChange={v => set('dia_mid', v)} step={0.5} min={8} max={50} hint="px"
-                tooltip="cyto3 主要 pass 的預期細胞直徑（此 pass 結果作為集成基底）。H&E 細胞核通常 15-20px。預設 17px。" />
+                tooltip="主要 pass 的預期細胞直徑（此 pass 結果作為集成基底）。H&E 細胞核通常 15-20px。預設 17px。" />
               <NumberInput label={t('stage1.param.dia_large')} value={params.dia_large}
                 onChange={v => set('dia_large', v)} step={0.5} min={12} max={80} hint="px"
-                tooltip="cyto3 大細胞 pass，補救大型細胞（如上皮細胞、巨噬細胞）。預設 22px。" />
+                tooltip="大細胞 pass，補救大型細胞（如上皮細胞、巨噬細胞）。預設 22px。" />
               <Toggle label={t('stage1.param.hematoxylin')} value={params.use_hematoxylin}
                 onChange={v => set('use_hematoxylin', v)}
-                tooltip="額外對 Ruifrok H&E 分離的 Hematoxylin 通道跑一次 cyto3（dia=主要直徑）。可補充 H 通道清晰但 RGB 不佳的細胞核。建議開啟。" />
+                tooltip="額外對 Ruifrok H&E 分離的 Hematoxylin 通道跑一輪（dia=主要直徑）。可補充 H 通道清晰但 RGB 不佳的細胞核。建議開啟。" />
               <Toggle label={t('stage1.param.cpsam')} value={params.use_cpsam}
                 onChange={v => set('use_cpsam', v)}
                 tooltip="額外加入 Cellpose SAM 模型（cpsam）的 3 個 pass。可提升小型/不規則細胞的召回率，但會顯著增加運算時間（約 2-3 倍）。預設關閉。" />

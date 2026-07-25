@@ -44,12 +44,51 @@ class TestConfig:
             assert "height_px" in roi
 
     def test_segmentation_config(self, config_dict):
-        """分割設定使用 MCseg v2（cyto3 多直徑集成）"""
+        """分割設定使用 MCseg v2（多直徑集成）"""
         seg = config_dict["segmentation"]
         assert "mcseg_v2" in seg, "缺少 segmentation.mcseg_v2 區塊"
         mcseg = seg["mcseg_v2"]
         for key in ("dia_small", "dia_mid", "dia_large", "voronoi_distance"):
             assert key in mcseg, f"mcseg_v2 缺少必要欄位：{key}"
+
+    def test_primary_model_is_cpsam_not_cyto3(self):
+        """釘死「實際載入的是哪個模型」—— 別再靠文件宣稱。
+
+        文件曾長期描述為「cyto3 三直徑集成」，但 cellpose 4.0.1+ 移除了
+        `model_type` 參數（只印 warning 後忽略），一律載入 `pretrained_model`
+        的預設值 `cpsam`。這個測試讓「文件說 cyto3、程式跑 cpsam」的漂移
+        無法再無聲發生：若哪天真的換回 cyto3，它會失敗並要求同步更新文件。
+        """
+        import ast
+        import inspect
+
+        from cellpose import models
+
+        from backend.src.segmentation import cellpose_runner
+
+        # 1. 不得再傳已被忽略的 model_type（傳了只會製造假象）。
+        #    走 AST 而非字串比對 —— 註解與 docstring 本來就會提到這個名字。
+        tree = ast.parse(inspect.getsource(cellpose_runner))
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            for kw in node.keywords
+            if kw.arg == "model_type"
+        ]
+        assert not offenders, (
+            f"第 {offenders} 行仍在傳 model_type —— cellpose 4.0.1+ 會忽略它，"
+            "傳了只會讓 log 與文件失準"
+        )
+
+        # 2. cellpose 的預設權重就是 cpsam
+        default = inspect.signature(models.CellposeModel.__init__).parameters[
+            "pretrained_model"
+        ].default
+        assert default == "cpsam", (
+            f"cellpose 預設模型變成 {default!r} —— README / CLAUDE.md 的"
+            "「關於模型名稱」一節需同步更新"
+        )
 
     def test_analysis_mito_prefix(self, config_dict):
         """人類資料必須用大寫 MT-"""

@@ -26,12 +26,12 @@ segmentation:
     # GPU / 批次
     use_gpu: true
     batch_size: 4
-    # cyto3 多直徑集成
+    # 多直徑集成（模型為 cpsam；見 README「關於模型名稱」）
     dia_small: 13.0          # small cells（淋巴細胞等）
     dia_mid: 17.0            # 主要 pass（集成基底）
     dia_large: 22.0          # 大型細胞（上皮、巨噬細胞）
     # 可選 pass
-    use_hematoxylin: true    # cyto3 on Ruifrok Hematoxylin 通道
+    use_hematoxylin: true    # 額外對 Ruifrok Hematoxylin 通道跑一輪
     use_cpsam: false         # cpsam 集成（可選，顯著增加時間）
     # cpsam 7-pass 獨立規格（僅 use_cpsam=true 時生效；論文 Pass 5/6/7）
     dia_cpsam_auto: 0.0      # Pass 5/7 直徑；0 = Cellpose 自動偵測（~30px）

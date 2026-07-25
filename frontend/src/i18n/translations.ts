@@ -89,7 +89,7 @@ export const translations: TransDict = {
   'stage1.show_params':   { zh: '展開參數設定', en: 'Show Parameters' },
   'stage1.hide_params':   { zh: '收起參數',    en: 'Hide Parameters' },
   'stage1.sec.model':     { zh: '模型設定',    en: 'Model Settings' },
-  'stage1.sec.diameters': { zh: 'cyto3 多尺寸直徑', en: 'cyto3 Multi-scale Diameters' },
+  'stage1.sec.diameters': { zh: '多尺寸直徑', en: 'Multi-scale Diameters' },
   'stage1.sec.voronoi':   { zh: 'Voronoi 後處理', en: 'Voronoi Post-processing' },
   'stage1.sec.cellpose_qc': { zh: 'Cellpose QC', en: 'Cellpose QC' },
   'stage1.sec.presets':   { zh: '快速預設值',  en: 'Quick Presets' },

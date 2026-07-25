@@ -8,11 +8,23 @@ MCseg v2 多模型集成分割器
 
 核心演算法（V12）：
   1. 預處理：CLAHE + 組織遮罩 + Ruifrok H&E 色彩分離
-  2. 多模型推論：cyto3 × 3 直徑 + 可選 hematoxylin pass + 可選 cpsam × 3
+  2. 多模型推論：主模型 × 3 直徑 + 可選 hematoxylin pass + 可選 cpsam × 3
   3. 非重疊合併（merge_masks_fast）
   4. 轉錄本密度補救（可選，需 vhd_csv）
   5. Voronoi 擴張（防止重疊）
   6. 清理 + 重新編號
+
+⚠️ 「cyto3」在本環境**實際上是 cpsam**
+---------------------------------------
+歷史文件把前 3-4 個 pass 稱為「cyto3 多直徑集成」，但 `cellpose 4.0.8` 已移除
+`model_type` 參數（會印 `model_type argument is not used in v4.0.1+`）並一律載入
+`pretrained_model` 預設值 `cpsam`。本機 `~/.cellpose/models/` 只有 `cpsam` 與
+`cpsam_v2`，**cyto3 權重從未存在**。
+
+`diameter` 仍然有效（用於把影像縮放到模型的 30px 細胞徑），所以「多直徑集成」
+的機制沒有失效 —— 失準的只有模型名稱。既有結果全部是 cpsam 產生的。
+
+`_load_primary_model` 會在載入後記錄實際權重路徑，避免這件事再次被文件蓋掉。
 
 保留 pipeline_3 的架構：
   - per-ROI 分割（run_segmentation_rois）
@@ -33,6 +45,22 @@ import tifffile
 from scipy import ndimage
 
 logger = logging.getLogger("pipeline.segmentation")
+
+
+def _load_primary_model(use_gpu: bool):
+    """
+    載入多直徑集成的主模型，並記錄**實際**載入的權重。
+
+    歷史程式碼寫 `model_type="cyto3"`，但 cellpose 4.0.1+ 已停用該參數（只會印
+    一行 warning 然後忽略），實際載入的一律是 `pretrained_model` 預設的 `cpsam`。
+    這裡不再傳那個無效參數，並把權重路徑記進 log —— 讓「跑的是哪個模型」
+    永遠可從執行紀錄查證，而不是靠文件宣稱。
+    """
+    from cellpose import models
+
+    model = models.CellposeModel(gpu=use_gpu)
+    logger.info(f"  主模型權重：{getattr(model, 'pretrained_model', '未知')}")
+    return model
 
 
 def _clear_gpu_cache() -> None:
@@ -431,7 +459,7 @@ def run_mcseg_v2(
     Returns:
         int32 細胞分割遮罩 (H, W)
     """
-    from cellpose import core, models
+    from cellpose import core
 
     t0 = time.time()
 
@@ -461,7 +489,7 @@ def run_mcseg_v2(
 
     logger.info("[MCseg v2] === V12 Voronoi 集成分割 ===")
     logger.info(
-        f"  cyto3 dia: {dia_small}/{dia_mid}/{dia_large} | "
+        f"  主模型 dia: {dia_small}/{dia_mid}/{dia_large} | "
         f"cpsam={use_cpsam} (dia_auto={dia_cpsam_auto or 'auto'}, dia_small={dia_cpsam_small}) | "
         f"voronoi_d={voronoi_dist}"
     )
@@ -485,48 +513,48 @@ def run_mcseg_v2(
         batch_size=batch_size,
     )
 
-    logger.info(f"  [{time.time()-t0:.0f}s] 載入 cyto3...")
-    cyto3 = models.CellposeModel(model_type="cyto3", gpu=use_gpu)
+    logger.info(f"  [{time.time()-t0:.0f}s] 載入主模型...")
+    primary = _load_primary_model(use_gpu)
 
-    logger.info(f"  [{time.time()-t0:.0f}s] cyto3 dia={dia_mid} (RGB)...")
-    m, _, _ = cyto3.eval(enhanced, diameter=dia_mid,
+    logger.info(f"  [{time.time()-t0:.0f}s] 主模型 dia={dia_mid} (RGB)...")
+    m, _, _ = primary.eval(enhanced, diameter=dia_mid,
                          augment=True, resample=True, **eval_base)
-    results["cyto3_mid"] = m
+    results["primary_mid"] = m
     logger.info(f"    → {m.max()} cells")
 
-    logger.info(f"  [{time.time()-t0:.0f}s] cyto3 dia={dia_small} (small)...")
-    m, _, _ = cyto3.eval(
+    logger.info(f"  [{time.time()-t0:.0f}s] 主模型 dia={dia_small} (small)...")
+    m, _, _ = primary.eval(
         enhanced, diameter=dia_small, augment=False, resample=True,
         **{**eval_base, "cellprob_threshold": cellprob_thresh - 1.0},
     )
-    results["cyto3_small"] = m
+    results["primary_small"] = m
     logger.info(f"    → {m.max()} cells")
 
-    logger.info(f"  [{time.time()-t0:.0f}s] cyto3 dia={dia_large} (large)...")
-    m, _, _ = cyto3.eval(
+    logger.info(f"  [{time.time()-t0:.0f}s] 主模型 dia={dia_large} (large)...")
+    m, _, _ = primary.eval(
         enhanced, diameter=dia_large, augment=False, resample=True,
         **{**eval_base, "cellprob_threshold": cellprob_thresh + 1.0},
     )
-    results["cyto3_large"] = m
+    results["primary_large"] = m
     logger.info(f"    → {m.max()} cells")
 
     if use_hematoxylin and hema is not None:
         hema_rgb = np.stack([hema, hema, hema], axis=-1)
-        logger.info(f"  [{time.time()-t0:.0f}s] cyto3 dia={dia_mid} (hematoxylin)...")
-        m, _, _ = cyto3.eval(hema_rgb, diameter=dia_mid,
+        logger.info(f"  [{time.time()-t0:.0f}s] 主模型 dia={dia_mid} (hematoxylin)...")
+        m, _, _ = primary.eval(hema_rgb, diameter=dia_mid,
                              augment=True, resample=True, **eval_base)
-        results["cyto3_hema"] = m
+        results["primary_hema"] = m
         logger.info(f"    → {m.max()} cells")
         del hema_rgb
 
-    del cyto3
+    del primary
     gc.collect()
     _clear_gpu_cache()
 
     if use_cpsam:
         logger.info(f"  [{time.time()-t0:.0f}s] 載入 cpsam...")
         try:
-            cpsam = models.CellposeModel(model_type="cpsam", gpu=use_gpu)
+            cpsam = _load_primary_model(use_gpu)
             cpsam_base = dict(
                 channels=[0, 0],
                 flow_threshold=flow_thresh,
@@ -578,11 +606,11 @@ def run_mcseg_v2(
 
     logger.info(f"  [{time.time()-t0:.0f}s] 所有模型完成，開始合併...")
 
-    # ── 3. 集成合併（以 cyto3_mid 為基底）────────────────────
-    base_mask = results["cyto3_mid"].copy().astype(np.int32)
+    # ── 3. 集成合併（以 primary_mid 為基底）────────────────────
+    base_mask = results["primary_mid"].copy().astype(np.int32)
     target_shape = base_mask.shape
     for key, mask in results.items():
-        if key == "cyto3_mid":
+        if key == "primary_mid":
             continue
         m = mask.astype(np.int32)
         if m.shape != target_shape:
@@ -840,7 +868,7 @@ def run_tiled_mcseg_v2(
         影像上做的，而舊版全圖 CLAHE 的 8×8 網格落在整張片子上，等於近乎全域
         等化，與 ROI 結果不可直接比較。
     """
-    from cellpose import core, models
+    from cellpose import core
 
     t0 = time.time()
     cfg = cfg or {}
@@ -921,14 +949,14 @@ def run_tiled_mcseg_v2(
     done = {tuple(t) for t in state["done_tiles"]}
     current_max = int(state["current_max"])
 
-    logger.info(f"  載入 cyto3 模型 (gpu={use_gpu})")
-    cyto3 = models.CellposeModel(model_type="cyto3", gpu=use_gpu)
+    logger.info(f"  載入主模型 (gpu={use_gpu})")
+    primary = _load_primary_model(use_gpu)
 
     cpsam = None
     if use_cpsam:
         logger.info(f"  載入 cpsam 模型 (gpu={use_gpu})")
         try:
-            cpsam = models.CellposeModel(model_type="cpsam", gpu=use_gpu)
+            cpsam = _load_primary_model(use_gpu)
             logger.info("  cpsam 載入成功")
         except Exception as e:
             logger.warning(f"  cpsam 載入失敗（跳過）：{e}")
@@ -973,16 +1001,16 @@ def run_tiled_mcseg_v2(
             # per-tile 多直徑推論 + merge（不做 Voronoi）
             tile_results: dict[str, np.ndarray] = {}
             try:
-                m, _, _ = cyto3.eval(enh_tile, diameter=dia_mid, **eval_base)
+                m, _, _ = primary.eval(enh_tile, diameter=dia_mid, **eval_base)
                 tile_results["mid"] = m
 
-                m, _, _ = cyto3.eval(
+                m, _, _ = primary.eval(
                     enh_tile, diameter=dia_small,
                     **{**eval_base, "cellprob_threshold": cellprob_thresh - 1.0},
                 )
                 tile_results["small"] = m
 
-                m, _, _ = cyto3.eval(
+                m, _, _ = primary.eval(
                     enh_tile, diameter=dia_large,
                     **{**eval_base, "cellprob_threshold": cellprob_thresh + 1.0},
                 )
@@ -990,7 +1018,7 @@ def run_tiled_mcseg_v2(
 
                 if hema_tile is not None:
                     hema_rgb = np.stack([hema_tile] * 3, axis=-1)
-                    m, _, _ = cyto3.eval(hema_rgb, diameter=dia_mid, **eval_base)
+                    m, _, _ = primary.eval(hema_rgb, diameter=dia_mid, **eval_base)
                     tile_results["hema"] = m
 
                 if cpsam is not None:
@@ -1021,7 +1049,7 @@ def run_tiled_mcseg_v2(
                 if "MPS" in str(e) or "out of memory" in str(e).lower():
                     logger.warning(f"  MPS OOM on tile {tile_idx}，fallback CPU")
                     gc.collect()
-                    cpu_model = models.CellposeModel(model_type="cyto3", gpu=False)
+                    cpu_model = _load_primary_model(False)
                     m, _, _ = cpu_model.eval(enh_tile, diameter=dia_mid,
                                              **{**eval_base, "batch_size": 1})
                     tile_results["mid"] = m
@@ -1092,7 +1120,7 @@ def run_tiled_mcseg_v2(
                 stitched.flush()
             _save_seg_progress(progress_path, cfg_hash, done, current_max)
 
-    del cyto3
+    del primary
     if cpsam is not None:
         del cpsam
     gc.collect()

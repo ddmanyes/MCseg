@@ -7,7 +7,7 @@
 
 **MCseg** 是針對 10x Genomics **Visium HD**（2 µm 解析度）空間轉錄組資料的無需撰碼端到端分析平台。從原始 Gigapixel BTF 影像出發，MCseg 涵蓋完整工作流程：自訂 ROI 裁切、高精度細胞分割、RNA 計數、下游分析（QC → UMAP → 細胞型別標注），以及一鍵匯出至 Xenium Explorer 或 Loupe Browser——全程透過網頁介面操作，無需任何程式設計背景。
 
-其核心分割引擎 **MCseg** 採用 **AutoResearch** 範式開發——以 AI 自主架構搜索在約 80 個評估循環中收斂——產出七輪多模型 Cellpose 集成搭配 Voronoi 約束邊界擴張。以 LUAD 組織的 Xenium Prime ground truth 為基準，MCseg 達到 **PQ = 0.554 ± 0.064**——較最佳雙直徑基準線 **2Cseg**（PQ 0.432 ± 0.037）提升 **+28%**。在 CRC 中，MCseg 的轉錄本捕捉能力與 Space Ranger 相當（UMI 密度 11.6 vs 11.7 UMI/µm²），同時保持更高的轉錄邊界純度（NED 0.727 vs 0.712，p = 0.026）。GPU 為可選項，支援完整 CPU 回退。
+其核心分割引擎 **MCseg** 採用 **AutoResearch** 範式開發——以 AI 自主架構搜索在約 80 個評估循環中收斂——產出七輪 Cellpose 集成搭配 Voronoi 約束邊界擴張。以 LUAD 組織的 Xenium Prime ground truth 為基準，MCseg 達到 **PQ = 0.554 ± 0.064**——較最佳雙直徑基準線 **2Cseg**（PQ 0.432 ± 0.037）提升 **+28%**。在 CRC 中，MCseg 的轉錄本捕捉能力與 Space Ranger 相當（UMI 密度 11.6 vs 11.7 UMI/µm²），同時保持更高的轉錄邊界純度（NED 0.727 vs 0.712，p = 0.026）。GPU 為可選項，支援完整 CPU 回退。
 
 <p align="center">
   <img src="docs/fig1a_pipeline.png" width="820" alt="MCseg pipeline overview">
@@ -215,7 +215,7 @@ uv run python -m backend.src.cli.segment --help
   --batch-size N        Cellpose batch size（預設 2）
   --tile-size PX        Tile 大小（預設 1024）
   --overlap PX          Tile 重疊（預設 128）
-  --dia-small/mid/large PX      覆寫 cyto3 直徑
+  --dia-small/mid/large PX      覆寫集成直徑
   --voronoi-d PX        覆寫 Voronoi 距離
   --cellprob THRESH     覆寫 cellprob_threshold
 
@@ -459,7 +459,7 @@ MCseg 輸出可直接載入的 Xenium Explorer 套件（`experiment.xenium` + za
 1. 確認預設參數（從組織設定檔預填）：
    | 參數                        | 預設值          | 說明                                                              |
    | --------------------------- | --------------- | ----------------------------------------------------------------- |
-   | `dia_small / mid / large` | 13 / 17 / 22 px | cyto3 細胞直徑掃描範圍                                            |
+   | `dia_small / mid / large` | 13 / 17 / 22 px | 細胞直徑掃描範圍（同一模型、三個直徑）                            |
    | `voronoi_distance`        | 9 px            | Voronoi 擴張上限                                                  |
    | `use_hematoxylin`         | true            | 加入蘇木精通道輪次                                                |
    | `use_cpsam`               | false           | 啟用以處理複雜/緻密組織（+3 輪，CPU 約 50–60 分鐘）              |
@@ -538,14 +538,23 @@ MCseg 輸出可直接載入的 Xenium Explorer 套件（`experiment.xenium` + za
 
 ```text
 1. CLAHE 前處理（clip=3.0, tile=8×8）+ 蘇木精提取
-2. 多輪多模型偵測（4–7 輪，依選項而定）：
-   · cyto3 @ 13/17/22 px，以 CLAHE-RGB 為輸入（3 輪，固定）
-   · cyto3 @ 17 px，以蘇木精通道為輸入（1 輪，use_hematoxylin=true，預設啟用）
+2. 多輪偵測（4–7 輪，依選項而定）：
+   · cpsam @ 13/17/22 px，以 CLAHE-RGB 為輸入（3 輪，固定）
+   · cpsam @ 17 px，以蘇木精通道為輸入（1 輪，use_hematoxylin=true，預設啟用）
    · cpsam @ auto / 16 px / 蘇木精（最多 3 輪，use_cpsam=false，預設停用）
 3. 集成合併（IoU 重疊閾值 < 15%）
 4. Voronoi 邊界擴張（預設 d=9 px；論文基準測試使用 d=8 px）
 5. 品質過濾（20–6000 px²）
 ```
+
+> **關於模型名稱。** 本文件先前把第 1–4 輪描述為 `cyto3`，這是不準確的：
+> `cellpose 4.0.1+` 已移除 `model_type` 參數（只印一行
+> `model_type argument is not used in v4.0.1+` 然後忽略），一律載入
+> `pretrained_model` 的預設值 `cpsam`。產生這些結果的環境裡**從未有 cyto3 權重**。
+>
+> 因此集成真正變動的是**直徑與 cellprob 閾值，而非模型** —— `diameter` 仍然有效
+> （用於把影像縮放到模型的 30 px 細胞徑），所以多直徑集成的機制與描述相符。
+> 既有結果全部由 `cpsam` 產生。每次載入模型時，實際權重路徑都會寫進執行 log。
 
 完整演算法規格請見 [Supplementary Note 1](analysis/supplementary/Supplementary_Note_1.md)。
 
