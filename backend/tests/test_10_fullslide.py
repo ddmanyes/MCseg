@@ -632,6 +632,113 @@ class TestResolveBinToMaskScale:
         assert resolve_bin_to_mask_scale(config, mask_shape=(100, 100)) == pytest.approx((1.0, 1.0))
 
 
+class TestResolveBinToImageTransform:
+    """對位 JSON 優先、近似縮放回退"""
+
+    @staticmethod
+    def _write_align(path, *, scale_transform=0.2, scale_images=0.1, serial="H1-X", area="D1"):
+        import json as _json
+
+        path.write_text(_json.dumps({
+            "serialNumber": serial,
+            "area": area,
+            "transform": [scale_transform, 0, 0, 0, scale_transform, 0, 0, 0, 1],
+            "cytAssistInfo": {
+                "transformImages": [scale_images, 0, 0, 0, scale_images, 0, 0, 0, 1],
+            },
+        }), encoding="utf-8")
+        return path
+
+    def test_auto_composes_from_spatial_jsons(self, tmp_path):
+        """spatial/ 內同時有 old（mpp 符合 scalefactors）與 new（≈影像 mpp）時自動組合。"""
+        from backend.src.fullslide.pipeline import resolve_bin_to_image_transform
+
+        binned = tmp_path / "b002"
+        # 近似縮放推得 ≈ (1.9088, 2.0) → 影像 mpp ≈ 0.5464 / 1.954 ≈ 0.2796
+        sp = _write_spatial(binned, hires_size=(2870, 6000), scalef=0.25475544, mpp=0.5464)
+        self._write_align(sp / "old.json", scale_transform=0.2, scale_images=0.2 * 0.5464)
+        self._write_align(sp / "new.json", scale_transform=0.2, scale_images=0.2 * 0.2732)
+        config = {"paths": {"binned_002": str(binned)}}
+
+        transform, scale, source = resolve_bin_to_image_transform(
+            config, mask_shape=(47104, 21504)
+        )
+
+        assert transform is not None
+        np.testing.assert_allclose(transform, np.diag([2.0, 2.0, 1.0]), rtol=1e-6)
+        assert "old.json" in source and "new.json" in source
+
+    def test_explicit_extra_json_is_used_as_h_new(self, tmp_path):
+        """alignment.extra_alignment_json 明確指定時直接當作 H_new（不再自動偵測）。"""
+        from backend.src.fullslide.pipeline import resolve_bin_to_image_transform
+
+        binned = tmp_path / "b002"
+        sp = _write_spatial(binned, hires_size=(2870, 6000), scalef=0.25475544, mpp=0.5464)
+        self._write_align(sp / "old.json", scale_transform=0.2, scale_images=0.2 * 0.5464)
+        loupe = self._write_align(
+            tmp_path / "loupe.json", scale_transform=0.2, scale_images=0.2 * 0.1366
+        )
+        config = {
+            "paths": {"binned_002": str(binned)},
+            "alignment": {"extra_alignment_json": str(loupe)},
+        }
+
+        transform, _, source = resolve_bin_to_image_transform(config, mask_shape=(47104, 21504))
+
+        assert transform is not None
+        np.testing.assert_allclose(transform, np.diag([4.0, 4.0, 1.0]), rtol=1e-6)
+        assert "loupe.json" in source
+
+    def test_falls_back_to_scale_without_alignment_json(self, tmp_path):
+        """沒有對位 JSON 時回退近似縮放，且來源說明須標明為近似值。"""
+        from backend.src.fullslide.pipeline import resolve_bin_to_image_transform
+
+        binned = tmp_path / "b002"
+        _write_spatial(binned, hires_size=(2870, 6000), scalef=0.25475544)
+        config = {"paths": {"binned_002": str(binned)}}
+
+        transform, scale, source = resolve_bin_to_image_transform(
+            config, mask_shape=(47104, 21504)
+        )
+
+        assert transform is None
+        assert scale[0] == pytest.approx(1.9088, abs=1e-3)
+        assert "近似" in source
+
+    def test_config_can_disable_alignment_json(self, tmp_path):
+        """use_alignment_json=false 時即使有 JSON 也走近似縮放（供對照除錯）。"""
+        from backend.src.fullslide.pipeline import resolve_bin_to_image_transform
+
+        binned = tmp_path / "b002"
+        sp = _write_spatial(binned, hires_size=(2870, 6000), scalef=0.25475544, mpp=0.5464)
+        self._write_align(sp / "old.json", scale_transform=0.2, scale_images=0.2 * 0.5464)
+        self._write_align(sp / "new.json", scale_transform=0.2, scale_images=0.2 * 0.2732)
+        config = {
+            "paths": {"binned_002": str(binned)},
+            "alignment": {"use_alignment_json": False},
+        }
+
+        transform, _, source = resolve_bin_to_image_transform(config, mask_shape=(47104, 21504))
+
+        assert transform is None
+        assert "停用" in source
+
+    def test_identity_when_segmented_on_source_image(self, tmp_path):
+        """只有 H_old（分割就用那張圖）→ 單位矩陣，不做任何縮放。"""
+        from backend.src.fullslide.pipeline import resolve_bin_to_image_transform
+
+        binned = tmp_path / "b002"
+        sp = _write_spatial(binned, hires_size=(1000, 2000), scalef=0.1, mpp=0.5464)
+        self._write_align(sp / "old.json", scale_transform=0.2, scale_images=0.2 * 0.5464)
+        config = {"paths": {"binned_002": str(binned)}}
+
+        transform, _, source = resolve_bin_to_image_transform(config, mask_shape=(20000, 10000))
+
+        assert transform is not None
+        np.testing.assert_allclose(transform, np.eye(3), atol=1e-12)
+        assert "單位矩陣" in source
+
+
 # ── 全圖計數輸入解析 ─────────────────────────────────────────────────────────
 
 class TestFullCountInputs:

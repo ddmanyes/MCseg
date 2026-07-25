@@ -97,6 +97,114 @@ def resolve_bin_to_mask_scale(
     return mask_w / sr_w, mask_h / sr_h
 
 
+def resolve_bin_to_image_transform(
+    config: dict, mask_shape: tuple[int, int]
+) -> tuple[np.ndarray | None, tuple[float, float], str]:
+    """
+    決定「SR fullres px → 分割影像 px」的變換，回傳 `(transform, scale, source)`。
+
+    優先序：
+
+    1. **對位 JSON 組合**（幾何正確）：`inv(H_new) @ H_old`。
+       `H_old` 由 `pick_source_alignment` 依 `scalefactors.microns_per_pixel` 選出；
+       `H_new` 取 `alignment.extra_alignment_json`，未指定時從 `spatial/*.json`
+       依「近似縮放反推的影像 mpp」自動比對。
+    2. **近似分軸縮放**（`resolve_bin_to_mask_scale`）：找不到 JSON 時的回退。
+       它把 bin 橫向壓縮進影像寬度，**在 SR 畫布相對影像有 padding 時幾何上是錯的**
+       —— 回退時 log 會標明其為近似值。
+
+    Returns
+    -------
+    tuple[np.ndarray | None, tuple[float, float], str]
+        `transform` 為 3×3 或 None（此時採用 `scale`）；`source` 為人類可讀的來源說明。
+    """
+    scale = resolve_bin_to_mask_scale(config, mask_shape)
+    align_cfg = config.get("alignment") or {}
+
+    if not align_cfg.get("use_alignment_json", True):
+        return None, scale, f"近似縮放（設定停用對位 JSON）scale={scale[0]:.4f}, {scale[1]:.4f}"
+
+    try:
+        transform, source = _compose_from_alignment_json(config, scale)
+    except (ValueError, OSError) as e:
+        logger.warning(f"對位 JSON 不可用（{e}）→ 回退近似縮放")
+        transform, source = None, ""
+
+    if transform is None:
+        logger.warning(
+            f"未採用對位 JSON，改用近似縮放 scale=({scale[0]:.4f}, {scale[1]:.4f})。"
+            "此值由 hires 尺寸 ÷ scalef 推導，**為近似值** —— SR 畫布相對影像有 padding "
+            "時會把 bin 橫向壓縮。建議提供 Loupe 對位 JSON（alignment.extra_alignment_json）。"
+        )
+        return None, scale, f"近似縮放 scale={scale[0]:.4f}, {scale[1]:.4f}"
+
+    return transform, scale, source
+
+
+def _compose_from_alignment_json(
+    config: dict, approx_scale: tuple[float, float]
+) -> tuple[np.ndarray | None, str]:
+    """由 spatial/ 內（與設定指定）的對位 JSON 組出 bin→影像 homography。"""
+    from backend.src.registration.alignment import (
+        compose_bin_to_image,
+        load_alignment,
+        matrix_scale,
+        pick_source_alignment,
+        validate_pair,
+    )
+
+    binned = config.get("paths", {}).get("binned_002", "")
+    if not binned:
+        return None, ""
+    spatial = Path(binned) / "spatial"
+
+    align_cfg = config.get("alignment") or {}
+    extra = align_cfg.get("extra_alignment_json")
+
+    candidates = sorted(spatial.glob("*.json")) if spatial.exists() else []
+    extra_path = Path(extra) if extra else None
+    if extra_path is not None and extra_path not in candidates:
+        candidates.append(extra_path)
+    if not candidates:
+        return None, ""
+
+    target_mpp = resolve_pixel_size(config)
+    h_old, others = pick_source_alignment(candidates, target_mpp)
+
+    if extra_path is not None:
+        h_new = load_alignment(extra_path)
+    else:
+        # 自動偵測 H_new：近似縮放反推的影像 mpp ≈ mpp_SR / scale。
+        # 容差放寬到 5%，因為 approx_scale 本身就是近似值 —— 這裡只需**辨識出是哪一份檔**，
+        # 精確幾何由 JSON 本身提供。
+        implied = h_old.mpp / float(np.sqrt(abs(approx_scale[0] * approx_scale[1])))
+        h_new = None
+        # h_old 自己也是候選 —— 分割影像可能就是產生 pxl_*_in_fullres 的那一張
+        for al in [h_old, *others]:
+            if abs(al.mpp - implied) / implied < 0.05:
+                h_new = al
+                break
+        if h_new is None:
+            if others:
+                detail = "、".join(f"{al.name}→{al.mpp:.4f}" for al in others)
+                logger.info(
+                    f"無對位檔的 mpp 接近分割影像推估值 {implied:.4f}（候選：{detail}）"
+                )
+            return None, ""
+
+    if h_new.path == h_old.path:
+        # 分割影像就是產生 pxl_*_in_fullres 的那張 → 無需變換
+        return np.eye(3), f"對位 JSON {h_old.name}（同一影像，變換為單位矩陣）"
+
+    validate_pair(h_old, h_new)
+    m = compose_bin_to_image(h_old, h_new)
+    logger.info(
+        f"採用對位 JSON 組合變換：{h_old.name}（mpp {h_old.mpp:.4f}）→ "
+        f"{h_new.name}（mpp {h_new.mpp:.4f}），等效縮放 {matrix_scale(m):.5f}"
+    )
+    return m, f"對位 JSON {h_old.name} → {h_new.name}"
+
+
 def bin_attribution(
     mask: np.ndarray,
     tp_path: str | Path,
@@ -412,13 +520,17 @@ def resolve_full_count_inputs(config: dict) -> tuple[dict | None, str | None]:
 
     # 遮罩尺寸只讀 .npy header（mmap 不載入陣列本體，全片可達數 GB）
     mask_shape = np.load(str(mask_path), mmap_mode="r").shape
+    transform, scale, transform_source = resolve_bin_to_image_transform(config, mask_shape)
 
     return {
         "mask_path": mask_path,
         "tp_path": tp_path,
         "h5_path": h5_path,
         "origin_xy": origin_xy,
-        "scale": resolve_bin_to_mask_scale(config, mask_shape),
+        # transform 為主（幾何正確）；scale 僅在 transform 為 None 時生效
+        "transform": transform,
+        "scale": (1.0, 1.0) if transform is not None else scale,
+        "transform_source": transform_source,
         # 與 ROI 路徑（counter.py）採同一設定，否則全圖與 ROI 結果不可比
         "dilation_px": int((config.get("rna_counting") or {}).get("dilation_px", 0)),
         "pixel_size_um": resolve_pixel_size(config),
