@@ -171,8 +171,10 @@ def step_bin_attribution(
     crop_y0: int,
     btf_col0: int,
 ) -> "pd.DataFrame":  # noqa: F821
-    """將 Visium HD 2µm bins 對齊到細胞遮罩。"""
+    """將 Visium HD 2µm bins 對齊到細胞遮罩（快取 + log 包裝）。"""
     import pandas as pd
+
+    from backend.src.fullslide.pipeline import bin_attribution
 
     attr_path = out_dir / "bin_attribution.parquet"
     if attr_path.exists():
@@ -180,18 +182,8 @@ def step_bin_attribution(
         return pd.read_parquet(str(attr_path))
 
     log.info("[3/4] Bin attribution")
-    tp = pd.read_parquet(str(tp_path), columns=[
-        "barcode", "in_tissue", "pxl_row_in_fullres", "pxl_col_in_fullres"
-    ])
-    tp = tp[tp["in_tissue"] == 1]
-    H, W = mask.shape
-    row_local = (tp["pxl_row_in_fullres"].values - crop_y0).astype(np.int32).clip(0, H - 1)
-    col_local = (tp["pxl_col_in_fullres"].values - btf_col0).astype(np.int32).clip(0, W - 1)
-    tp = tp.copy()
-    tp["cell_id"] = mask[row_local, col_local]
-    attr = tp[tp["cell_id"] > 0][["barcode", "cell_id"]].reset_index(drop=True)
-    log.info(f"  attributed bins: {len(attr):,} / {len(tp):,} ({len(attr)/len(tp):.1%})")
-    attr.to_parquet(str(attr_path), index=False)
+    attr = bin_attribution(mask, tp_path, crop_y0, btf_col0, out_path=attr_path)
+    log.info(f"  attributed bins: {len(attr):,}")
     log.info(f"  儲存: {attr_path.name}")
     return attr
 
