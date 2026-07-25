@@ -33,14 +33,21 @@ class TestDataApi:
     """資料設定 API"""
 
     async def test_data_status(self, client):
-        """GET /api/data/status 回傳 4 個欄位"""
+        """GET /api/data/status 回傳 3 個必填欄位"""
         r = await client.get("/api/data/status")
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "ok"
         status = data["data"]
-        for key in ["he_image", "binned_002", "binned_008", "xenium_outs"]:
+        for key in ["he_image", "binned_002", "binned_008"]:
             assert key in status
+
+    async def test_data_status_xenium_optional(self, client):
+        """xenium_outs 是 add-on 對照資料，不列入必填；若出現須具備標準欄位"""
+        r = await client.get("/api/data/status")
+        status = r.json()["data"]
+        if "xenium_outs" in status:
+            assert set(status["xenium_outs"]) >= {"path", "configured"}
 
     async def test_data_status_configured(self, client):
         """CRC 資料已設定 → configured = True"""
