@@ -409,42 +409,54 @@ B 即使損失右緣落在影像外的 bin，仍多命中 **13.4% bins / 17.5% �
 
 ## P2 — 區域選取做圖分析（預估 1 天）
 
-- [ ] **P2-1 【紅燈】區域過濾測試**
+- [x] **P2-1 【紅燈】區域過濾測試**
   - 預期行為：`test_filter_by_region_bbox` / `test_filter_by_polygon`：10 個已知 centroid 的假 AnnData，斷言 bbox 與三角 polygon 各自留下的細胞數與 index 正確；邊界點（正好落在邊上）計入。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_12_region.py -q` → FAILED
   - 檔案：`backend/tests/test_12_region.py`
   - commit：`test(spatial): 區域過濾紅燈測試`
 
-- [ ] **P2-2 【綠燈】實作 filter_by_region**
+- [x] **P2-2 【綠燈】實作 filter_by_region**
   - 預期行為：`spatial.py` 新增 `_filter_by_region(adata, region, polygon, pixel_size_um) -> np.ndarray`（布林遮罩）。**座標系必須是全片 fullres px**，取用順序：① `obs['centroid_x_fullres']/['centroid_y_fullres']`（P0-7 產出，全圖流程）→ ② `obs['centroid_x_px'] + roi.x`（ROI 流程，由 config 補原點）→ ③ `obsm['spatial'] / pixel_size_um + roi.x`（舊資料回退）。polygon 用 `matplotlib.path.Path(...).contains_points(pts, radius=1e-9)`。`region` 與 `polygon` 同時給時 polygon 優先。
   - **⚠️ 這是計畫初稿的錯誤修正**：初稿直接拿 `centroid_x_px` 比對 RegionSelector 的全片座標，但前者是**裁切局部**座標 → 框選會系統性偏移一整個裁切原點（可達數萬 px），選到的是完全錯誤的區域。三層回退確保三種資料來源都落在同一座標系。
   - 驗證：同上 → PASSED
   - 檔案：`backend/src/api/spatial.py`
   - commit：`feat(spatial): 區域/多邊形細胞過濾`
 
-- [ ] **P2-3 GenePlotRequest 加入區域欄位**
+- [x] **P2-3 GenePlotRequest 加入區域欄位**
   - 預期行為：`GenePlotRequest` 新增 `region: Optional[dict] = None`（key: x0,y0,x1,y1，fullres px）與 `polygon: Optional[list[list[float]]] = None`。過濾後細胞數 < 10 時回 `status:error`「選取區域細胞數不足（<10）」。
   - 驗證：`test_gene_plot_rejects_tiny_region`
   - 檔案：`backend/src/api/spatial.py`
   - commit：`feat(spatial): gene_plot 支援區域選取`
 
-- [ ] **P2-4 區域統計端點**
+- [x] **P2-4 區域統計端點**
   - 預期行為：`POST /api/spatial/region_stats` 回 `{n_cells, median_counts, median_genes, cluster_counts}`（`cluster_counts` 取 `obs['leiden']` 或 `obs['celltypist_label']`，皆無則空 dict）。讓使用者框選後先看組成再決定做圖。
   - 驗證：`test_region_stats_returns_cluster_breakdown`
   - 檔案：`backend/src/api/spatial.py`
   - commit：`feat(spatial): 區域統計端點`
 
-- [ ] **P2-5 前端：提取 RegionSelector 元件**
+- [x] **P2-5 前端：提取 RegionSelector 元件**
   - 預期行為：把 `Stage0_ROI.tsx` 的畫框邏輯提取為 `components/RegionSelector.tsx`，props：`{ imageUrl, fullWidth, fullHeight, mode: 'bbox'|'polygon', onChange }`。Stage0 改用該元件（行為不變，純重構）。
   - 驗證：`cd frontend && npm run build`；手動確認 Stage 0 仍可畫框
   - 檔案：`frontend/src/components/RegionSelector.tsx`、`frontend/src/pages/Stage0_ROI.tsx`
   - commit：`refactor(ui): 提取 RegionSelector 共用元件`
 
-- [ ] **P2-6 前端：SpatialExplorer 接區域選取**
+- [x] **P2-6 前端：SpatialExplorer 接區域選取**
   - 預期行為：`Stage35_SpatialExplorer.tsx` 嵌入 `RegionSelector`（bbox + polygon 切換），選取後顯示 `region_stats`，做圖請求帶上 region/polygon。i18n 補字串。
   - 驗證：`cd frontend && npm run build`
   - 檔案：`frontend/src/pages/Stage35_SpatialExplorer.tsx`、`frontend/src/i18n/translations.ts`、`frontend/src/api/client.ts`
   - commit：`feat(ui): 空間探索器支援框選區域分析`
+
+---
+
+### P2 完成紀錄（2026-07-25）
+
+**6 項全部完成**。與計畫的偏離：
+
+1. **`RegionSelector` 是從 `components/roi/RoiSelector.tsx` 提取，不是 `Stage0_ROI.tsx`**。計畫寫「由 Stage0 畫框邏輯提取」，但實際的 OSD viewer 與畫框都在 `RoiSelector`；`Stage0_ROI.tsx` 只是使用者。因此改為：新增 `components/shared/RegionSelector.tsx`（bbox ＋ polygon），`RoiSelector` 降為 20 行薄包裝以保留 Stage 0 既有的 `onSelect` 介面 —— Stage 0 完全不需改動，回歸風險最低。
+2. **`_filter_by_region` 多接受一組反向角點**。使用者從右下往左上拉框時 `x0 > x1`，不正規化會回傳空集合（看起來像「這區沒有細胞」而非「框反了」）。
+3. **`region_stats` 對空選取回 `status: ok` 而非錯誤**。框到空白區是正常操作，前端據此顯示「此區無細胞」；只有 `gene_plot` 才在細胞 < 10 時擋下（做圖才會誤導）。
+
+`RegionSelector` 的 `mode` 支援 `'bbox' | 'polygon' | 'both'`（計畫只寫前兩者）——Stage 3.5 需要在同一個 viewer 內切換兩種工具。
 
 ---
 
