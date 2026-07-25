@@ -147,8 +147,12 @@ class PyramidSlideReader:
         series = self._tf.series[0]
         # 沒有 subIFD 金字塔的檔案，levels 只有一層 —— 仍可正常運作
         self._levels = list(getattr(series, "levels", None) or [series])
+        # 尺寸取自 page 而非 series.shape：真實 NDPI 的 series 是 'ZYXS'
+        # （3 個 focal plane 的前導軸，實測 shape=(3, 41472, 119040, 3)），
+        # 拿 shape[0]/shape[1] 會得到 (41472, 3) 這種荒謬尺寸，而且
+        # read_region 只會安靜地回空陣列。page 的 imagewidth/imagelength 永遠是對的。
         self._dims = [
-            (int(lv.shape[1]), int(lv.shape[0]))   # (W, H)
+            (int(lv.pages[0].imagewidth), int(lv.pages[0].imagelength))   # (W, H)
             for lv in self._levels
         ]
 
@@ -258,6 +262,14 @@ def _read_page_region(fh, page, x0: int, y0: int, x1: int, y1: int) -> np.ndarra
     # 於是第一塊 tile 從 offset+10 開始讀，得到「Not a JPEG file」。
     decode = page.decode
 
+    # NDPI 的 segment 是**沒有標頭的 JPEG scan data**，必須把 page 的 jpegheader
+    # 一起餵進解碼器；不傳會得到 `Jpeg8Error: Not a JPEG file`。
+    # 一般 tiled TIFF / SVS 沒有這個屬性，傳 None 即可。
+    decode_kw = {}
+    jpegheader = getattr(page, "jpegheader", None)
+    if jpegheader:
+        decode_kw["jpegheader"] = jpegheader
+
     out = np.zeros((y1 - y0, x1 - x0, samples), dtype=page.dtype)
     for ty in range(y0 // th, (y1 + th - 1) // th):
         for tx in range(x0 // tw, (x1 + tw - 1) // tw):
@@ -265,7 +277,7 @@ def _read_page_region(fh, page, x0: int, y0: int, x1: int, y1: int) -> np.ndarra
             if index >= len(offsets) or not bytecounts[index]:
                 continue                       # 稀疏 TIFF 的空白 segment
             fh.seek(offsets[index])
-            seg, _, shape = decode(fh.read(bytecounts[index]), index)
+            seg, _, shape = decode(fh.read(bytecounts[index]), index, **decode_kw)
             seg = np.asarray(seg).reshape(shape)[0]   # (depth, h, w, s) → (h, w, s)
 
             sy0, sx0 = ty * th, tx * tw

@@ -3,6 +3,8 @@
 合成資料為主。NDPI/SVS 走 tifffile 原生的金字塔 series；BTF/TIFF 沿用既有的
 tile/strip 讀取路徑。
 """
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -288,3 +290,123 @@ class TestDiscoveryRecognisesSlideFormats:
 
         assert "slide.svs" in result.he_image.label
         assert any("big.tif" in f.label for f in result.extra_files)
+
+
+# ── 真實 NDPI 的兩個陷阱 ────────────────────────────────────────────────────
+
+NDPI_REAL = Path(
+    "/Volumes/KINGSTON/Bioinfo_Projects/01_Spatial_Transcriptomics/"
+    "20251125_TGIA_VisiumHD/20250612_MQ250428/D1-2_40X_3_10.53.23.ndpi"
+)
+
+
+class TestNdpiQuirks:
+    """真實 NDPI 與一般金字塔 TIFF 的兩處結構差異
+
+    2026-07-25 以真實檔（119040×41472、6 層、2.17 GB）驗證時抓到：
+
+    1. **series 有 focal plane 前導軸**（`ZYXS`，shape `(3, 41472, 119040, 3)`）
+       —— 以 `series.shape[0:2]` 取尺寸會得到 `(41472, 3)`，而且
+       `read_region` 只會安靜地回空陣列，不報錯。
+    2. **segment 是無標頭的 JPEG scan data** —— `decode()` 不傳 `jpegheader`
+       會得到 `Jpeg8Error: Not a JPEG file`。
+    """
+
+    def test_leading_axis_series_uses_page_dimensions(self, tmp_path):
+        """series 帶前導軸時，尺寸仍須取自 page（合成 3-plane 檔重現）。"""
+        import tifffile
+
+        from backend.src.utils.slide_reader import open_slide
+
+        rng = np.random.default_rng(11)
+        plane = rng.integers(0, 255, (256, 512, 3), dtype=np.uint8)   # H=256, W=512
+        p = tmp_path / "stack.svs"
+        with tifffile.TiffWriter(str(p), bigtiff=True) as tw:
+            for _ in range(3):        # 3 個 focal plane → series 取得前導軸
+                tw.write(plane, tile=(256, 256), photometric="rgb")
+
+        reader = open_slide(p)
+
+        assert reader.dimensions == (512, 256), (
+            f"取到 {reader.dimensions}，可能誤用了 series.shape 的前導軸"
+        )
+        assert reader.read_region(0, 0, 64, 32).shape == (32, 64, 3)
+
+    def test_jpegheader_is_passed_to_decode(self):
+        """page 帶 jpegheader 時必須轉交解碼器（NDPI 的硬需求）。"""
+        from backend.src.utils import slide_reader as sr
+
+        seen: dict = {}
+
+        class _FakePage:
+            is_tiled = True
+            tilelength, tilewidth = 8, 16
+            imagelength, imagewidth = 8, 16
+            samplesperpixel = 3
+            dtype = np.uint8
+            dataoffsets = (0,)
+            databytecounts = (4,)
+            jpegheader = b"\xff\xd8FAKEHEADER"
+
+            @property
+            def decode(self):
+                def _decode(data, index, **kw):
+                    seen.update(kw)
+                    return np.zeros((1, 8, 16, 3), np.uint8), (0,), (1, 8, 16, 3)
+                return _decode
+
+        class _FakeFH:
+            def seek(self, *_): pass
+            def read(self, n): return b"\x00" * n
+
+        sr._read_page_region(_FakeFH(), _FakePage(), 0, 0, 16, 8)
+
+        assert seen.get("jpegheader") == b"\xff\xd8FAKEHEADER"
+
+    def test_no_jpegheader_kw_for_plain_tiff(self, tmp_path):
+        """一般 TIFF 沒有 jpegheader 屬性時不得硬塞該參數。"""
+        from backend.src.utils import slide_reader as sr
+
+        seen: list = []
+
+        class _FakePage:
+            is_tiled = True
+            tilelength, tilewidth = 8, 16
+            imagelength, imagewidth = 8, 16
+            samplesperpixel = 3
+            dtype = np.uint8
+            dataoffsets = (0,)
+            databytecounts = (4,)
+            jpegheader = None
+
+            @property
+            def decode(self):
+                def _decode(data, index, **kw):
+                    seen.append(kw)
+                    return np.zeros((1, 8, 16, 3), np.uint8), (0,), (1, 8, 16, 3)
+                return _decode
+
+        class _FakeFH:
+            def seek(self, *_): pass
+            def read(self, n): return b"\x00" * n
+
+        sr._read_page_region(_FakeFH(), _FakePage(), 0, 0, 16, 8)
+
+        assert seen == [{}]
+
+    @pytest.mark.skipif(not NDPI_REAL.exists(), reason="需要真實 NDPI 檔案")
+    def test_real_ndpi_end_to_end(self):
+        """真實 Hamamatsu NDPI：尺寸、金字塔、mpp、各層區域讀取。"""
+        from backend.src.utils.slide_reader import open_slide
+
+        r = open_slide(NDPI_REAL)
+
+        assert r.dimensions == (119040, 41472)
+        assert r.level_count == 6
+        assert r.mpp == pytest.approx(0.2305, abs=0.005)   # Hamamatsu 40x
+
+        # 各層都要讀得出實際影像（不是空陣列、不是全平）
+        for level in (0, 2, 5):
+            crop = r.read_region(25000 >> level, 9000 >> level, 256, 256, level=level)
+            assert crop.shape == (256, 256, 3)
+            assert crop.std() > 1
