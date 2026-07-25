@@ -196,7 +196,11 @@ async def _run_full_count(inputs: dict) -> None:
 
 @router.post("/coverage_qc")
 async def run_coverage_qc(
-    grid_px: int = 2048, min_bins: int = 200, low_ratio: float = 0.3
+    grid_px: int = 2048,
+    # None = 依網格面積自動推算（固定 200 在 2048px 網格只佔滿格的 0.26%，
+    # 等於不過濾，會讓四分之一的網格被標記）
+    min_bins: int | None = None,
+    low_ratio: float = 0.3,
 ):
     """
     全片分割覆蓋率 QC：逐網格比對 bin 密度 vs 細胞密度，標記分割失敗的區域。

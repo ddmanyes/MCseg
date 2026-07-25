@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
 import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
-import { getCellposeCountStatus, runCellposeCount, listCountRois, runFullCount, getFullCountStatus } from '../api/client'
+import { getCellposeCountStatus, runCellposeCount, listCountRois, runFullCount, getFullCountStatus, runCoverageQc } from '../api/client'
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
 import { useT } from '../i18n'
@@ -89,6 +89,43 @@ export default function Stage2_Count() {
       setFullStatus({ status: 'error', message: e?.response?.data?.message ?? 'API error' })
     }
   }
+
+  // ── 分割覆蓋率 QC（切片層級為主要結論）──────────────────────────────────
+  interface QcSection {
+    section: number
+    x0: number; y0: number; x1: number; y1: number
+    n_bins: number
+    n_cells: number
+    cells_per_1k_bins: number
+    median_cell_area_px: number
+    flagged: boolean
+    flag_reason: string
+  }
+  interface QcResult {
+    sections: QcSection[]
+    sections_summary: { median_cells_per_1k_bins?: number; n_flagged?: number }
+    grid_summary: { global_density_ok?: boolean; n_grid_flagged?: number }
+    grid_flagged: unknown[]
+  }
+
+  const [qc, setQc] = useState<QcResult | null>(null)
+  const [qcBusy, setQcBusy] = useState(false)
+  const [qcError, setQcError] = useState<string | null>(null)
+
+  const handleRunQc = async () => {
+    setQcBusy(true); setQcError(null)
+    try {
+      const res = await runCoverageQc()
+      if (res.data?.status === 'error') setQcError(res.data.message)
+      else { setQc(res.data.data); setQcError(null) }
+    } catch (e: any) {
+      setQcError(e?.response?.data?.message ?? 'API error')
+    } finally {
+      setQcBusy(false)
+    }
+  }
+
+  const qcMedian = qc?.sections_summary?.median_cells_per_1k_bins ?? 0
 
   const readyRois   = roiInfos.filter(r => r.has_mask)
   const doneRois    = roiInfos.filter(r => r.has_count)
@@ -177,6 +214,102 @@ export default function Stage2_Count() {
                   style={{ width: `${Math.round(fullStatus.progress * 100)}%` }}
                 />
               </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── 分割覆蓋率 QC ────────────────────────────────────────────────── */}
+      <div className="rounded-xl border border-surface-border bg-surface-card p-4 space-y-3">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-200">{t('stage2.qc.title')}</h3>
+            <p className="text-xs text-gray-500 mt-0.5 max-w-2xl">{t('stage2.qc.description')}</p>
+          </div>
+          <button
+            onClick={handleRunQc}
+            disabled={qcBusy}
+            className="shrink-0 px-4 py-2 text-sm rounded-lg font-medium transition-colors
+                       bg-teal-700 hover:bg-teal-600 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+          >
+            {qcBusy ? t('stage2.qc.running') : t('stage2.qc.run')}
+          </button>
+        </div>
+
+        {qcError && (
+          <div className="rounded-lg px-3 py-2 text-xs bg-red-900/30 text-red-300 border border-red-800">
+            ✗ {qcError}
+          </div>
+        )}
+
+        {qc && (
+          <div className="space-y-2">
+            {/* 全片密度過低 → 逐切片比較不可靠，必須先講 */}
+            {qc.grid_summary?.global_density_ok === false && (
+              <div className="rounded-lg px-3 py-2 text-xs bg-yellow-900/30 text-yellow-300 border border-yellow-700">
+                ⚠️ {t('stage2.qc.global_warn')}
+              </div>
+            )}
+
+            <div className={`rounded-lg px-3 py-2 text-xs border
+              ${(qc.sections_summary?.n_flagged ?? 0) > 0
+                ? 'bg-yellow-900/30 text-yellow-300 border-yellow-700'
+                : 'bg-green-900/30 text-green-300 border-green-800'}`}
+            >
+              {(qc.sections_summary?.n_flagged ?? 0) > 0
+                ? `⚠️ ${qc.sections_summary.n_flagged} ${t('stage2.qc.flagged')}`
+                : `✓ ${t('stage2.qc.ok')}（${qc.sections.length} ${t('stage2.qc.sections')}）`}
+              {(qc.grid_summary?.n_grid_flagged ?? 0) > 0 && (
+                <span className="text-gray-400 ml-2">
+                  · {qc.grid_summary.n_grid_flagged} {t('stage2.qc.grid_hint')}
+                </span>
+              )}
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="text-gray-500 border-b border-gray-700">
+                    <th className="text-left py-2 pr-4 font-medium">{t('stage2.qc.section')}</th>
+                    <th className="text-left py-2 px-3 font-medium">{t('stage2.qc.position')}</th>
+                    <th className="text-right py-2 px-3 font-medium">{t('stage2.qc.bins')}</th>
+                    <th className="text-right py-2 px-3 font-medium">{t('stage2.qc.cells')}</th>
+                    <th className="text-right py-2 px-3 font-medium">{t('stage2.qc.density')}</th>
+                    <th className="text-right py-2 px-3 font-medium">{t('stage2.qc.vs_median')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {qc.sections.map(s => (
+                    <tr
+                      key={s.section}
+                      className={`border-b border-gray-800/60 ${s.flagged ? 'bg-yellow-900/15' : ''}`}
+                      title={s.flag_reason || undefined}
+                    >
+                      <td className="py-2 pr-4 font-medium text-gray-200">
+                        {s.flagged && <span className="text-yellow-400 mr-1">⚠️</span>}
+                        {s.section}
+                      </td>
+                      <td className="py-2 px-3 text-gray-400 font-mono">
+                        ({s.x0.toLocaleString()}, {s.y0.toLocaleString()})
+                      </td>
+                      <td className="py-2 px-3 text-right text-gray-300">{s.n_bins.toLocaleString()}</td>
+                      <td className="py-2 px-3 text-right text-gray-300">{s.n_cells.toLocaleString()}</td>
+                      <td className={`py-2 px-3 text-right font-mono ${s.flagged ? 'text-yellow-300' : 'text-gray-300'}`}>
+                        {s.cells_per_1k_bins.toFixed(2)}
+                      </td>
+                      <td className={`py-2 px-3 text-right font-mono ${s.flagged ? 'text-yellow-300' : 'text-gray-500'}`}>
+                        {qcMedian > 0 ? `${(s.cells_per_1k_bins / qcMedian).toFixed(2)}×` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {qc.sections.some(s => s.flagged) && (
+              <p className="text-xs text-gray-500">
+                {qc.sections.filter(s => s.flagged).map(s => `#${s.section}: ${s.flag_reason}`).join(' · ')}
+              </p>
             )}
           </div>
         )}

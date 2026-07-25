@@ -52,6 +52,9 @@ export const getCellposeCountStatus = () => api.get('/count/status')
 export const listCountRois = () => api.get('/count/available_rois')
 export const runFullCount = () => api.post('/count/run_full')
 export const getFullCountStatus = () => api.get('/count/full_status')
+// 分割覆蓋率 QC：切片層級為主要結論，網格層級用於在切片內定位
+export const runCoverageQc = (params?: { grid_px?: number; min_bins?: number; low_ratio?: number }) =>
+  api.post('/count/coverage_qc', null, { params })
 
 // Stage 3: Analysis (舊版整合執行)
 export const runAnalysis = (params?: object) => api.post('/analysis/run', params ?? {})
