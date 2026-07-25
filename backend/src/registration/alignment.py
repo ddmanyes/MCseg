@@ -119,3 +119,61 @@ def load_alignment(path: str | Path) -> Alignment:
         checksum=str(doc.get("checksum", "")),
         path=path,
     )
+
+
+def pick_source_alignment(
+    paths, target_mpp: float, tol: float = 0.01
+) -> tuple[Alignment, list[Alignment]]:
+    """
+    從候選對位檔中選出 `H_old` —— 即**產生 `pxl_*_in_fullres` 的那張影像**的對位檔。
+
+    判準：推導 mpp 與 `scalefactors_json.json` 的 `microns_per_pixel` 相對誤差
+    < `tol`。這同時解掉兩個實際踩過的陷阱：
+
+    1. 把**別片玻片**的註冊檔套進來（mpp 通常不會恰好吻合）；
+    2. 同一 serial 存在兩個版本、scale 正好差 2 倍（dpcp01 的 0.5465 vs 0.2732）
+       —— 靠檔名或修改時間都選不對。
+
+    無法解析的 JSON（例如 `spatial/` 內的 `scalefactors_json.json`）一律略過，
+    不中斷流程。
+
+    Returns
+    -------
+    tuple[Alignment, list[Alignment]]
+        `(source, others)`；`others` 為其餘可解析的候選（保留輸入順序），
+        新影像的 `H_new` 通常就在其中。
+
+    Raises
+    ------
+    ValueError
+        無任何候選命中；訊息會列出各候選的推導 mpp 供人工判斷。
+    """
+    candidates: list[Alignment] = []
+    for p in paths:
+        try:
+            candidates.append(load_alignment(p))
+        except ValueError:
+            continue   # 非對位 JSON，略過（CLAUDE.md §11 entry 層級容錯）
+
+    if not candidates:
+        raise ValueError("找不到任何可解析的對位 JSON（Loupe/CytAssist）")
+
+    best, best_err = None, float("inf")
+    for al in candidates:
+        err = abs(al.mpp - target_mpp) / target_mpp if target_mpp else float("inf")
+        if err < best_err:
+            best, best_err = al, err
+
+    if best is None or best_err >= tol:
+        detail = "、".join(f"{al.name} → {al.mpp:.4f}" for al in candidates)
+        raise ValueError(
+            f"沒有對位檔的推導 µm/px 與 scalefactors 的 {target_mpp:.4f} 相符"
+            f"（容差 {tol:.1%}）。候選：{detail}"
+        )
+
+    others = [al for al in candidates if al.path != best.path]
+    logger.info(
+        f"選定來源對位檔 {best.name}（mpp {best.mpp:.4f}，"
+        f"與 scalefactors {target_mpp:.4f} 差 {best_err:.2%}）"
+    )
+    return best, others

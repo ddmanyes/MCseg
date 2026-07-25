@@ -65,3 +65,65 @@ class TestLoadAlignment:
         assert al.area == "D1"
         assert al.transform.shape == (3, 3)
         assert al.transform_images.shape == (3, 3)
+
+    def test_load_alignment_rejects_missing_key(self, tmp_path):
+        """缺 `cytAssistInfo.transformImages` 時報錯，訊息含檔名但不含完整路徑。"""
+        from backend.src.registration.alignment import load_alignment
+
+        p = tmp_path / "broken.json"
+        p.write_text(json.dumps({"transform": [1, 0, 0, 0, 1, 0, 0, 0, 1]}), encoding="utf-8")
+
+        with pytest.raises(ValueError) as exc:
+            load_alignment(p)
+        assert "broken.json" in str(exc.value)
+        assert str(tmp_path) not in str(exc.value)
+
+
+# ── pick_source_alignment ───────────────────────────────────────────────────
+
+class TestPickSourceAlignment:
+    """依 scalefactors 的 microns_per_pixel 自動選出 H_old"""
+
+    def test_pick_source_alignment_matches_scalefactors_mpp(self, tmp_path):
+        """同 serial 的兩個版本 scale 差 2 倍時，選中與 scalefactors 相符者。"""
+        from backend.src.registration.alignment import pick_source_alignment
+
+        low = _write_alignment_json(
+            tmp_path / "low.json", scale_transform=0.2, scale_images=0.2 * 0.5465
+        )
+        high = _write_alignment_json(
+            tmp_path / "high.json", scale_transform=0.2, scale_images=0.2 * 0.2732
+        )
+
+        source, others = pick_source_alignment([low, high], target_mpp=0.5464)
+
+        assert source.path.name == "low.json"
+        assert [o.path.name for o in others] == ["high.json"]
+
+    def test_pick_source_alignment_skips_unparsable(self, tmp_path):
+        """`spatial/` 內混有非對位 JSON（如 scalefactors_json.json）時應略過。"""
+        from backend.src.registration.alignment import pick_source_alignment
+
+        (tmp_path / "scalefactors_json.json").write_text(
+            json.dumps({"microns_per_pixel": 0.5464}), encoding="utf-8"
+        )
+        good = _write_alignment_json(
+            tmp_path / "good.json", scale_transform=0.2, scale_images=0.2 * 0.5465
+        )
+
+        source, others = pick_source_alignment(
+            sorted(tmp_path.glob("*.json")), target_mpp=0.5464
+        )
+        assert source.path == good
+        assert others == []
+
+    def test_pick_source_alignment_raises_with_candidate_mpps(self, tmp_path):
+        """無命中時報錯並列出各候選 mpp，讓使用者判斷該補哪份檔。"""
+        from backend.src.registration.alignment import pick_source_alignment
+
+        p = _write_alignment_json(
+            tmp_path / "only.json", scale_transform=0.2, scale_images=0.2 * 0.2732
+        )
+        with pytest.raises(ValueError) as exc:
+            pick_source_alignment([p], target_mpp=0.5464)
+        assert "0.2732" in str(exc.value)
