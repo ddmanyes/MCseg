@@ -521,41 +521,72 @@ B 即使損失右緣落在影像外的 bin，仍多命中 **13.4% bins / 17.5% �
 
 > 決策：用 **tiffslide**（純 Python、建於既有 tifffile+zarr 之上），**不用** openslide-python——後者需 `brew install openslide` / Windows DLL，與跨機（ExFAT SSD + macOS ⇄ Windows）情境衝突。
 
-- [ ] **P4-1 安裝 tiffslide**
+- [x] **P4-1 安裝 tiffslide**
   - 預期行為：`UV_LINK_MODE=copy uv add tiffslide`（先 `find . -name '._*' -delete`）。
   - 驗證：`.venv/bin/python -c "import tiffslide; print(tiffslide.__version__)"`
   - 檔案：`pyproject.toml`、`uv.lock`
   - commit：`chore: 新增 tiffslide 依賴（NDPI/SVS 支援）`
 
-- [ ] **P4-2 【紅燈】SlideReader 協定測試**
+- [x] **P4-2 【紅燈】SlideReader 協定測試**
   - 預期行為：`test_open_slide_dispatches_by_suffix`：`.btf`/`.tif` → `TiffSlideReader`；`.ndpi`/`.svs`/`.mrxs` → `TiffslideReader`；未知副檔名 raise `ValueError`。用 monkeypatch 避免需要真實檔案。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_13_slide_reader.py -q` → FAILED
   - 檔案：`backend/tests/test_13_slide_reader.py`
   - commit：`test(slide): SlideReader 分派紅燈測試`
 
-- [ ] **P4-3 【綠燈】SlideReader 抽象層**
+- [x] **P4-3 【綠燈】SlideReader 抽象層**
   - 預期行為：`utils/slide_reader.py` 定義 `Protocol SlideReader`：`dimensions -> (W, H)`、`level_count -> int`、`read_region(x, y, w, h, level=0) -> np.ndarray`、`mpp -> float | None`。`TiffSlideReader` 包裝現有 `read_btf_crop`/`read_strip_crop`；`TiffslideReader` 包裝 `tiffslide.TiffSlide.read_region`（轉 RGB ndarray、丟棄 alpha）。`open_slide(path)` 依副檔名分派。
   - 驗證：同上 → PASSED
   - 檔案：`backend/src/utils/slide_reader.py`
   - commit：`feat(slide): SlideReader 抽象層支援 NDPI/SVS`
 
-- [ ] **P4-4 tile_server 改用 SlideReader**
+- [x] **P4-4 tile_server 改用 SlideReader**
   - 預期行為：`DZITileServer.__init__` 改由 `open_slide()` 取得 reader；`full_width/full_height` 取自 `reader.dimensions`；縮圖建構改用 `read_region(level=最接近 THUMB_SCALE 的層)`——NDPI/SVS 自帶金字塔，可省下自建縮圖的整段成本。BTF 無金字塔時回退現行邏輯。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_04_roi.py -q`；手動確認 Stage 0 檢視器仍正常
   - 檔案：`backend/src/roi/tile_server.py`
   - commit：`refactor(roi): tile server 改用 SlideReader`
 
-- [ ] **P4-5 discovery 認得 NDPI/SVS**
+- [x] **P4-5 discovery 認得 NDPI/SVS**
   - 預期行為：`utils/discovery.py` 掃描的影像副檔名清單加入 `.ndpi`、`.svs`、`.mrxs`，label 標明格式。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_02_data.py -q`
   - 檔案：`backend/src/utils/discovery.py`
   - commit：`feat(data): 資料掃描支援 NDPI/SVS/MRXS`
 
-- [ ] **P4-6 文件：NDPI 需先配準的限制**
+- [x] **P4-6 文件：NDPI 需先配準的限制**
   - 預期行為：README.md / README_zh.md 新增小節說明：NDPI 通常是**另外掃描**的高解析影像，與 Visium 玻片無共同座標系（Hamamatsu 40x ≈ 0.226 µm/px vs Visium 0.2737），**必須先跑 P3 配準**才能貼合 RNA。
   - 驗證：`git diff --stat README.md README_zh.md`
   - 檔案：`README.md`、`README_zh.md`
   - commit：`docs: NDPI 使用前提與座標系限制`
+
+---
+
+### P4 完成紀錄（2026-07-25）
+
+**6 項全部完成**，但 **P4-1 的決策被實測推翻**：
+
+1. **不採用 tiffslide（計畫的核心決策）**。`uv add tiffslide` 裝上 2.5.0 後
+   `import tiffslide` 直接 `ImportError: cannot import name 'ZarrTiffStore' from 'tifffile'`
+   —— 該 API 已在本專案使用的 `tifffile 2026.2.24` 移除。降級 tifffile 會動到整條既有的
+   BTF 讀取路徑（Stage 0 裁切、tile server、全圖分割都靠它），代價遠大於效益，故**移除
+   tiffslide 依賴**（`pyproject.toml` / `uv.lock` 淨變更為零），改直接用 tifffile。
+   計畫「不用 openslide」的理由（跨機安裝負擔）仍然成立且更適用。
+2. **也不能用 tifffile 的 `aszarr()`**：它要求 `zarr >= 3`，而 anndata/scanpy 這條依賴鏈
+   仍在 zarr 2.18.7（`ValueError: zarr 2.18.7 < 3 is not supported`）。改用
+   `page.decode()`（同一份解碼器，含 JPEG tables 處理）逐 segment 解壓，只碰被請求區域
+   覆蓋到的 tile —— 不會整層進 RAM，這對 NDPI 的 level 0（數十 GB）是硬需求。
+3. **`page.decode` 必須在迴圈外先取值**。它是 cached_property，第一次取值會讀 JPEG tables
+   **而移動檔案指標**（實測 +10 bytes）。寫成 `page.decode(fh.read(...), i)` 時 Python 先
+   解析屬性、再讀資料 → 第一塊 tile 從 offset+10 開始讀，報 `Not a JPEG file`。這個 bug
+   只在 JPEG 壓縮的檔案上出現（未壓縮 tile 的測試全綠），**沒有那個 JPEG 測試就會漏掉**。
+4. **`read_region` 的 `(x, y)` 採該 level 自身的座標系**（OpenSlide 是 level-0 座標）。
+   MSseg 的呼叫端都是先算好該層座標再讀，換算兩次反而容易錯；測試明確釘死此語意。
+5. **`RegionSelector` 之外另補 `best_level_for_downsample`**：挑「不小於目標倍率」的最近
+   一層（挑太小的層會放大而糊掉）。tile server 的低倍檢視與縮圖建立都改走這條，NDPI/SVS
+   因此省下整段自建縮圖的成本。
+
+⚠️ **尚未以真實 NDPI 檔驗證**（手上沒有樣本，`find /Volumes/SSD/plan_a -name '*.ndpi'` 無結果）。
+測試以「JPEG 壓縮 + subIFD 金字塔、副檔名 .ndpi」的合成檔涵蓋解碼路徑，但**真實 NDPI 的
+單一巨型 JPEG ＋ restart marker 結構由 tifffile 的 `_ndpi_load_pages` 處理，未經實地驗證**。
+拿到真實檔案時應先跑 `open_slide(path).read_region(...)` 確認，失敗則依計畫風險表退回 openslide。
 
 ---
 
