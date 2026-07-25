@@ -611,3 +611,58 @@ class TestAffineAlignment:
 
         assert m.shape == (3, 3)
         np.testing.assert_allclose(m[2], [0.0, 0.0, 1.0])
+
+
+# ── 仿射估計（平移＋旋轉＋縮放）─────────────────────────────────────────────
+
+class TestEstimateAffine:
+    """分塊相位相關 → 仿射擬合"""
+
+    @staticmethod
+    def _warp(img, *, rotation=0.0, scale=1.0, translation=(0.0, 0.0)):
+        """對影像施加已知仿射（繞影像中心），回傳 (warped, 真值 3×3)。"""
+        from skimage.transform import AffineTransform, warp
+
+        h, w = img.shape
+        cx, cy = w / 2.0, h / 2.0
+        to_origin = AffineTransform(translation=(-cx, -cy))
+        core = AffineTransform(rotation=rotation, scale=scale, translation=translation)
+        back = AffineTransform(translation=(cx, cy))
+        tf = AffineTransform(matrix=back.params @ core.params @ to_origin.params)
+        # warp 取 inverse_map → 內容自 p 移到 tf(p)，與 estimate_affine 的方向一致
+        return warp(img, tf.inverse, order=1, preserve_range=True).astype(np.float32), tf.params
+
+    def test_estimate_affine_recovers_translation(self):
+        from backend.src.registration.align import estimate_affine
+
+        ref = _textured_image((256, 256), seed=5)
+        mov, truth = self._warp(ref, translation=(6.0, -4.0))
+
+        al = estimate_affine(ref, mov)
+
+        np.testing.assert_allclose(al.array[:, 2], truth[:2, 2], atol=0.5)
+        np.testing.assert_allclose(al.array[:, :2], np.eye(2), atol=0.01)
+
+    def test_estimate_affine_recovers_rotation(self):
+        """合成 2° 旋轉，回推的線性部分誤差須 < 1%。"""
+        from backend.src.registration.align import estimate_affine
+
+        ref = _textured_image((512, 512), seed=6)
+        theta = np.deg2rad(2.0)
+        mov, truth = self._warp(ref, rotation=theta)
+
+        al = estimate_affine(ref, mov)
+        got = al.array[:, :2]
+
+        np.testing.assert_allclose(got, truth[:2, :2], atol=0.01)
+        rot_deg = np.degrees(np.arctan2(got[1, 0], got[0, 0]))
+        assert rot_deg == pytest.approx(2.0, abs=0.2)
+        assert al.estimated_error is not None and al.estimated_error < 2.0
+
+    def test_estimate_affine_rejects_too_few_blocks(self):
+        """全空影像沒有可用區塊 → 明確報錯，不可回傳垃圾矩陣。"""
+        from backend.src.registration.align import estimate_affine
+
+        flat = np.zeros((256, 256), dtype=np.float32)
+        with pytest.raises(ValueError):
+            estimate_affine(flat, flat)

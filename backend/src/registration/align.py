@@ -99,7 +99,7 @@ def shift_to_matrix(
 
 
 def estimate_shift(
-    ref: np.ndarray, mov: np.ndarray, upsample_factor: int = 10
+    ref: np.ndarray, mov: np.ndarray, upsample_factor: int = 10, window: bool = False
 ) -> tuple[float, float, float]:
     """
     以相位相關估計 `mov` 相對 `ref` 的次像素位移。
@@ -115,10 +115,20 @@ def estimate_shift(
     -----
     兩張圖先各自 z-score 標準化。H&E 灰階與 bin 密度的量級差好幾個數量級，
     未標準化時直流分量會主導頻譜，讓相關峰失準。
+
+    `window=True` 會先乘上 Hann 窗。**小區塊（如 `estimate_affine` 的分塊）
+    必須開啟**：區塊邊緣的內容不連續會製造一個位於零位移的假峰，實測 64×64
+    區塊在無窗時 16 塊有 12 塊回報 0（正確值 (−4, +6)），加窗後只剩 3 塊失敗
+    （由離群剔除處理）。整張大圖則不需要。
     """
     from skimage.registration import phase_cross_correlation
 
     a, b = _zscore(ref), _zscore(mov)
+    if window:
+        from skimage.filters import window as _hann
+
+        w = _hann("hann", a.shape)
+        a, b = a * w, b * w
     shift, error, _ = phase_cross_correlation(a, b, upsample_factor=upsample_factor)
     # skimage 回傳「要把 mov 移多少才能對上 ref」→ 取負號即 mov 相對 ref 的位移
     return float(-shift[0]), float(-shift[1]), float(error)
@@ -347,3 +357,79 @@ def estimate_shift_fullres(
         f"精修位移（{len(ests)} 窗，1/{fine_ds}）：dy={dy:.1f}, dx={dx:.1f}，spread={spread:.1f} px"
     )
     return dy, dx, spread
+
+
+def estimate_affine(
+    ref: np.ndarray,
+    mov: np.ndarray,
+    grid: int = 4,
+    upsample_factor: int = 10,
+    outlier_factor: float = 3.0,
+) -> AffineAlignment:
+    """
+    估計含平移／旋轉／縮放的仿射變換（`ref` 座標 → `mov` 座標）。
+
+    做法：把影像切成 `grid`×`grid` 塊，每塊各自做一次相位相關得到局部位移，
+    再以這些對應點擬合仿射。單一全域相位相關只能給平移；分塊之後，旋轉與
+    縮放會表現為**位移隨位置線性變化**，正好可由仿射擬合還原。
+
+    離群塊（殘差 > `outlier_factor` × 中位殘差）剔除後重擬 —— 空白或
+    紋理不足的區塊會給出隨機位移，不剔除會把整個擬合帶偏。
+
+    Returns
+    -------
+    AffineAlignment
+        `estimated_error` 為剔除離群後的中位殘差（px），可作為可信度指標。
+
+    Raises
+    ------
+    ValueError
+        可用區塊少於 3 個（仿射至少需 3 組對應點）。
+    """
+    from skimage.transform import estimate_transform
+
+    ref = np.asarray(ref, dtype=np.float32)
+    mov = np.asarray(mov, dtype=np.float32)
+    if ref.shape != mov.shape:
+        hh, ww = min(ref.shape[0], mov.shape[0]), min(ref.shape[1], mov.shape[1])
+        ref, mov = ref[:hh, :ww], mov[:hh, :ww]
+
+    h, w = ref.shape
+    bh, bw = h // grid, w // grid
+    if bh < 8 or bw < 8:
+        raise ValueError(f"影像太小（{w}×{h}）不足以切成 {grid}×{grid} 塊")
+
+    src, dst = [], []
+    for gy in range(grid):
+        for gx in range(grid):
+            y0, x0 = gy * bh, gx * bw
+            rb = ref[y0:y0 + bh, x0:x0 + bw]
+            mb = mov[y0:y0 + bh, x0:x0 + bw]
+            if rb.std() == 0 or mb.std() == 0:
+                continue
+            dy, dx, _ = estimate_shift(
+                rb, mb, upsample_factor=upsample_factor, window=True
+            )
+            cx, cy = x0 + bw / 2.0, y0 + bh / 2.0
+            src.append((cx, cy))
+            dst.append((cx + dx, cy + dy))
+
+    src_arr, dst_arr = np.asarray(src, dtype=float), np.asarray(dst, dtype=float)
+    if len(src_arr) < 3:
+        raise ValueError(f"可用區塊僅 {len(src_arr)} 個，不足以擬合仿射（需 ≥3）")
+
+    tform = estimate_transform("affine", src_arr, dst_arr)
+    resid = np.linalg.norm(tform(src_arr) - dst_arr, axis=1)
+    med = float(np.median(resid))
+
+    keep = resid <= max(outlier_factor * med, 1e-6)
+    if keep.sum() >= 3 and keep.sum() < len(src_arr):
+        logger.info(f"剔除 {int((~keep).sum())} 個離群區塊後重擬仿射")
+        tform = estimate_transform("affine", src_arr[keep], dst_arr[keep])
+        resid = np.linalg.norm(tform(src_arr[keep]) - dst_arr[keep], axis=1)
+        med = float(np.median(resid))
+
+    return AffineAlignment(
+        matrix=[[float(v) for v in row] for row in np.asarray(tform.params)[:2]],
+        estimated_error=med,
+    )
