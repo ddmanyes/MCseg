@@ -104,14 +104,15 @@ def bin_attribution(
     crop_x0: int,
     out_path: str | Path | None = None,
     scale: tuple[float, float] = (1.0, 1.0),
+    transform: np.ndarray | None = None,
 ) -> "pd.DataFrame":
     """
     將 Visium HD 2µm bins 對應到 MCseg v2 細胞遮罩。
 
-    座標換算順序：**先縮放、後扣原點**（原點是遮罩空間的量）。
+    座標換算順序：**先變換、後扣原點**（原點是遮罩空間的量）。
 
     ```text
-    SR fullres px ──×scale──> raw TIFF px ──−crop origin──> 遮罩局部 px
+    SR fullres px ──transform / ×scale──> 影像(raw TIFF) px ──−crop origin──> 遮罩局部 px
     ```
 
     Parameters
@@ -127,17 +128,24 @@ def bin_attribution(
     scale : tuple[float, float]
         `(scale_x, scale_y)`，SR fullres → 遮罩 px 的分軸縮放。
         由 `resolve_bin_to_mask_scale` 取得；`(1.0, 1.0)` 表示兩者同座標系。
+    transform : np.ndarray | None
+        3×3 homography（作用於 `(x, y) = (col, row)` 齊次座標），由
+        `registration.alignment.compose_bin_to_image` 取得。這是**幾何正確**
+        的路徑；`scale` 僅為找不到對位 JSON 時的近似回退。兩者同時給定時
+        `transform` 優先並記 warning。
 
     Returns
     -------
     pd.DataFrame
         欄位 `barcode`、`cell_id`；只含 `in_tissue == 1`、落在遮罩範圍內、
         且落在細胞內（`cell_id > 0`）的 bins。
+        `.attrs["coverage"]` 記錄涵蓋率（見 `_coverage_attrs`）。
 
     Notes
     -----
     越界的 bin 會被**排除**而非夾到邊緣 —— 夾邊會把界外 bin 的 RNA 誤記到
-    邊界細胞上，且不留痕跡。
+    邊界細胞上，且不留痕跡。落在影像外是真實限制（dpcp01 正確變換下 SR 右緣
+    約 980 px 寬確實不在高解析 TIFF 內），必須如實回報而非壓縮硬塞。
     """
     import pandas as pd
 
@@ -148,28 +156,59 @@ def bin_attribution(
     tp = tp[tp["in_tissue"] == 1].copy()
 
     h, w = mask.shape
-    scale_x, scale_y = scale
-    row = np.rint(tp["pxl_row_in_fullres"].values * scale_y - crop_y0).astype(np.int64)
-    col = np.rint(tp["pxl_col_in_fullres"].values * scale_x - crop_x0).astype(np.int64)
+    src_row = tp["pxl_row_in_fullres"].values.astype(float)
+    src_col = tp["pxl_col_in_fullres"].values.astype(float)
+
+    if transform is not None:
+        if scale != (1.0, 1.0):
+            logger.warning(
+                f"同時指定 transform 與 scale={scale}；採用 transform（幾何正確），忽略 scale。"
+            )
+        x, y = _apply_homography(np.asarray(transform, dtype=float), src_col, src_row)
+        desc = "homography"
+    else:
+        x, y = src_col * scale[0], src_row * scale[1]
+        desc = f"scale={scale}"
+
+    row = np.rint(y - crop_y0).astype(np.int64)
+    col = np.rint(x - crop_x0).astype(np.int64)
 
     in_bounds = (row >= 0) & (row < h) & (col >= 0) & (col < w)
     cell_ids = np.zeros(len(tp), dtype=mask.dtype)
     cell_ids[in_bounds] = mask[row[in_bounds], col[in_bounds]]
     tp["cell_id"] = cell_ids
 
+    n_total = len(tp)
     n_oob = int((~in_bounds).sum())
-    if n_oob and n_oob / len(tp) > 0.3:
+    if n_oob and n_total and n_oob / n_total > 0.3:
         logger.warning(
-            f"⚠️ {n_oob:,}/{len(tp):,}（{n_oob/len(tp):.1%}）個 bin 落在遮罩範圍外。"
-            f"scale={scale}、crop=({crop_x0}, {crop_y0})、遮罩 {w}×{h}px —— "
+            f"⚠️ {n_oob:,}/{n_total:,}（{n_oob/n_total:.1%}）個 bin 落在遮罩範圍外。"
+            f"{desc}、crop=({crop_x0}, {crop_y0})、遮罩 {w}×{h}px —— "
             f"請確認 binned_outputs 是否為對應此影像的 CytAssist 註冊版本。"
         )
 
     attr = tp[tp["cell_id"] > 0][["barcode", "cell_id"]].reset_index(drop=True)
+    attr.attrs["coverage"] = {
+        "n_total": n_total,
+        "n_in_bounds": int(in_bounds.sum()),
+        "n_assigned": int(len(attr)),
+        "frac_out_of_image": (n_oob / n_total) if n_total else 0.0,
+    }
 
     if out_path is not None:
         attr.to_parquet(str(out_path), index=False)
     return attr
+
+
+def _apply_homography(
+    m: np.ndarray, x: np.ndarray, y: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """對 `(x, y)` 套用 3×3 homography（含齊次除法）。"""
+    denom = m[2, 0] * x + m[2, 1] * y + m[2, 2]
+    denom = np.where(denom == 0, np.nan, denom)   # 退化點 → NaN，後續判界時自然排除
+    xt = (m[0, 0] * x + m[0, 1] * y + m[0, 2]) / denom
+    yt = (m[1, 0] * x + m[1, 1] * y + m[1, 2]) / denom
+    return np.nan_to_num(xt, nan=-1.0), np.nan_to_num(yt, nan=-1.0)
 
 
 def aggregate_cells(attribution: "pd.DataFrame", h5_path: str | Path) -> "ad.AnnData":

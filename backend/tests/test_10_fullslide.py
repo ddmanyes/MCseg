@@ -143,6 +143,78 @@ class TestBinAttribution:
 
         assert attr["barcode"].tolist() == ["BC0"]
 
+    def test_bin_attribution_with_homography_equals_scale_for_diagonal(self, tmp_path):
+        """對角 homography 與同值 `scale` 路徑須產生完全相同的結果。
+
+        這保證 P0.5 引入 homography 後**不破壞既有呼叫端** —— 現行的分軸縮放
+        只是 3×3 的對角特例。
+        """
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, [(3, 1), (1, 2), (4, 4), (0, 0)])
+        mask = _make_mask()
+
+        by_scale = bin_attribution(mask, tp, 0, 0, scale=(1.9, 2.0))
+        by_matrix = bin_attribution(
+            mask, tp, 0, 0, transform=np.diag([1.9, 2.0, 1.0])
+        )
+
+        assert by_scale["barcode"].tolist() == by_matrix["barcode"].tolist()
+        assert by_scale["cell_id"].tolist() == by_matrix["cell_id"].tolist()
+
+    def test_bin_attribution_homography_applies_translation(self, tmp_path):
+        """homography 的平移項須作用於 (x, y) = (col, row)，不可軸序顛倒。"""
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        mask = np.zeros((10, 10), dtype=np.int32)
+        mask[7, 3] = 5
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, [(2, 1)])   # (row=2, col=1)
+
+        # x = col + 2 = 3、y = row + 5 = 7 → 命中 label 5
+        m = np.array([[1.0, 0.0, 2.0], [0.0, 1.0, 5.0], [0.0, 0.0, 1.0]])
+        attr = bin_attribution(mask, tp, 0, 0, transform=m)
+
+        assert attr["cell_id"].tolist() == [5]
+
+    def test_bin_attribution_transform_overrides_scale(self, tmp_path):
+        """兩者同時給定時以 transform 為準（幾何正確者優先）。"""
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, [(3, 1)])   # ×2 → (6, 2) → label 2
+
+        attr = bin_attribution(
+            _make_mask(), tp, 0, 0,
+            scale=(50.0, 50.0),                       # 這個會讓 bin 飛出界
+            transform=np.diag([2.0, 2.0, 1.0]),
+        )
+        assert attr["cell_id"].tolist() == [2]
+
+    def test_coverage_attrs_reports_out_of_image_fraction(self, tmp_path):
+        """`.attrs['coverage']` 須如實回報落在影像外的比例。
+
+        真實情境：dpcp01 在正確變換下，SR 右緣約 980 TIFF px 寬的 bin 確實不在
+        高解析影像內。那是資料的真實限制，必須回報而非靠壓縮硬塞進去。
+        """
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        mask = _make_mask()
+        tp = tmp_path / "tp.parquet"
+        # 4 個 in_tissue bin：2 個在界內（其中 1 個落在細胞上）、2 個界外
+        mask_bg = mask.copy()
+        mask_bg[0:5, :] = 0                  # label 1 區改為背景
+        _write_tissue_positions(tp, [(6, 1), (1, 1), (900, 900), (-500, 0)])
+
+        attr = bin_attribution(mask_bg, tp, 0, 0)
+        cov = attr.attrs["coverage"]
+
+        assert cov["n_total"] == 4
+        assert cov["n_in_bounds"] == 2
+        assert cov["n_assigned"] == 1        # 界內但落在背景的那個不計入
+        assert cov["frac_out_of_image"] == pytest.approx(0.5)
+
     def test_bin_attribution_writes_cache_when_out_path_given(self, tmp_path):
         """給 out_path 時須寫出 parquet，且內容與回傳一致。"""
         import pandas as pd
