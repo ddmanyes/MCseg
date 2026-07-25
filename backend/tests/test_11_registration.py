@@ -560,3 +560,54 @@ class TestCounterSuggestedShift:
             _log_suggested_shift(
                 np.zeros((16, 16), dtype=np.int32), np.array([]), np.array([])
             )   # 全空：不應拋錯
+
+
+# ── AffineAlignment 資料結構 ────────────────────────────────────────────────
+
+class TestAffineAlignment:
+    """人工覆寫／估計結果的載體（P0.5 之後降為 JSON 缺失時的備援）"""
+
+    def test_affine_identity_is_noop(self):
+        from backend.src.registration.align import AffineAlignment
+
+        pts = np.array([[3.0, 7.0], [-1.0, 2.5]])
+        np.testing.assert_allclose(AffineAlignment.identity().apply(pts), pts)
+        assert AffineAlignment.identity().is_identity()
+
+    def test_affine_translation_applies(self):
+        from backend.src.registration.align import AffineAlignment
+
+        al = AffineAlignment(matrix=[[1, 0, 10], [0, 1, -4]])
+        out = al.apply(np.array([[0.0, 0.0], [5.0, 5.0]]))
+
+        np.testing.assert_allclose(out, [[10.0, -4.0], [15.0, 1.0]])
+        assert not al.is_identity()
+
+    def test_affine_scale_and_rotation_apply(self):
+        """非平移項也須正確作用於 (x, y)（90° 旋轉：(1,0) → (0,1)）。"""
+        from backend.src.registration.align import AffineAlignment
+
+        al = AffineAlignment(matrix=[[0, -1, 0], [1, 0, 0]])
+        np.testing.assert_allclose(al.apply(np.array([[1.0, 0.0]])), [[0.0, 1.0]], atol=1e-12)
+
+    def test_affine_roundtrip_dict(self):
+        from backend.src.registration.align import AffineAlignment
+
+        al = AffineAlignment(
+            matrix=[[1.0, 0.0, 12.5], [0.0, 1.0, -3.25]],
+            source="spaceranger_fullres", target="raw_btf", estimated_error=0.42,
+        )
+        back = AffineAlignment.from_dict(al.to_dict())
+
+        np.testing.assert_allclose(back.array, al.array)
+        assert (back.source, back.target) == (al.source, al.target)
+        assert back.estimated_error == pytest.approx(0.42)
+
+    def test_to_3x3_is_usable_as_homography(self):
+        """`to_3x3()` 須能直接餵給 `bin_attribution(transform=...)`。"""
+        from backend.src.registration.align import AffineAlignment
+
+        m = AffineAlignment(matrix=[[2, 0, 1], [0, 2, 3]]).to_3x3()
+
+        assert m.shape == (3, 3)
+        np.testing.assert_allclose(m[2], [0.0, 0.0, 1.0])
