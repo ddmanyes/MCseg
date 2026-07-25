@@ -157,3 +157,40 @@ class TestPyramidSlideReader:
         assert reader.best_level_for_downsample(3) == 1
         assert reader.best_level_for_downsample(4) == 2
         assert reader.best_level_for_downsample(64) == 2      # 超過金字塔深度 → 最底層
+
+    def test_read_region_handles_jpeg_tiles(self, tmp_path):
+        """SVS/NDPI 的 tile 是 JPEG 壓縮的 —— 解碼路徑必須走得通（含 JPEG tables）。"""
+        import tifffile
+        from scipy.ndimage import gaussian_filter
+
+        from backend.src.utils.slide_reader import open_slide
+
+        rng = np.random.default_rng(9)
+        smooth = gaussian_filter(rng.random((512, 512)), 8)
+        base = np.repeat((smooth * 255).astype(np.uint8)[:, :, None], 3, axis=2)
+
+        p = tmp_path / "slide.ndpi"
+        with tifffile.TiffWriter(str(p), bigtiff=True) as tw:
+            tw.write(base, tile=(256, 256), photometric="rgb", compression="jpeg", subifds=1)
+            tw.write(base[::2, ::2], tile=(256, 256), photometric="rgb",
+                     compression="jpeg", subfiletype=1)
+
+        crop = open_slide(p).read_region(100, 100, 128, 128)
+
+        assert crop.shape == (128, 128, 3)
+        # JPEG 有損 → 比對平均值而非逐位元
+        assert abs(float(crop.mean()) - float(base[100:228, 100:228].mean())) < 5.0
+
+    def test_mpp_from_resolution_tag(self, tmp_path):
+        """NDPI/SVS 通常以 CENTIMETER 記錄解析度 → 換算成 µm/px。"""
+        import tifffile
+
+        from backend.src.utils.slide_reader import open_slide
+
+        p = tmp_path / "slide.svs"
+        img = np.zeros((256, 256, 3), dtype=np.uint8)
+        # 44248 px/cm ≈ 0.226 µm/px（Hamamatsu 40x）
+        tifffile.imwrite(str(p), img, tile=(256, 256), photometric="rgb",
+                         resolution=(44248, 44248), resolutionunit="CENTIMETER")
+
+        assert open_slide(p).mpp == pytest.approx(0.226, abs=0.001)
