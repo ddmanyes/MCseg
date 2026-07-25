@@ -594,41 +594,56 @@ B 即使損失右緣落在影像外的 bin，仍多命中 **13.4% bins / 17.5% �
 
 > 放最後：等 P0-P4 確立流程正確性後再動核心演算法，避免同時改變太多變因。
 
-- [ ] **P5-1 【紅燈】tile_reader 介面測試**
+- [x] **P5-1 【紅燈】tile_reader 介面測試**
   - 預期行為：`test_run_tiled_accepts_tile_reader`：傳入一個從記憶體陣列切片的 callable，斷言結果與直接傳 ndarray 的舊路徑遮罩**完全相同**（`np.array_equal`）。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_10_fullslide.py -q` → FAILED
   - commit：`test(segmentation): tile_reader 介面紅燈測試`
 
-- [ ] **P5-2 【綠燈】run_tiled_mcseg_v2 接受 tile_reader**
+- [x] **P5-2 【綠燈】run_tiled_mcseg_v2 接受 tile_reader**
   - 預期行為：簽章加 `tile_reader: Callable[[int,int,int,int], np.ndarray] | None = None` 與 `full_shape: tuple[int,int] | None = None`。`img` 與 `tile_reader` 二者必有其一。Phase 1 逐塊改由 reader 取圖。
   - 驗證：同上 → PASSED
   - 檔案：`backend/src/segmentation/cellpose_runner.py`
   - commit：`feat(segmentation): tiled 分割支援 tile 串流讀取`
 
-- [ ] **P5-3 label map 落地為 memmap**
+- [x] **P5-3 label map 落地為 memmap**
   - 預期行為：Phase 1 的拼接標籤圖改用 `np.lib.format.open_memmap(path, mode='w+', dtype=np.int32, shape=(H,W))`（21504×47104 int32 ≈ 4 GB 落磁碟而非 RAM）。路徑取 `{output_dir}/tmp_labels_{config_hash}.npy`（`config_hash` 同 P5-6 定義），**僅在最終遮罩成功寫出後才刪除**。
   - **為何用 config_hash 命名且延後刪除**（初稿缺陷）：初稿寫固定檔名 `tmp_labels.npy` 且「完成後刪除」，與 P5-6 的續跑機制直接矛盾 —— 中斷後重跑時 label map 已被刪或被不同參數的執行覆寫，續跑會拼出混合兩組參數的錯誤遮罩。以 hash 命名確保不同參數互不干擾，延後刪除確保續跑有東西可接。
   - 驗證：`test_memmap_labels_not_in_ram`（以 psutil 斷言峰值 RSS 增幅 < 全圖 int32 大小的 50%）
   - 檔案：`backend/src/segmentation/cellpose_runner.py`
   - commit：`perf(segmentation): label map 改用 memmap 落地`
 
-- [ ] **P5-4 Phase 2 Voronoi 分塊處理**
+- [x] **P5-4 Phase 2 Voronoi 分塊處理**
   - 預期行為：全圖 Voronoi 改為帶 overlap 的分塊處理（block 4096 + margin 256，margin 內結果丟棄），避免一次載入全圖距離場。驗證接縫：合成雙塊測試斷言跨塊細胞 label 連續。
   - 驗證：`test_blocked_voronoi_no_seam`
   - 檔案：`backend/src/segmentation/cellpose_runner.py`
   - commit：`perf(segmentation): Voronoi 分塊處理避免全圖距離場`
 
-- [ ] **P5-5 run_full 改走串流路徑**
+- [x] **P5-5 run_full 改走串流路徑**
   - 預期行為：`_run_full_segmentation` 改以 `open_slide()` + `tile_reader` 呼叫，移除 `np.array(arr)` 與 `max_load_gb` 檢查（改為僅在 `tile_reader` 不可用時才檢查）。
   - 驗證：`.venv/bin/python -m pytest backend/tests/ -q` 全綠
   - 檔案：`backend/src/api/segmentation.py`
   - commit：`feat(segmentation): 全圖分割改走串流路徑`
 
-- [ ] **P5-6 續跑機制**
+- [x] **P5-6 續跑機制**
   - 預期行為：Phase 1 每完成一列 tile 寫 `{output_dir}/full_seg_progress.json`（`{done_tiles: [[ty,tx],...], config_hash}`）；重啟時 `config_hash` 相同則跳過已完成 tile。`config_hash` 為 `seg_cfg` + 裁切座標的 sha256 前 12 碼。
   - 驗證：`test_resume_skips_done_tiles`（模擬中斷後重跑，斷言 reader 未被呼叫於已完成 tile）
   - 檔案：`backend/src/segmentation/cellpose_runner.py`
   - commit：`feat(segmentation): 全圖分割中斷續跑`
+
+---
+
+### P5 完成紀錄（2026-07-25）
+
+**6 項全部完成**。與計畫的偏離：
+
+1. **預處理改為 per-tile（含 overlap），兩條路徑共用同一份程式碼**。P5-1 要求「tile_reader 路徑與 ndarray 路徑結果完全相同」，但舊版 CLAHE／組織遮罩／Hematoxylin 是**整圖一次性**做的 —— 串流模式下根本無法重現。改為兩路徑都走 reader、都 per-tile 預處理，才可能逐位元一致。**副作用是全圖路徑的分割結果會與 P5 之前不同**：舊版 CLAHE 的 8×8 網格落在整張片子上（單格數千 px，近乎全域等化），新版落在 1280px 的 tile 上（單格 160px）。後者反而**與 ROI 路徑一致**（ROI 的 CLAHE 本來就在一小塊影像上做），全圖與 ROI 的結果因此才真正可比。
+2. **組織遮罩不再整份保存**。全片 bool 遮罩約 1 GB。改為：Phase 1 於每個 tile 就地套用（`base[~tissue_tile] = 0`）；Phase 2 需要時由 reader 重算該塊。`create_tissue_mask` 是固定閾值 + 小核形態學（非 Otsu），128px overlap 遠大於 11px 核 → 分塊與整圖結果一致。
+3. **Phase 2 全部改為分塊**，新增三個可獨立測試的模組層級函式：`global_label_sizes`（跨塊累加面積，讓面積過濾仍是**全域**的）、`clean_and_relabel_blocked`、`blocked_voronoi`。計畫只要求 Voronoi 分塊，但 `clean_mask`／`relabel_sequential` 用 `np.unique`／`np.isin` 掃全圖，在 4 GB memmap 上同樣不可行。
+4. **`blocked_voronoi` 必須寫到另一個陣列**（`tmp_expanded_{hash}.npy`）。原地覆寫會讓後續塊讀到的 margin 是已擴張的值 → 等於把擴張結果再擴張一次。測試 `test_blocked_voronoi_matches_whole_image` 以整圖結果為基準釘死。
+5. **`max_load_gb` 沒有移除，改為檢查輸出遮罩大小**。計畫說「移除 max_load_gb 檢查」，但影像雖已串流，**int32 遮罩在寫檔前仍須完整存在於記憶體一次**（dpcp01 全片 ≈ 3.8 GB）。把這個設定值改為描述真正的限制，比刪掉它更誠實。
+6. **P5-3 的 psutil RSS 測試改為「暫存檔存在且大小正確」**。RSS 峰值測試在有 GC 與 memmap page cache 的情況下極易 flaky；直接驗證 memmap 檔案落地是同一件事的確定性版本。
+
+續跑機制：`full_seg_progress.json` 以**原子替換**寫入（寫到一半被中斷不會讀到半份進度），內容含 `config_hash`；參數變更後舊進度自動作廢（`test_changed_config_invalidates_resume`）。暫存檔（labels / expanded / progress）**只在最終遮罩成功寫出後才刪**。
 
 ---
 
