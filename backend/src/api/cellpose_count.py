@@ -111,10 +111,22 @@ def _full_count_sync(inputs: dict, progress) -> tuple[int, int]:
     progress(0.05, "載入全圖遮罩...")
     mask = np.load(str(inputs["mask_path"]))
 
-    progress(0.25, "對應 2µm bins 至細胞...")
+    # 等距擴張填補 Voronoi 間隙；與 ROI 路徑（counter.py）用同一個設定值，
+    # 否則全圖與 ROI 的計數結果不可比。實測此步對 bin 命中率影響極大
+    # （dpcp01 全片：20.9% → 35.3%）。
+    dilation_px = inputs["dilation_px"]
+    if dilation_px > 0:
+        from skimage.segmentation import expand_labels
+
+        um = dilation_px * inputs["pixel_size_um"]
+        progress(0.15, f"等距擴張 {dilation_px}px（≈{um:.2f}µm）...")
+        mask = expand_labels(mask, distance=dilation_px)
+
+    scale = inputs["scale"]
+    progress(0.25, f"對應 2µm bins 至細胞（scale={scale[0]:.4f}, {scale[1]:.4f}）...")
     origin_x, origin_y = inputs["origin_xy"]
     attribution = bin_attribution(
-        mask, inputs["tp_path"], crop_y0=origin_y, crop_x0=origin_x
+        mask, inputs["tp_path"], crop_y0=origin_y, crop_x0=origin_x, scale=scale
     )
     if attribution.empty:
         raise ValueError(

@@ -17,14 +17,84 @@
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+logger = logging.getLogger("pipeline.fullslide")
+
 if TYPE_CHECKING:  # pragma: no cover - 僅供型別檢查，避免匯入期拉進重量級套件
     import anndata as ad
     import pandas as pd
+
+
+def resolve_bin_to_mask_scale(
+    config: dict, mask_shape: tuple[int, int]
+) -> tuple[float, float]:
+    """
+    推導 Space Ranger fullres px → 遮罩(raw TIFF) px 的**分軸**縮放。
+
+    為何需要：Space Ranger 的 "fullres" 座標系是校準到**餵給它的那張影像**，
+    未必等於 MSseg 分割所用的 raw TIFF。例如 dpcp01 樣本的 SR fullres 是
+    0.5464 µm/px 而 TIFF 約 0.2737 → 相差近 2 倍。若不縮放，每個 bin 都會
+    落在約一半的位置，**不報錯、不警告**（EP 2026-07-21 曾因此重跑計數）。
+
+    推導不變量：`tissue_hires_image.png` 尺寸 ÷ `tissue_hires_scalef`
+    ＝ SR fullres 畫布尺寸。此法算出的 (11266, 23552) 與 EP 已驗證的
+    `segmentation_masks_fullslide_vfr_CORRECTED.npy` shape 完全一致。
+
+    **必須分軸**：實測 dpcp01 為 col 1.9088、row 2.0000（差 4.6%）。強套等向
+    2.0 會把最右側 bin 映射到 22484 px，超出 TIFF 寬度 21504 近千像素。
+
+    TIFF 的 `XResolution` 標籤不可用作依據 —— 實測為 96 dpi 的通用預設值。
+
+    Parameters
+    ----------
+    config : dict
+        需含 `paths.binned_002`；`alignment.bin_to_mask_scale` 若指定 `[sx, sy]`
+        則優先採用（供自動推導失準時人工覆寫）。
+    mask_shape : tuple[int, int]
+        遮罩的 `(height, width)`，即 raw TIFF 的像素尺寸。
+
+    Returns
+    -------
+    tuple[float, float]
+        `(scale_x, scale_y)`；無法推導時回退 `(1.0, 1.0)`。
+    """
+    import json
+
+    override = (config.get("alignment") or {}).get("bin_to_mask_scale")
+    if override:
+        return float(override[0]), float(override[1])
+
+    binned = config.get("paths", {}).get("binned_002", "")
+    if not binned:
+        return 1.0, 1.0
+
+    spatial = Path(binned) / "spatial"
+    sf_path = spatial / "scalefactors_json.json"
+    hires_path = spatial / "tissue_hires_image.png"
+    if not (sf_path.exists() and hires_path.exists()):
+        return 1.0, 1.0
+
+    try:
+        scalef = float(json.loads(sf_path.read_text(encoding="utf-8"))["tissue_hires_scalef"])
+        from PIL import Image
+
+        Image.MAX_IMAGE_PIXELS = None   # hires 圖仍可能觸發 decompression bomb 警戒
+        with Image.open(hires_path) as im:
+            hires_w, hires_h = im.size
+    except (ValueError, OSError, KeyError, TypeError):
+        return 1.0, 1.0
+
+    if scalef <= 0 or hires_w <= 0 or hires_h <= 0:
+        return 1.0, 1.0
+
+    sr_w, sr_h = hires_w / scalef, hires_h / scalef
+    mask_h, mask_w = mask_shape
+    return mask_w / sr_w, mask_h / sr_h
 
 
 def bin_attribution(
@@ -33,9 +103,16 @@ def bin_attribution(
     crop_y0: int,
     crop_x0: int,
     out_path: str | Path | None = None,
+    scale: tuple[float, float] = (1.0, 1.0),
 ) -> "pd.DataFrame":
     """
     將 Visium HD 2µm bins 對應到 MCseg v2 細胞遮罩。
+
+    座標換算順序：**先縮放、後扣原點**（原點是遮罩空間的量）。
+
+    ```text
+    SR fullres px ──×scale──> raw TIFF px ──−crop origin──> 遮罩局部 px
+    ```
 
     Parameters
     ----------
@@ -44,16 +121,23 @@ def bin_attribution(
     tp_path : str | Path
         `tissue_positions.parquet` 路徑。
     crop_y0, crop_x0 : int
-        裁切左上角在**原始影像 fullres 座標系**中的位置。bin 的
-        `pxl_row/col_in_fullres` 會扣除此原點後才查表。
+        裁切左上角在 raw TIFF 座標系中的位置。
     out_path : str | Path | None
         給定時額外寫出 parquet 快取。
+    scale : tuple[float, float]
+        `(scale_x, scale_y)`，SR fullres → 遮罩 px 的分軸縮放。
+        由 `resolve_bin_to_mask_scale` 取得；`(1.0, 1.0)` 表示兩者同座標系。
 
     Returns
     -------
     pd.DataFrame
-        欄位 `barcode`、`cell_id`；只含 `in_tissue == 1` 且落在細胞內
-        （`cell_id > 0`）的 bins。
+        欄位 `barcode`、`cell_id`；只含 `in_tissue == 1`、落在遮罩範圍內、
+        且落在細胞內（`cell_id > 0`）的 bins。
+
+    Notes
+    -----
+    越界的 bin 會被**排除**而非夾到邊緣 —— 夾邊會把界外 bin 的 RNA 誤記到
+    邊界細胞上，且不留痕跡。
     """
     import pandas as pd
 
@@ -64,9 +148,22 @@ def bin_attribution(
     tp = tp[tp["in_tissue"] == 1].copy()
 
     h, w = mask.shape
-    row_local = (tp["pxl_row_in_fullres"].values - crop_y0).astype(np.int32).clip(0, h - 1)
-    col_local = (tp["pxl_col_in_fullres"].values - crop_x0).astype(np.int32).clip(0, w - 1)
-    tp["cell_id"] = mask[row_local, col_local]
+    scale_x, scale_y = scale
+    row = np.rint(tp["pxl_row_in_fullres"].values * scale_y - crop_y0).astype(np.int64)
+    col = np.rint(tp["pxl_col_in_fullres"].values * scale_x - crop_x0).astype(np.int64)
+
+    in_bounds = (row >= 0) & (row < h) & (col >= 0) & (col < w)
+    cell_ids = np.zeros(len(tp), dtype=mask.dtype)
+    cell_ids[in_bounds] = mask[row[in_bounds], col[in_bounds]]
+    tp["cell_id"] = cell_ids
+
+    n_oob = int((~in_bounds).sum())
+    if n_oob and n_oob / len(tp) > 0.3:
+        logger.warning(
+            f"⚠️ {n_oob:,}/{len(tp):,}（{n_oob/len(tp):.1%}）個 bin 落在遮罩範圍外。"
+            f"scale={scale}、crop=({crop_x0}, {crop_y0})、遮罩 {w}×{h}px —— "
+            f"請確認 binned_outputs 是否為對應此影像的 CytAssist 註冊版本。"
+        )
 
     attr = tp[tp["cell_id"] > 0][["barcode", "cell_id"]].reset_index(drop=True)
 
@@ -274,11 +371,17 @@ def resolve_full_count_inputs(config: dict) -> tuple[dict | None, str | None]:
     meta = read_full_seg_meta(output_dir)
     origin_xy = (0, 0) if meta is None else (int(meta["crop_x0"]), int(meta["crop_y0"]))
 
+    # 遮罩尺寸只讀 .npy header（mmap 不載入陣列本體，全片可達數 GB）
+    mask_shape = np.load(str(mask_path), mmap_mode="r").shape
+
     return {
         "mask_path": mask_path,
         "tp_path": tp_path,
         "h5_path": h5_path,
         "origin_xy": origin_xy,
+        "scale": resolve_bin_to_mask_scale(config, mask_shape),
+        # 與 ROI 路徑（counter.py）採同一設定，否則全圖與 ROI 結果不可比
+        "dilation_px": int((config.get("rna_counting") or {}).get("dilation_px", 0)),
         "pixel_size_um": resolve_pixel_size(config),
         "meta_missing": meta is None,
         "output_dir": output_dir,

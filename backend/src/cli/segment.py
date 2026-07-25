@@ -170,6 +170,7 @@ def step_bin_attribution(
     out_dir: Path,
     crop_y0: int,
     btf_col0: int,
+    scale: tuple[float, float] = (1.0, 1.0),
 ) -> "pd.DataFrame":  # noqa: F821
     """將 Visium HD 2µm bins 對齊到細胞遮罩（快取 + log 包裝）。"""
     import pandas as pd
@@ -182,7 +183,10 @@ def step_bin_attribution(
         return pd.read_parquet(str(attr_path))
 
     log.info("[3/4] Bin attribution")
-    attr = bin_attribution(mask, tp_path, crop_y0, btf_col0, out_path=attr_path)
+    log.info(f"  SR fullres → 遮罩縮放: x={scale[0]:.4f}, y={scale[1]:.4f}")
+    attr = bin_attribution(
+        mask, tp_path, crop_y0, btf_col0, out_path=attr_path, scale=scale
+    )
     log.info(f"  attributed bins: {len(attr):,}")
     log.info(f"  儲存: {attr_path.name}")
     return attr
@@ -461,9 +465,15 @@ def main(argv: list[str] | None = None) -> int:
     # ── Step 3: Bin attribution（有 tp & h5 才跑）
     # µm/px 取樣本實際值（scalefactors_json.json）優先，缺失才用預設常數。
     # --tp 指向 {binned_002}/spatial/tissue_positions.parquet，故其祖父層即 binned_002。
-    from backend.src.fullslide.pipeline import resolve_pixel_size
+    from backend.src.fullslide.pipeline import (
+        resolve_bin_to_mask_scale,
+        resolve_pixel_size,
+    )
     _binned_002 = str(args.tp.parent.parent) if args.tp else ""
-    pixel_size_um = resolve_pixel_size({"paths": {"binned_002": _binned_002}})
+    _cfg = {"paths": {"binned_002": _binned_002}}
+    pixel_size_um = resolve_pixel_size(_cfg)
+    # SR fullres 與 raw TIFF 可能不同座標系（見 resolve_bin_to_mask_scale docstring）
+    bin_scale = resolve_bin_to_mask_scale(_cfg, mask.shape)
     log.info(f"  pixel_size_um = {pixel_size_um}")
 
     attribution = None
@@ -474,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
             log.warning(f"h5 矩陣不存在，跳過 RNA 計數: {args.h5}")
         else:
             attribution = step_bin_attribution(
-                mask, args.tp, out_dir, crop_y0, btf_col0
+                mask, args.tp, out_dir, crop_y0, btf_col0, scale=bin_scale
             )
 
     # ── Step 4: 聚合 cells×genes h5ad（有 attribution 才跑）

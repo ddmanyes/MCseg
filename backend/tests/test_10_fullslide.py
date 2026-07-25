@@ -89,6 +89,60 @@ class TestBinAttribution:
 
         assert attr["barcode"].tolist() == ["BC0"]
 
+    def test_bin_attribution_applies_scale(self, tmp_path):
+        """SR fullres px → 遮罩 px 的縮放須在扣除裁切原點**之前**套用。
+
+        真實情境：dpcp01 樣本的 SR fullres 是 0.5464 µm/px，raw TIFF 約 0.2737，
+        遮罩在 TIFF 空間 → bin 座標必須先乘 ~2 才對得上。
+        """
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        tp = tmp_path / "tp.parquet"
+        # SR 座標 (row=3, col=1) × scale 2 → 遮罩 (6, 2) → label 2
+        _write_tissue_positions(tp, [(3, 1)])
+
+        attr = bin_attribution(_make_mask(), tp, 0, 0, scale=(2.0, 2.0))
+
+        assert attr["cell_id"].tolist() == [2]
+
+    def test_bin_attribution_scale_is_per_axis(self, tmp_path):
+        """縮放須可分軸指定（真實樣本 col 1.9088 vs row 2.0000 並非等向）。"""
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        mask = np.zeros((10, 10), dtype=np.int32)
+        mask[8, 2] = 7
+        tp = tmp_path / "tp.parquet"
+        # SR (row=4, col=2) × (scale_x=1.0, scale_y=2.0) → 遮罩 (8, 2)
+        _write_tissue_positions(tp, [(4, 2)])
+
+        attr = bin_attribution(mask, tp, 0, 0, scale=(1.0, 2.0))
+
+        assert attr["cell_id"].tolist() == [7]
+
+    def test_bin_attribution_scale_applied_before_crop_origin(self, tmp_path):
+        """順序必須是「先縮放、後減原點」——原點是遮罩空間的量。"""
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        tp = tmp_path / "tp.parquet"
+        # SR (row=53, col=51) × 2 = (106, 102)；減原點 (100, 100) → (6, 2) → label 2
+        _write_tissue_positions(tp, [(53, 51)])
+
+        attr = bin_attribution(_make_mask(), tp, crop_y0=100, crop_x0=100, scale=(2.0, 2.0))
+
+        assert attr["cell_id"].tolist() == [2]
+
+    def test_bin_attribution_excludes_out_of_bounds_instead_of_clamping(self, tmp_path):
+        """越界的 bin 須被排除，不可夾到邊緣（否則會誤記到邊界細胞）。"""
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        tp = tmp_path / "tp.parquet"
+        # (5, 5) 在界內（label 2）；(500, 500) 遠在界外
+        _write_tissue_positions(tp, [(5, 5), (500, 500)])
+
+        attr = bin_attribution(_make_mask(), tp, 0, 0)
+
+        assert attr["barcode"].tolist() == ["BC0"]
+
     def test_bin_attribution_writes_cache_when_out_path_given(self, tmp_path):
         """給 out_path 時須寫出 parquet，且內容與回傳一致。"""
         import pandas as pd
@@ -433,6 +487,79 @@ class TestResolvePixelSize:
         assert resolve_pixel_size(config) == pytest.approx(VISIUM_UM_PX)
 
 
+# ── bin → 遮罩 縮放推導 ─────────────────────────────────────────────────────
+
+def _write_spatial(binned_dir, hires_size, scalef, mpp=0.5464):
+    """建立 spatial/ 目錄：scalefactors_json.json + tissue_hires_image.png。"""
+    import json
+
+    from PIL import Image
+
+    sp = binned_dir / "spatial"
+    sp.mkdir(parents=True, exist_ok=True)
+    (sp / "scalefactors_json.json").write_text(json.dumps({
+        "microns_per_pixel": mpp,
+        "tissue_hires_scalef": scalef,
+    }))
+    Image.new("RGB", hires_size).save(sp / "tissue_hires_image.png")
+    return sp
+
+
+class TestResolveBinToMaskScale:
+    """SR fullres → 遮罩(TIFF) px 的縮放推導
+
+    推導不變量：`tissue_hires_image.png` 尺寸 ÷ `tissue_hires_scalef`
+    ＝ Space Ranger fullres 畫布尺寸。此法已對照 EP 的 vfr_CORRECTED
+    遮罩 shape (23552, 11266) 驗證一致。
+    """
+
+    def test_derives_per_axis_scale_from_hires_and_tiff_shape(self, tmp_path):
+        """重現 dpcp01 真實數字：col 1.9088、row 2.0000（非等向）。"""
+        from backend.src.fullslide.pipeline import resolve_bin_to_mask_scale
+
+        binned = tmp_path / "b002"
+        _write_spatial(binned, hires_size=(2870, 6000), scalef=0.25475544)
+        config = {"paths": {"binned_002": str(binned)}}
+
+        sx, sy = resolve_bin_to_mask_scale(config, mask_shape=(47104, 21504))
+
+        assert sx == pytest.approx(1.9088, abs=1e-3)
+        assert sy == pytest.approx(2.0, abs=1e-3)
+
+    def test_identity_when_shapes_match(self, tmp_path):
+        """SR fullres 與遮罩同尺寸時應為 1.0（CRC 這類樣本）。"""
+        from backend.src.fullslide.pipeline import resolve_bin_to_mask_scale
+
+        binned = tmp_path / "b002"
+        _write_spatial(binned, hires_size=(1000, 2000), scalef=0.1)
+        config = {"paths": {"binned_002": str(binned)}}
+
+        sx, sy = resolve_bin_to_mask_scale(config, mask_shape=(20000, 10000))
+
+        assert (sx, sy) == pytest.approx((1.0, 1.0))
+
+    def test_config_override_wins(self, tmp_path):
+        """alignment.bin_to_mask_scale 明確指定時優先於自動推導。"""
+        from backend.src.fullslide.pipeline import resolve_bin_to_mask_scale
+
+        binned = tmp_path / "b002"
+        _write_spatial(binned, hires_size=(2870, 6000), scalef=0.25475544)
+        config = {
+            "paths": {"binned_002": str(binned)},
+            "alignment": {"bin_to_mask_scale": [1.5, 1.5]},
+        }
+
+        assert resolve_bin_to_mask_scale(config, mask_shape=(47104, 21504)) == pytest.approx((1.5, 1.5))
+
+    def test_falls_back_to_identity_when_spatial_missing(self, tmp_path):
+        """缺 spatial 檔案時回退 (1.0, 1.0)，不可拋錯中斷流程。"""
+        from backend.src.fullslide.pipeline import resolve_bin_to_mask_scale
+
+        config = {"paths": {"binned_002": str(tmp_path / "nope")}}
+
+        assert resolve_bin_to_mask_scale(config, mask_shape=(100, 100)) == pytest.approx((1.0, 1.0))
+
+
 # ── 全圖計數輸入解析 ─────────────────────────────────────────────────────────
 
 class TestFullCountInputs:
@@ -491,9 +618,35 @@ class TestFullCountInputs:
 
         assert err is None
         assert inputs["origin_xy"] == (11, 22)
+        assert inputs["scale"] == pytest.approx((1.0, 1.0))   # 無 spatial 檔 → 回退
+        assert inputs["dilation_px"] == 0                     # config 未給 → 0
         assert inputs["mask_path"].name == FULL_SEG_MASK_FILENAME
         assert inputs["tp_path"].name == "tissue_positions.parquet"
         assert inputs["h5_path"].name == "filtered_feature_bc_matrix.h5"
+
+    def test_dilation_px_comes_from_rna_counting_config(self, tmp_path):
+        """擴張距離須與 ROI 路徑共用 rna_counting.dilation_px，否則兩者不可比。"""
+        from backend.src.fullslide.pipeline import (
+            FULL_SEG_MASK_FILENAME,
+            resolve_full_count_inputs,
+        )
+
+        out = tmp_path / "out"
+        out.mkdir()
+        np.save(str(out / FULL_SEG_MASK_FILENAME), np.ones((4, 4), dtype=np.int32))
+        binned = tmp_path / "b002"
+        (binned / "spatial").mkdir(parents=True)
+        (binned / "spatial" / "tissue_positions.parquet").write_bytes(b"stub")
+        (binned / "filtered_feature_bc_matrix.h5").write_bytes(b"stub")
+        config = {
+            "paths": {"output_dir": str(out), "binned_002": str(binned)},
+            "rna_counting": {"dilation_px": 6},
+        }
+
+        inputs, err = resolve_full_count_inputs(config)
+
+        assert err is None
+        assert inputs["dilation_px"] == 6
 
     def test_origin_defaults_to_zero_without_sidecar(self, tmp_path):
         """sidecar 缺失時原點視為 (0,0)，並附帶警示旗標而非直接失敗。"""
