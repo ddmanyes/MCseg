@@ -224,9 +224,10 @@ async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = F
     """讀取原始 h5ad，on-the-fly 計算 QC metrics，回傳直方圖 JSON 供前端 SVG 渲染。
     source: 'cellpose'（cellpose_cells.h5ad）或 'proseg'（proseg_cells.h5ad）
     """
-    import numpy as np
     import anndata as ad
     import scanpy as sc
+
+    from backend.src.analysis.preprocessing import compute_qc_metrics
 
     config = load_config()
     from backend.src.utils.config import resolve_path
@@ -255,9 +256,10 @@ async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = F
                 return {"status": "error", "message": f"找不到 {target} 的 {src_label}（請先完成對應 Stage）"}
             adata = sc.read_h5ad(str(h5ad))
 
-        # 計算 QC metrics（不過濾，只計算分布）
-        adata.var["mt"] = adata.var_names.str.lower().str.startswith("mt-")
-        sc.pp.calculate_qc_metrics(adata, qc_vars=["mt"], percent_top=None, log1p=False, inplace=True)
+        # 計算 QC metrics（不過濾，只計算分布）；穿過 preprocessing 的唯一入口，
+        # 確保直方圖與實際 QC 用同一套 mito 前綴 / complexity / 空細胞定義
+        qc_params = config.get("analysis", {}).get("preprocessing", {}).get("cellular", {})
+        adata = compute_qc_metrics(adata, qc_params)
 
         metrics: dict[str, dict] = {}
         obs = adata.obs
@@ -268,11 +270,9 @@ async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = F
         if "pct_counts_mt" in obs:
             metrics["pct_counts_mt"] = _hist_metric(obs["pct_counts_mt"].values, "Mitochondrial %", unit="%")
         
-        # [計算] Complexity: log10(Genes) / log10(Counts)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            complexity = np.log10(obs["n_genes_by_counts"]) / np.log10(obs["total_counts"])
-            metrics["complexity"] = _hist_metric(complexity.replace([np.inf, -np.inf], 0).fillna(0).values, "Complexity Score")
-            
+        if "complexity" in obs:
+            metrics["complexity"] = _hist_metric(obs["complexity"].values, "Complexity Score")
+
         if "cell_area_um2" in obs:
             metrics["cell_area"] = _hist_metric(obs["cell_area_um2"].values, "Cell Size", "µm²")
 

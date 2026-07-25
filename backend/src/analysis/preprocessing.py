@@ -40,6 +40,62 @@ def _remove_zero_var_hvg(adata: ad.AnnData) -> None:
         logger.warning(f"移除 {n_zero} 個零方差 HVG（scale 後方差為 0），避免 PCA 奇異矩陣")
 
 
+def compute_qc_metrics(adata: ad.AnnData, qc_params: dict | None = None) -> ad.AnnData:
+    """計算 QC 指標（只計算、不過濾）——QC 指標定義的唯一擁有者。
+
+    pipeline 的 QC 步驟與 API 的直方圖查詢都必須穿過這裡，否則 mito 前綴、
+    complexity 公式、空細胞處理會在各處分歧。
+
+    Parameters
+    ----------
+    adata : AnnData
+        原始計數資料（會就地加上 obs/var 欄位）
+    qc_params : dict, optional
+        preprocessing 的 QC 參數區塊（目前用到 mito_prefix）
+    """
+    logger.info("計算 QC 指標...")
+
+    params = qc_params or {}
+
+    # 標記粒線體基因
+    mito_prefix = params.get("mito_prefix", "mt-")
+    adata.var["mt"] = adata.var_names.str.lower().str.startswith(mito_prefix.lower())
+
+    # 計算 QC 指標
+    sc.pp.calculate_qc_metrics(
+        adata,
+        qc_vars=["mt"],
+        percent_top=None,
+        log1p=False,
+        inplace=True
+    )
+
+    # total_counts=0 的空細胞（分割偵測到但無 RNA）會使 pct_counts_mt=NaN，
+    # 應填為 0（無粒線體讀數），避免被粒線體過濾器意外移除。
+    n_empty = int((adata.obs["total_counts"] == 0).sum())
+    if n_empty:
+        logger.warning(
+            f"  ⚠ {n_empty:,} 個空細胞（total_counts=0）：分割偵測到但無 RNA 計入，"
+            "pct_counts_mt 已填為 0，將由 min_counts 門檻決定是否移除。"
+        )
+        adata.obs["pct_counts_mt"] = adata.obs["pct_counts_mt"].fillna(0)
+
+    # Complexity Score: log10(Genes) / log10(Counts)
+    # 用於衡量單細胞測序內容的豐富度，協助剔除低多樣性噪音
+    with np.errstate(divide='ignore', invalid='ignore'):
+        adata.obs['complexity'] = np.log10(adata.obs['n_genes_by_counts']) / np.log10(adata.obs['total_counts'])
+        # 處理 log10(1) = 0 或 log10(0) = -inf 的極端值
+        adata.obs['complexity'] = adata.obs['complexity'].replace([np.inf, -np.inf], 0).fillna(0)
+
+    logger.info(f"  - 粒線體基因數: {adata.var['mt'].sum()}")
+    logger.info(f"  - 空細胞（total_counts=0）: {n_empty:,}")
+    logger.info(f"  - 平均 UMI/細胞: {adata.obs['total_counts'].mean():.1f}")
+    logger.info(f"  - 平均基因/細胞: {adata.obs['n_genes_by_counts'].mean():.1f}")
+    logger.info(f"  - 平均複雜度 (Complexity): {adata.obs['complexity'].mean():.3f}")
+
+    return adata
+
+
 class Preprocessor:
     """
     預處理器，統一處理所有資料集的 QC 與正規化
@@ -59,49 +115,10 @@ class Preprocessor:
 
     def calculate_qc_metrics(self, adata: ad.AnnData, qc_params: dict = None) -> ad.AnnData:
         """
-        計算 QC 指標
+        計算 QC 指標（委派給 compute_qc_metrics，僅補上預設參數）
         """
-        logger.info("計算 QC 指標...")
-
         params = qc_params if qc_params else self.params.get("cellular", {})
-
-        # 標記粒線體基因
-        mito_prefix = params.get("mito_prefix", "mt-")
-        adata.var["mt"] = adata.var_names.str.lower().str.startswith(mito_prefix.lower())
-
-        # 計算 QC 指標
-        sc.pp.calculate_qc_metrics(
-            adata,
-            qc_vars=["mt"],
-            percent_top=None,
-            log1p=False,
-            inplace=True
-        )
-
-        # total_counts=0 的空細胞（分割偵測到但無 RNA）會使 pct_counts_mt=NaN，
-        # 應填為 0（無粒線體讀數），避免被粒線體過濾器意外移除。
-        n_empty = int((adata.obs["total_counts"] == 0).sum())
-        if n_empty:
-            logger.warning(
-                f"  ⚠ {n_empty:,} 個空細胞（total_counts=0）：分割偵測到但無 RNA 計入，"
-                "pct_counts_mt 已填為 0，將由 min_counts 門檻決定是否移除。"
-            )
-            adata.obs["pct_counts_mt"] = adata.obs["pct_counts_mt"].fillna(0)
-
-        # [新增] Complexity Score: log10(Genes) / log10(Counts)
-        # 用於衡量單細胞測序內容的豐富度，協助剔除低多樣性噪音
-        with np.errstate(divide='ignore', invalid='ignore'):
-            adata.obs['complexity'] = np.log10(adata.obs['n_genes_by_counts']) / np.log10(adata.obs['total_counts'])
-            # 處理 log10(1) = 0 或 log10(0) = -inf 的極端值
-            adata.obs['complexity'] = adata.obs['complexity'].replace([np.inf, -np.inf], 0).fillna(0)
-
-        logger.info(f"  - 粒線體基因數: {adata.var['mt'].sum()}")
-        logger.info(f"  - 空細胞（total_counts=0）: {n_empty:,}")
-        logger.info(f"  - 平均 UMI/細胞: {adata.obs['total_counts'].mean():.1f}")
-        logger.info(f"  - 平均基因/細胞: {adata.obs['n_genes_by_counts'].mean():.1f}")
-        logger.info(f"  - 平均複雜度 (Complexity): {adata.obs['complexity'].mean():.3f}")
-
-        return adata
+        return compute_qc_metrics(adata, params)
 
     def filter_cells(self, adata: ad.AnnData, qc_params: dict = None) -> ad.AnnData:
         """
