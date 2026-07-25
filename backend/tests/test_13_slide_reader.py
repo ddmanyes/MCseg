@@ -294,10 +294,36 @@ class TestDiscoveryRecognisesSlideFormats:
 
 # ── 真實 NDPI 的兩個陷阱 ────────────────────────────────────────────────────
 
-NDPI_REAL = Path(
+NDPI_DIR = Path(
     "/Volumes/KINGSTON/Bioinfo_Projects/01_Spatial_Transcriptomics/"
-    "20251125_TGIA_VisiumHD/20250612_MQ250428/D1-2_40X_3_10.53.23.ndpi"
+    "20251125_TGIA_VisiumHD/20250612_MQ250428"
 )
+NDPI_REAL = NDPI_DIR / "D1-2_40X_3_10.53.23.ndpi"
+
+# 同一批掃描的兩張切片。兩檔並存才能確認「6 層 / 3 focal plane / jpegheader」
+# 是這台掃描機的一致特性，而非單一檔案的巧合。
+NDPI_REAL_FILES = [
+    (NDPI_REAL, (119040, 41472)),
+    (NDPI_DIR / "D2-4_40X_3_10.55.49.ndpi", (126720, 43776)),
+]
+
+
+def _densest_tissue_xy(reader, block=32):
+    """回傳「組織最密區塊」中心的 level 0 座標。
+
+    不可用組織質心 —— 一張切片常有兩塊分離的組織，質心會落在兩者之間的空白，
+    讀出來一片近白（std < 3），看起來像 reader 壞了。
+    """
+    top = reader.level_count - 1
+    lw, lh = reader.level_dimensions[top]
+    gray = reader.read_region(0, 0, lw, lh, level=top).mean(axis=2)
+    tissue = (gray < 200).astype(np.float32)
+
+    ny, nx = lh // block, lw // block
+    dens = tissue[:ny * block, :nx * block].reshape(ny, block, nx, block).mean(axis=(1, 3))
+    by, bx = np.unravel_index(dens.argmax(), dens.shape)
+    ds = reader.dimensions[0] / lw
+    return int((bx + 0.5) * block * ds), int((by + 0.5) * block * ds)
 
 
 class TestNdpiQuirks:
@@ -394,19 +420,55 @@ class TestNdpiQuirks:
 
         assert seen == [{}]
 
-    @pytest.mark.skipif(not NDPI_REAL.exists(), reason="需要真實 NDPI 檔案")
-    def test_real_ndpi_end_to_end(self):
-        """真實 Hamamatsu NDPI：尺寸、金字塔、mpp、各層區域讀取。"""
+    @pytest.mark.parametrize(
+        ("path", "dims"), NDPI_REAL_FILES,
+        ids=[p.stem.split("_")[0] for p, _ in NDPI_REAL_FILES],
+    )
+    def test_real_ndpi_end_to_end(self, path, dims):
+        """真實 Hamamatsu NDPI：尺寸、金字塔、mpp、各層在組織上讀得到紋理。"""
+        if not path.exists():
+            pytest.skip(f"需要真實 NDPI 檔案：{path.name}")
+
         from backend.src.utils.slide_reader import open_slide
 
-        r = open_slide(NDPI_REAL)
+        r = open_slide(path)
 
-        assert r.dimensions == (119040, 41472)
+        assert r.dimensions == dims
         assert r.level_count == 6
         assert r.mpp == pytest.approx(0.2305, abs=0.005)   # Hamamatsu 40x
+        assert r.level_downsamples == pytest.approx([1, 2, 4, 8, 16, 32], rel=0.01)
 
-        # 各層都要讀得出實際影像（不是空陣列、不是全平）
-        for level in (0, 2, 5):
-            crop = r.read_region(25000 >> level, 9000 >> level, 256, 256, level=level)
-            assert crop.shape == (256, 256, 3)
-            assert crop.std() > 1
+        # 各層都要讀得出實際影像（不是空陣列、不是全平）。位置必須挑在組織上 ——
+        # 切片大半是空白，隨手挑的座標會 std < 3 而讓這個斷言失去意義。
+        cx, cy = _densest_tissue_xy(r)
+        for level in range(r.level_count):
+            s = r.dimensions[0] / r.level_dimensions[level][0]
+            crop = r.read_region(int(cx / s) - 128, int(cy / s) - 128, 256, 256, level=level)
+            assert crop.shape == (256, 256, 3), f"L{level} 尺寸不符"
+            assert crop.std() > 5, f"L{level} 在組織上仍無紋理（可能回了空/全平資料）"
+
+    @pytest.mark.parametrize(
+        ("path", "dims"), NDPI_REAL_FILES,
+        ids=[p.stem.split("_")[0] for p, _ in NDPI_REAL_FILES],
+    )
+    def test_real_ndpi_levels_are_spatially_aligned(self, path, dims):
+        """跨層座標一致性：L0 降採樣 2× 必須與同位置的 L1 高度相關。
+
+        這是比「有回東西」強得多的檢查 —— focal plane 軸序或 tile 偏移算錯
+        （bug 4 那一類）仍可能回傳形狀正確、有紋理的資料，只是**位置是錯的**。
+        實測 D1-2 corr=+0.971、D2-4 corr=+0.991。
+        """
+        if not path.exists():
+            pytest.skip(f"需要真實 NDPI 檔案：{path.name}")
+
+        from backend.src.utils.slide_reader import open_slide
+
+        r = open_slide(path)
+        cx, cy = _densest_tissue_xy(r)
+
+        l0 = r.read_region(cx - 512, cy - 512, 1024, 1024, level=0).mean(axis=2)
+        l1 = r.read_region(cx // 2 - 256, cy // 2 - 256, 512, 512, level=1).mean(axis=2)
+        l0_ds = l0.reshape(512, 2, 512, 2).mean(axis=(1, 3))
+
+        corr = np.corrcoef(l0_ds.ravel(), l1.ravel())[0, 1]
+        assert corr > 0.8, f"L0 與 L1 內容不相關（corr={corr:+.3f}）→ 座標映射有誤"
