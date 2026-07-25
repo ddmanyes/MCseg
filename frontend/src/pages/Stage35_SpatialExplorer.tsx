@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, Component, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { getSpatialGeneList, postSpatialGenePlot, getAvailableRois } from '../api/client'
+import { getSpatialGeneList, postSpatialGenePlot, postRegionStats, getAvailableRois } from '../api/client'
+import RegionSelector, { type RegionSelection } from '../components/shared/RegionSelector'
 import { useT } from '../i18n'
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: string }> {
@@ -21,6 +22,13 @@ const CMAPS = ['viridis', 'magma', 'plasma', 'inferno', 'Reds', 'Blues', 'YlOrRd
 const MAX_GENES = 4
 
 type PlotMode = 'contour' | 'set'
+
+interface RegionStats {
+  n_cells: number
+  median_counts: number
+  median_genes: number
+  cluster_counts: Record<string, number>
+}
 
 interface PresetGeneSet {
   label: string
@@ -88,6 +96,13 @@ function SpatialExplorerInner() {
   const [plotError, setPlotError]       = useState('')
   const [plotInfo, setPlotInfo]         = useState<{ n_cells?: number } | null>(null)
   const searchRef = useRef<HTMLDivElement>(null)
+
+  // ── 區域選取（座標為全片 fullres px）────────────────────────────
+  const [showSelector, setShowSelector] = useState(false)
+  const [selection, setSelection]       = useState<RegionSelection | null>(null)
+  const [regionStats, setRegionStats]   = useState<RegionStats | null>(null)
+  const [statsLoading, setStatsLoading] = useState(false)
+  const [statsError, setStatsError]     = useState('')
 
   // ── Custom & override presets ─────────────────────────────────
   const [customSets, setCustomSets]       = useState<PresetGeneSet[]>(loadCustomSets)
@@ -246,6 +261,44 @@ function SpatialExplorerInner() {
     document.body.removeChild(a)
   }
 
+  // 把框選結果轉成 API 欄位（bbox → region、polygon → polygon）
+  const regionPayload = () => {
+    if (!selection) return {}
+    if (selection.type === 'bbox') {
+      return {
+        region: {
+          x0: selection.x, y0: selection.y,
+          x1: selection.x + selection.width_px,
+          y1: selection.y + selection.height_px,
+        },
+      }
+    }
+    return { polygon: selection.points }
+  }
+
+  const fetchRegionStats = async (sel: RegionSelection | null) => {
+    setSelection(sel)
+    setRegionStats(null)
+    setStatsError('')
+    if (!sel) return
+    setStatsLoading(true)
+    try {
+      const body = sel.type === 'bbox'
+        ? { region: { x0: sel.x, y0: sel.y, x1: sel.x + sel.width_px, y1: sel.y + sel.height_px } }
+        : { polygon: sel.points }
+      const res = await postRegionStats({
+        roi_name: isMergeMode ? undefined : (selectedRoi || undefined),
+        ...body,
+      })
+      if (res.data.status === 'ok') setRegionStats(res.data.data)
+      else setStatsError(res.data.message ?? 'Error')
+    } catch (e: any) {
+      setStatsError(e.response?.data?.detail ?? e.message ?? 'Unknown error')
+    } finally {
+      setStatsLoading(false)
+    }
+  }
+
   const handlePlot = async () => {
     if (selectedGenes.length === 0) return
     setPlotting(true)
@@ -260,6 +313,7 @@ function SpatialExplorerInner() {
         point_size: pointSize,
         cmap,
         alpha,
+        ...regionPayload(),
       })
       const d = res.data
       if (d.status === 'ok') {
@@ -523,6 +577,61 @@ function SpatialExplorerInner() {
               onChange={e => setAlpha(Number(e.target.value))}
               className="w-full accent-primary" />
           </div>
+        </div>
+
+        {/* Region selection */}
+        <div className="border-t border-surface-border pt-3 space-y-2">
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={() => setShowSelector(v => !v)}
+              className="px-3 py-1 rounded text-xs font-medium border border-surface-border text-gray-300 hover:border-primary hover:text-primary transition-colors"
+            >
+              {showSelector ? '▾' : '▸'} {t('region.stats')}
+            </button>
+            <span className="text-xs text-gray-500">
+              {selection
+                ? selection.type === 'bbox'
+                  ? `${t('region.selected')}: ${selection.width_px} × ${selection.height_px} px @ (${selection.x}, ${selection.y})`
+                  : `${t('region.selected')}: polygon (${selection.points.length} pts)`
+                : t('region.none')}
+            </span>
+            {selection && (
+              <button
+                onClick={() => fetchRegionStats(null)}
+                className="text-xs text-red-400 hover:text-red-300"
+              >
+                {t('region.clear')}
+              </button>
+            )}
+          </div>
+
+          {showSelector && (
+            <RegionSelector mode="both" height="22rem" onChange={fetchRegionStats} />
+          )}
+
+          {statsLoading && <p className="text-xs text-gray-500">{t('region.stats.loading')}</p>}
+          {statsError && <p className="text-xs text-red-400">{statsError}</p>}
+          {regionStats && !statsLoading && (
+            <div className="text-xs text-gray-400 bg-surface/50 rounded px-3 py-2 space-y-1">
+              <div className="flex gap-4 flex-wrap">
+                <span>{t('region.stats.cells')}: <b className="text-gray-200">{regionStats.n_cells.toLocaleString()}</b></span>
+                <span>{t('region.stats.counts')}: <b className="text-gray-200">{regionStats.median_counts.toFixed(1)}</b></span>
+                <span>{t('region.stats.genes')}: <b className="text-gray-200">{regionStats.median_genes.toFixed(1)}</b></span>
+              </div>
+              {Object.keys(regionStats.cluster_counts).length > 0 && (
+                <div className="flex gap-2 flex-wrap pt-1">
+                  <span>{t('region.stats.clusters')}:</span>
+                  {Object.entries(regionStats.cluster_counts)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([k, v]) => (
+                      <span key={k} className="px-1.5 py-0.5 rounded bg-surface-border text-gray-300">
+                        {k}: {v}
+                      </span>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Plot button */}

@@ -109,7 +109,22 @@ export const getSpatialGeneList = (roiName?: string) =>
 export const postSpatialGenePlot = (body: {
   roi_name?: string; genes: string[]; mode?: string; set_name?: string;
   point_size?: number; cmap?: string; alpha?: number
+  // 框選區域（全片 fullres px）；省略 = 全部細胞
+  region?: { x0: number; y0: number; x1: number; y1: number }
+  polygon?: [number, number][]
 }) => api.post('/spatial/gene_plot', body)
+export const postRegionStats = (body: {
+  roi_name?: string
+  region?: { x0: number; y0: number; x1: number; y1: number }
+  polygon?: [number, number][]
+}) => api.post('/spatial/region_stats', body)
+
+// Alignment QC（對位驗證）
+export const getRegistrationEstimate = (roiName?: string) =>
+  api.get('/registration/estimate', { params: roiName ? { roi_name: roiName } : {} })
+export const makeRegistrationQcPatches = (body?: { n?: number; size?: number; seed?: number }) =>
+  api.post('/registration/qc_patches', body ?? {})
+export const getRegistrationQcImages = () => api.get('/registration/qc_images')
 
 // Stage 3: Step 4 — Heatmap
 export const runHeatmap = (params: object) => api.post('/analysis/run_heatmap', params)
