@@ -252,3 +252,182 @@ class TestAddCentroids:
 
         assert cells.obs["centroid_x_px"].tolist() == pytest.approx([0.5, 8.5])
         assert cells.obs["centroid_y_px"].tolist() == pytest.approx([0.5, 8.5])
+
+
+# ── run_full 裁切座標驗證 ────────────────────────────────────────────────────
+
+class TestFullSegCropValidation:
+    """POST /api/segmentation/run_full 的裁切座標驗證（純驗證邏輯，不觸發分割）"""
+
+    def test_crop_x1_not_greater_than_x0_is_rejected(self):
+        from backend.src.api.segmentation import FullSegParams, validate_crop
+
+        err = validate_crop(FullSegParams(crop_x0=100, crop_x1=50))
+
+        assert err is not None
+        assert "crop_x1 必須大於 crop_x0" in err
+
+    def test_crop_y1_not_greater_than_y0_is_rejected(self):
+        from backend.src.api.segmentation import FullSegParams, validate_crop
+
+        err = validate_crop(FullSegParams(crop_y0=800, crop_y1=800))
+
+        assert err is not None
+        assert "crop_y1 必須大於 crop_y0" in err
+
+    def test_negative_origin_is_rejected(self):
+        from backend.src.api.segmentation import FullSegParams, validate_crop
+
+        err = validate_crop(FullSegParams(crop_x0=-1, crop_x1=100))
+
+        assert err is not None
+        assert "不可為負" in err
+
+    def test_full_image_defaults_are_valid(self):
+        """全部為 None（＝全圖）須通過驗證。"""
+        from backend.src.api.segmentation import FullSegParams, validate_crop
+
+        assert validate_crop(FullSegParams()) is None
+
+    def test_sentinel_minus_one_is_valid(self):
+        """-1 代表影像邊界，須視為合法。"""
+        from backend.src.api.segmentation import FullSegParams, validate_crop
+
+        assert validate_crop(FullSegParams(crop_x0=0, crop_x1=-1, crop_y0=0, crop_y1=-1)) is None
+
+    def test_valid_window_passes(self):
+        from backend.src.api.segmentation import FullSegParams, validate_crop
+
+        assert validate_crop(
+            FullSegParams(crop_x0=100, crop_x1=1124, crop_y0=200, crop_y1=1224)
+        ) is None
+
+
+class TestResolveCropWindow:
+    """裁切座標 → 實際切片邊界（-1/None 展開為影像邊界）"""
+
+    def test_none_expands_to_full_image(self):
+        from backend.src.api.segmentation import FullSegParams, resolve_crop_window
+
+        x0, y0, x1, y1 = resolve_crop_window(FullSegParams(), w_img=500, h_img=400)
+
+        assert (x0, y0, x1, y1) == (0, 0, 500, 400)
+
+    def test_minus_one_expands_to_full_image(self):
+        from backend.src.api.segmentation import FullSegParams, resolve_crop_window
+
+        params = FullSegParams(crop_x0=10, crop_x1=-1, crop_y0=20, crop_y1=-1)
+        x0, y0, x1, y1 = resolve_crop_window(params, w_img=500, h_img=400)
+
+        assert (x0, y0, x1, y1) == (10, 20, 500, 400)
+
+    def test_window_is_clamped_to_image_bounds(self):
+        """超出影像邊界的請求須被夾住，而非產生越界切片。"""
+        from backend.src.api.segmentation import FullSegParams, resolve_crop_window
+
+        params = FullSegParams(crop_x0=0, crop_x1=9999, crop_y0=0, crop_y1=9999)
+        x0, y0, x1, y1 = resolve_crop_window(params, w_img=500, h_img=400)
+
+        assert (x1, y1) == (500, 400)
+
+
+# ── metadata sidecar ────────────────────────────────────────────────────────
+
+FULL_SEG_META_KEYS = {
+    "crop_x0", "crop_y0", "width", "height",
+    "n_cells", "pixel_size_um", "passes", "created_at",
+}
+
+
+class TestFullSegMeta:
+    """全圖遮罩的 metadata sidecar"""
+
+    def test_write_full_seg_meta_schema(self, tmp_path):
+        """sidecar 須含全部 8 個欄位。"""
+        import json
+
+        from backend.src.fullslide.pipeline import write_full_seg_meta
+
+        path = write_full_seg_meta(
+            tmp_path, crop_x0=100, crop_y0=200, width=512, height=256,
+            n_cells=42, pixel_size_um=0.2737, passes=4,
+        )
+        meta = json.loads(path.read_text())
+
+        assert set(meta) == FULL_SEG_META_KEYS
+        assert meta["crop_x0"] == 100
+        assert meta["crop_y0"] == 200
+        assert meta["n_cells"] == 42
+        assert meta["passes"] == 4
+
+    def test_read_full_seg_meta_roundtrip(self, tmp_path):
+        from backend.src.fullslide.pipeline import read_full_seg_meta, write_full_seg_meta
+
+        write_full_seg_meta(
+            tmp_path, crop_x0=7, crop_y0=9, width=10, height=10,
+            n_cells=1, pixel_size_um=0.2737, passes=7,
+        )
+        meta = read_full_seg_meta(tmp_path)
+
+        assert meta["crop_x0"] == 7
+        assert meta["crop_y0"] == 9
+
+    def test_read_full_seg_meta_missing_returns_none(self, tmp_path):
+        """sidecar 不存在時回傳 None，由呼叫端決定如何處理。"""
+        from backend.src.fullslide.pipeline import read_full_seg_meta
+
+        assert read_full_seg_meta(tmp_path) is None
+
+
+# ── resolve_pixel_size ──────────────────────────────────────────────────────
+
+class TestResolvePixelSize:
+    """樣本實際 µm/px 優先於預設常數"""
+
+    def test_prefers_scalefactors_value(self, tmp_path):
+        import json
+
+        from backend.src.fullslide.pipeline import resolve_pixel_size
+
+        spatial = tmp_path / "spatial"
+        spatial.mkdir()
+        (spatial / "scalefactors_json.json").write_text(
+            json.dumps({"microns_per_pixel": 0.4321, "tissue_hires_scalef": 0.1})
+        )
+        config = {"paths": {"binned_002": str(tmp_path)}}
+
+        assert resolve_pixel_size(config) == pytest.approx(0.4321)
+
+    def test_falls_back_to_constant_when_missing(self, tmp_path):
+        from backend.src.fullslide.pipeline import resolve_pixel_size
+        from backend.src.utils.constants import VISIUM_UM_PX
+
+        config = {"paths": {"binned_002": str(tmp_path)}}
+
+        assert resolve_pixel_size(config) == pytest.approx(VISIUM_UM_PX)
+
+    def test_falls_back_when_key_absent_in_json(self, tmp_path):
+        """json 存在但沒有 microns_per_pixel 時仍須回退，不可拋錯。"""
+        import json
+
+        from backend.src.fullslide.pipeline import resolve_pixel_size
+        from backend.src.utils.constants import VISIUM_UM_PX
+
+        spatial = tmp_path / "spatial"
+        spatial.mkdir()
+        (spatial / "scalefactors_json.json").write_text(json.dumps({"tissue_hires_scalef": 0.1}))
+        config = {"paths": {"binned_002": str(tmp_path)}}
+
+        assert resolve_pixel_size(config) == pytest.approx(VISIUM_UM_PX)
+
+    def test_falls_back_on_corrupt_json(self, tmp_path):
+        """壞掉的 json 不可讓流程中斷。"""
+        from backend.src.fullslide.pipeline import resolve_pixel_size
+        from backend.src.utils.constants import VISIUM_UM_PX
+
+        spatial = tmp_path / "spatial"
+        spatial.mkdir()
+        (spatial / "scalefactors_json.json").write_text("{ not json")
+        config = {"paths": {"binned_002": str(tmp_path)}}
+
+        assert resolve_pixel_size(config) == pytest.approx(VISIUM_UM_PX)

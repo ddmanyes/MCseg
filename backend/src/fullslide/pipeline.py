@@ -186,3 +186,84 @@ def add_centroids(
     cells.obs["centroid_x_fullres"] = cx_px + x0
     cells.obs["centroid_y_fullres"] = cy_px + y0
     cells.obsm["spatial"] = np.stack([cx_px * pixel_size_um, cy_px * pixel_size_um], axis=1)
+
+
+# ── 全圖遮罩 metadata sidecar ────────────────────────────────────────────────
+
+FULL_SEG_MASK_FILENAME = "full_image_segmentation_masks.npy"
+FULL_SEG_META_FILENAME = "full_image_segmentation_meta.json"
+
+
+def write_full_seg_meta(
+    output_dir: str | Path,
+    *,
+    crop_x0: int,
+    crop_y0: int,
+    width: int,
+    height: int,
+    n_cells: int,
+    pixel_size_um: float,
+    passes: int,
+) -> Path:
+    """
+    寫出全圖遮罩的 metadata sidecar。
+
+    遮罩本身只有局部座標，下游（Stage 2 全圖計數、Stage 3.5 框選）必須靠
+    `crop_x0/crop_y0` 才能還原回原始影像 fullres 座標系。
+    """
+    import json
+    from datetime import datetime, timezone
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "crop_x0": int(crop_x0),
+        "crop_y0": int(crop_y0),
+        "width": int(width),
+        "height": int(height),
+        "n_cells": int(n_cells),
+        "pixel_size_um": float(pixel_size_um),
+        "passes": int(passes),
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    path = output_dir / FULL_SEG_META_FILENAME
+    path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return path
+
+
+def read_full_seg_meta(output_dir: str | Path) -> dict | None:
+    """讀取 metadata sidecar；不存在或損壞時回傳 None（由呼叫端決定如何處理）。"""
+    import json
+
+    path = Path(output_dir) / FULL_SEG_META_FILENAME
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+def resolve_pixel_size(config: dict) -> float:
+    """
+    取樣本實際的 µm/px：`scalefactors_json.json` 的 `microns_per_pixel` 優先，
+    缺失／損壞時回退 `constants.VISIUM_UM_PX`。
+
+    注意：此值只影響 µm 換算與匯出比例尺，**不影響 bin attribution**
+    （後者為純像素運算）。
+    """
+    import json
+
+    from backend.src.utils.constants import VISIUM_UM_PX
+
+    binned = config.get("paths", {}).get("binned_002", "")
+    if binned:
+        sf = Path(binned) / "spatial" / "scalefactors_json.json"
+        if sf.exists():
+            try:
+                mpp = json.loads(sf.read_text(encoding="utf-8")).get("microns_per_pixel")
+                if mpp:
+                    return float(mpp)
+            except (ValueError, OSError, TypeError):
+                pass   # 損壞不可中斷流程，回退預設常數
+    return float(VISIUM_UM_PX)

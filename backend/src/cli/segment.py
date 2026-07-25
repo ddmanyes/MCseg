@@ -459,8 +459,12 @@ def main(argv: list[str] | None = None) -> int:
     gc.collect()
 
     # ── Step 3: Bin attribution（有 tp & h5 才跑）
-    from backend.src.utils.constants import VISIUM_UM_PX
-    pixel_size_um = VISIUM_UM_PX
+    # µm/px 取樣本實際值（scalefactors_json.json）優先，缺失才用預設常數。
+    # --tp 指向 {binned_002}/spatial/tissue_positions.parquet，故其祖父層即 binned_002。
+    from backend.src.fullslide.pipeline import resolve_pixel_size
+    _binned_002 = str(args.tp.parent.parent) if args.tp else ""
+    pixel_size_um = resolve_pixel_size({"paths": {"binned_002": _binned_002}})
+    log.info(f"  pixel_size_um = {pixel_size_um}")
 
     attribution = None
     if args.tp and args.h5:

@@ -83,6 +83,65 @@ class PreviewRequest(BaseModel):
     clahe_clip_limit: Optional[float] = None
 
 
+class FullSegParams(BaseModel):
+    """全圖分割請求：裁切窗格與 cpsam 開關（全部可選）。
+
+    裁切座標為**原始影像 fullres px**。`None` 或 `-1` 代表該邊取影像邊界，
+    因此不帶任何參數即為「整張影像」（維持既有行為）。
+    """
+
+    crop_x0: Optional[int] = None
+    crop_x1: Optional[int] = None
+    crop_y0: Optional[int] = None
+    crop_y1: Optional[int] = None
+    use_cpsam: Optional[bool] = None
+
+
+# 上界（crop_x1/crop_y1）專用哨兵：代表「取到影像邊界」，與 CLI 的
+# `--crop-y1 -1` / `--btf-col1 -1` 語意一致。下界不接受 -1（視為負值錯誤）。
+_SENTINEL_FULL = -1
+
+
+def _upper_is_open(v: Optional[int]) -> bool:
+    """上界是否為開放（None 或 -1 → 取影像邊界）。"""
+    return v is None or v == _SENTINEL_FULL
+
+
+def validate_crop(p: FullSegParams) -> Optional[str]:
+    """驗證裁切座標；合法回傳 None，否則回傳錯誤訊息。
+
+    只做「與影像尺寸無關」的檢查（負值、上下界順序）；實際邊界夾制在
+    `resolve_crop_window` 完成，因為那時才知道影像尺寸。
+    """
+    for name, v0 in (("crop_x0", p.crop_x0), ("crop_y0", p.crop_y0)):
+        if v0 is not None and v0 < 0:
+            return f"{name} 不可為負（收到 {v0}）"
+    for name, v1 in (("crop_x1", p.crop_x1), ("crop_y1", p.crop_y1)):
+        if v1 is not None and v1 < 0 and v1 != _SENTINEL_FULL:
+            return f"{name} 不可為負（收到 {v1}）"
+
+    if not _upper_is_open(p.crop_x1):
+        x0 = p.crop_x0 or 0
+        if p.crop_x1 <= x0:
+            return f"crop_x1 必須大於 crop_x0（收到 {x0} → {p.crop_x1}）"
+    if not _upper_is_open(p.crop_y1):
+        y0 = p.crop_y0 or 0
+        if p.crop_y1 <= y0:
+            return f"crop_y1 必須大於 crop_y0（收到 {y0} → {p.crop_y1}）"
+    return None
+
+
+def resolve_crop_window(
+    p: FullSegParams, w_img: int, h_img: int
+) -> tuple[int, int, int, int]:
+    """把裁切參數展開為實際切片邊界 `(x0, y0, x1, y1)`，並夾制於影像範圍內。"""
+    x0 = min(int(p.crop_x0 or 0), w_img)
+    y0 = min(int(p.crop_y0 or 0), h_img)
+    x1 = w_img if _upper_is_open(p.crop_x1) else min(int(p.crop_x1), w_img)
+    y1 = h_img if _upper_is_open(p.crop_y1) else min(int(p.crop_y1), h_img)
+    return x0, y0, x1, y1
+
+
 def _maybe_set(d: dict, key: str, val) -> None:
     if val is not None:
         d[key] = val
@@ -210,8 +269,15 @@ async def get_full_seg_status():
 
 
 @router.post("/run_full")
-async def run_full_segmentation(background_tasks: BackgroundTasks):
-    """對 BTF 全圖執行 tiled MCseg v2 分割（MPS 安全模式）。"""
+async def run_full_segmentation(
+    background_tasks: BackgroundTasks,
+    params: FullSegParams = FullSegParams(),
+):
+    """對 BTF 全圖（或指定裁切窗格）執行 tiled MCseg v2 分割（MPS 安全模式）。"""
+    err = validate_crop(params)
+    if err:
+        return {"status": "error", "message": err}
+
     async with _full_lock:
         if _full_status["status"] == "running":
             return {"status": "error", "message": "全圖分割任務執行中"}
@@ -219,11 +285,13 @@ async def run_full_segmentation(background_tasks: BackgroundTasks):
         _full_status["status"]   = "running"
         _full_status["progress"] = 0.0
         _full_status["message"]  = "初始化..."
-        background_tasks.add_task(_run_full_segmentation, config)
+        background_tasks.add_task(_run_full_segmentation, config, params)
     return {"status": "ok", "message": "全圖分割已啟動"}
 
 
-async def _run_full_segmentation(config: dict) -> None:
+async def _run_full_segmentation(
+    config: dict, params: FullSegParams | None = None
+) -> None:
     global _full_status
     set_current_stage("segmentation")
     _full_status = {"status": "running", "progress": 0.0, "message": "讀取全圖影像..."}
@@ -236,6 +304,7 @@ async def _run_full_segmentation(config: dict) -> None:
         import numpy as np
         import tifffile
         import zarr as _zarr
+        from backend.src.fullslide.pipeline import resolve_pixel_size, write_full_seg_meta
         from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
 
         paths      = config.get("paths", {})
@@ -248,7 +317,9 @@ async def _run_full_segmentation(config: dict) -> None:
         if not btf_path or not Path(btf_path).exists():
             raise FileNotFoundError(f"找不到 BTF/TIFF：{btf_path}  請在 config paths.he_image 指定")
 
-        _progress(0.02, "讀取 BTF 全圖（tile-based）...")
+        params = params or FullSegParams()
+
+        _progress(0.02, "讀取 BTF 影像（tile-based）...")
         with tifffile.TiffFile(str(btf_path)) as tif:
             store = tif.aszarr()
             z = _zarr.open(store, mode="r")
@@ -256,18 +327,24 @@ async def _run_full_segmentation(config: dict) -> None:
             shape = arr.shape
             h_img, w_img = shape[0], shape[1]
             n_ch = shape[2] if len(shape) > 2 else 1
-            estimated_gb = h_img * w_img * n_ch / 1024 ** 3
+
+            crop_x0, crop_y0, crop_x1, crop_y1 = resolve_crop_window(params, w_img, h_img)
+            crop_w, crop_h = crop_x1 - crop_x0, crop_y1 - crop_y0
+
+            estimated_gb = crop_h * crop_w * n_ch / 1024 ** 3
             if estimated_gb > max_load_gb:
                 raise MemoryError(
-                    f"全圖 {w_img}×{h_img}px ≈ {estimated_gb:.1f} GB，"
+                    f"影像窗格 {crop_w}×{crop_h}px ≈ {estimated_gb:.1f} GB，"
                     f"超過安全載入上限（{max_load_gb:g} GB）。"
-                    f"請改用 ROI 裁切模式（Stage 0 + Stage 1）。"
+                    f"請縮小裁切範圍或改用 ROI 裁切模式（Stage 0 + Stage 1）。"
                 )
-            img = np.array(arr)
+            img = np.asarray(arr[crop_y0:crop_y1, crop_x0:crop_x1])
         if img.ndim == 3 and img.shape[-1] == 4:
             img = img[..., :3]
 
-        _progress(0.05, f"全圖尺寸 {img.shape[1]}×{img.shape[0]}px，開始 tiled 分割...")
+        _is_full = (crop_x0, crop_y0, crop_x1, crop_y1) == (0, 0, w_img, h_img)
+        _scope = "全圖" if _is_full else f"窗格 ({crop_x0},{crop_y0})"
+        _progress(0.05, f"{_scope} 尺寸 {img.shape[1]}×{img.shape[0]}px，開始 tiled 分割...")
 
         # MPS 安全設定：tile_size=1024, batch_size≤2
         tile_size = int(full_cfg.get("tile_size", 1024))
@@ -275,9 +352,11 @@ async def _run_full_segmentation(config: dict) -> None:
         seg_cfg_safe = dict(seg_cfg)
         seg_cfg_safe["batch_size"] = min(int(seg_cfg_safe.get("batch_size", 2)), 2)
         # cpsam 在全圖模式極耗記憶體，預設強制停用；設 full_seg.force_disable_cpsam=false
-        # 後可由 API 參數（P0-10 的 FullSegParams.use_cpsam）決定
+        # 後可由請求的 use_cpsam 決定（未指定則沿用 mcseg_v2 設定）
         if full_cfg.get("force_disable_cpsam", True):
             seg_cfg_safe["use_cpsam"] = False
+        elif params.use_cpsam is not None:
+            seg_cfg_safe["use_cpsam"] = params.use_cpsam
 
         loop = asyncio.get_running_loop()
         import functools
@@ -294,9 +373,22 @@ async def _run_full_segmentation(config: dict) -> None:
         np.save(str(out_path), final_mask)
         n_cells = int(len(np.unique(final_mask)) - 1)
 
+        # metadata sidecar：下游（Stage 2 全圖計數）需靠它把遮罩局部座標
+        # 還原回原始影像 fullres 座標系
+        write_full_seg_meta(
+            output_dir,
+            crop_x0=crop_x0,
+            crop_y0=crop_y0,
+            width=int(final_mask.shape[1]),
+            height=int(final_mask.shape[0]),
+            n_cells=n_cells,
+            pixel_size_um=resolve_pixel_size(config),
+            passes=7 if seg_cfg_safe.get("use_cpsam") else 4,
+        )
+
         _full_status = {
             "status": "done", "progress": 1.0,
-            "message": f"全圖分割完成：{n_cells:,} 個細胞  →  {out_path.name}",
+            "message": f"{_scope}分割完成：{n_cells:,} 個細胞  →  {out_path.name}",
             "n_cells": n_cells,
             "output": str(out_path),
         }
@@ -304,7 +396,7 @@ async def _run_full_segmentation(config: dict) -> None:
         logger.error(f"全圖分割失敗：{e}", exc_info=True)
         if isinstance(e, MemoryError):
             # MemoryError 訊息含有尺寸資訊但不含路徑，可安全回傳
-            safe_msg = str(e).split("，請改")[0] + "，請改用 ROI 裁切模式。"
+            safe_msg = str(e).split("，請縮小")[0] + "，請縮小裁切範圍或改用 ROI 模式。"
         else:
             safe_msg = "全圖分割失敗，請查閱 log"
         _full_status = {"status": "error", "progress": 0.0, "message": safe_msg}
