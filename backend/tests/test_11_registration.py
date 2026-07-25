@@ -413,3 +413,38 @@ class TestEstimateShiftFullres:
 
         assert abs(dy) < 2.0 and abs(dx) < 2.0
         assert spread < 3.0
+
+
+# ── QC 疊圖 ─────────────────────────────────────────────────────────────────
+
+class TestRenderOverlayPatches:
+    """H&E ＋ bin 質心疊圖（肉眼判讀對位）"""
+
+    def test_render_overlay_patches_writes_n_png(self, tmp_path):
+        from backend.src.registration.qc import render_overlay_patches
+
+        btf, tp = _make_synthetic_slide(tmp_path, size=1024, shift=(0, 0), seed=2)
+        out = tmp_path / "qc"
+
+        paths = render_overlay_patches(
+            btf, tp, out, n=3, size=256, seed=0, full_shape=(1024, 1024), dpi=100
+        )
+
+        assert len(paths) == 3
+        assert all(p.exists() and p.stat().st_size > 0 for p in paths)
+        assert [p.name for p in paths] == ["patch_0.png", "patch_1.png", "patch_2.png"]
+
+    def test_render_overlay_patches_is_reproducible(self, tmp_path):
+        """固定 seed 須取到相同區域 —— 否則兩次 QC 無從比較。"""
+        from backend.src.registration.qc import render_overlay_patches
+
+        btf, tp = _make_synthetic_slide(tmp_path, size=1024, shift=(0, 0), seed=2)
+
+        a = render_overlay_patches(
+            btf, tp, tmp_path / "a", n=2, size=256, seed=7, full_shape=(1024, 1024), dpi=100
+        )
+        b = render_overlay_patches(
+            btf, tp, tmp_path / "b", n=2, size=256, seed=7, full_shape=(1024, 1024), dpi=100
+        )
+
+        assert [p.read_bytes() for p in a] == [p.read_bytes() for p in b]
