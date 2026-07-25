@@ -342,3 +342,74 @@ class TestShiftToMatrix:
 
         assert out[0, 0] == pytest.approx(100.0 + 32.0)
         assert out[0, 1] == pytest.approx(200.0 + 64.0)
+
+
+# ── 兩階段全片位移估計 ───────────────────────────────────────────────────────
+
+def _make_synthetic_slide(tmp_path, size=2048, shift=(30, 30), seed=0):
+    """造一組「H&E 影像 + tissue_positions」，兩者間有已知位移。
+
+    影像由 bin 密度模糊而成（組織處暗），再整體位移 `shift` ——
+    因此 bin 相對影像的位移應為 `-shift`。
+    """
+    import tifffile
+    from scipy.ndimage import gaussian_filter
+
+    rng = np.random.default_rng(seed)
+    margin = 256
+    n = 4000
+    bx = rng.uniform(margin, size - margin, n)
+    by = rng.uniform(margin, size - margin, n)
+
+    dens = np.zeros((size, size), dtype=np.float32)
+    np.add.at(dens, (by.astype(int), bx.astype(int)), 1.0)
+    tissue = gaussian_filter(dens, 6)
+    tissue = tissue / (tissue.max() or 1.0)
+    gray = (255.0 - 200.0 * tissue).astype(np.uint8)          # 組織為暗
+    gray = np.roll(gray, shift, axis=(0, 1))                  # 影像相對 bin 位移
+
+    btf = tmp_path / "slide.btf"
+    tifffile.imwrite(
+        str(btf),
+        np.repeat(gray[:, :, None], 3, axis=2),
+        bigtiff=True,
+        tile=(256, 256),
+        photometric="rgb",
+    )
+    tp = _write_tissue_positions(
+        tmp_path / "tp.parquet", list(zip(by.tolist(), bx.tolist()))
+    )
+    return btf, tp
+
+
+class TestEstimateShiftFullres:
+    """coarse-to-fine：ds=32 粗估定位、ds=4 三窗精修取中位數"""
+
+    def test_estimate_shift_fullres_recovers_30px(self, tmp_path):
+        """已知 30 px 位移須回推誤差 < 2 px，且三窗一致（spread < 3）。"""
+        from backend.src.registration.align import estimate_shift_fullres
+
+        btf, tp = _make_synthetic_slide(tmp_path, size=2048, shift=(30, 30))
+
+        dy, dx, spread = estimate_shift_fullres(
+            btf, tp, full_shape=(2048, 2048),
+            coarse_ds=32, fine_ds=4, window=512, n_windows=3,
+        )
+
+        assert dy == pytest.approx(-30.0, abs=2.0)
+        assert dx == pytest.approx(-30.0, abs=2.0)
+        assert spread < 3.0
+
+    def test_estimate_shift_fullres_reports_zero_when_aligned(self, tmp_path):
+        """對位正確時須回報接近 0 —— 否則會誤導使用者去「修」沒壞的東西。"""
+        from backend.src.registration.align import estimate_shift_fullres
+
+        btf, tp = _make_synthetic_slide(tmp_path, size=2048, shift=(0, 0), seed=1)
+
+        dy, dx, spread = estimate_shift_fullres(
+            btf, tp, full_shape=(2048, 2048),
+            coarse_ds=32, fine_ds=4, window=512, n_windows=3,
+        )
+
+        assert abs(dy) < 2.0 and abs(dx) < 2.0
+        assert spread < 3.0
