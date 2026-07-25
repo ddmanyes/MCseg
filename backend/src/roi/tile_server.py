@@ -24,7 +24,7 @@ from typing import Optional
 import numpy as np
 from PIL import Image
 
-from .extractor import read_btf_crop
+from backend.src.utils.slide_reader import open_slide
 
 logger = logging.getLogger("pipeline.roi")
 
@@ -89,12 +89,9 @@ class DZITileServer:
         self._thumb_scale = THUMB_SCALE
         self._thumb_arr   = None
 
-        import tifffile
-        with tifffile.TiffFile(str(btf_path)) as tf:
-            page = tf.pages[0]
-            self.full_height = page.imagelength
-            self.full_width  = page.imagewidth
-            self._is_tiled   = bool(page.tags.get("TileOffsets"))
+        # SlideReader 統一 BTF/TIFF 與 NDPI/SVS/MRXS；後者自帶金字塔
+        self._reader = open_slide(btf_path)
+        self.full_width, self.full_height = self._reader.dimensions
 
         self.max_level = math.ceil(math.log2(max(self.full_width, self.full_height)))
 
@@ -137,10 +134,16 @@ class DZITileServer:
         if scale >= 4 and self._thumb_arr is not None:
             crop = _crop_from_thumb(self._thumb_arr, self._thumb_scale,
                                     x0, y0, x1, y1)
-        elif self._is_tiled:
-            crop, _, _ = read_btf_crop(self.btf_path, x0, y0, w, h)
+        elif self._reader.level_count > 1:
+            # 自帶金字塔（NDPI/SVS）→ 直接讀最接近的那一層，省下解壓 level 0 的成本
+            lvl = self._reader.best_level_for_downsample(scale)
+            ds  = self._reader.level_downsamples[lvl]
+            crop = self._reader.read_region(
+                int(x0 / ds), int(y0 / ds),
+                max(1, int(w / ds)), max(1, int(h / ds)), level=lvl,
+            )
         else:
-            crop = read_strip_crop(self.btf_path, x0, y0, w, h)
+            crop = self._reader.read_region(x0, y0, w, h)
 
         img = Image.fromarray(crop).convert('RGB')
         if img.size != (target_w, target_h):
@@ -161,6 +164,33 @@ class DZITileServer:
 
 # ── Thumbnail builder (module-level so it can be called independently) ────────
 
+def _thumb_from_pyramid(btf_path: Path, scale: int) -> Optional[np.ndarray]:
+    """
+    影像自帶金字塔（NDPI/SVS/MRXS）時，直接自最接近的那一層取縮圖。
+
+    回 None 表示沒有金字塔可用（BTF 這類單層影像）→ 由呼叫端走逐 tile 掃描。
+    這省下的是整段自建縮圖的成本：金字塔層本來就是為此存在的。
+    """
+    try:
+        reader = open_slide(btf_path)
+    except (ValueError, FileNotFoundError) as e:
+        logger.warning(f"無法開啟影像以建立縮圖：{e}")
+        return None
+
+    if reader.level_count <= 1:
+        return None
+
+    lvl = reader.best_level_for_downsample(scale)
+    lw, lh = reader.level_dimensions[lvl]
+    level_ds = reader.level_downsamples[lvl]
+    img = reader.read_region(0, 0, lw, lh, level=lvl)
+
+    # 該層倍率通常不等於目標倍率 → 再降採樣補足剩餘倍數
+    step = max(1, int(round(scale / level_ds)))
+    return np.ascontiguousarray(img[::step, ::step])
+
+
+
 def _load_or_build_thumb(btf_path: Path, scale: int) -> np.ndarray:
     """
     Load a cached raw-TIFF thumbnail, or build and cache it.
@@ -176,6 +206,12 @@ def _load_or_build_thumb(btf_path: Path, scale: int) -> np.ndarray:
         return np.load(str(cache))
 
     logger.info(f"建立 raw TIFF 縮圖（scale=1/{scale}）…  首次執行需數秒，之後載入快取")
+
+    thumb = _thumb_from_pyramid(btf_path, scale)
+    if thumb is not None:
+        np.save(str(cache), thumb)
+        logger.info(f"縮圖快取已儲存（取自影像自帶金字塔）：{cache}  shape={thumb.shape}")
+        return thumb
 
     import tifffile
 

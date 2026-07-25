@@ -194,3 +194,59 @@ class TestPyramidSlideReader:
                          resolution=(44248, 44248), resolutionunit="CENTIMETER")
 
         assert open_slide(p).mpp == pytest.approx(0.226, abs=0.001)
+
+
+# ── tile server 整合 ────────────────────────────────────────────────────────
+
+class TestTileServerUsesSlideReader:
+    """DZITileServer 改由 SlideReader 取得尺寸與影像資料"""
+
+    def test_dzi_dimensions_from_reader(self, tmp_path):
+        from backend.src.roi.tile_server import DZITileServer
+
+        _write_tiled_btf(tmp_path / "img.btf", size=512)
+        srv = DZITileServer(str(tmp_path / "img.btf"))
+
+        assert (srv.full_width, srv.full_height) == (512, 512)
+        assert 'Width="512"' in srv.get_dzi()
+
+    def test_get_tile_returns_jpeg(self, tmp_path):
+        from backend.src.roi.tile_server import DZITileServer
+
+        _write_tiled_btf(tmp_path / "img.btf", size=512)
+        srv = DZITileServer(str(tmp_path / "img.btf"))
+        data = srv.get_tile(srv.max_level, 0, 0)
+
+        assert data[:2] == b"\xff\xd8"          # JPEG SOI
+
+    def test_pyramid_slide_serves_tiles(self, tmp_path):
+        """NDPI/SVS 也要能出 tile（過去只支援 BTF）。"""
+        from backend.src.roi.tile_server import DZITileServer
+
+        _write_pyramid(tmp_path / "slide.svs", size=512, levels=3)
+        srv = DZITileServer(str(tmp_path / "slide.svs"))
+
+        assert (srv.full_width, srv.full_height) == (512, 512)
+        assert srv.get_tile(srv.max_level, 0, 0)[:2] == b"\xff\xd8"
+
+    def test_thumb_uses_pyramid_when_available(self, tmp_path):
+        """自帶金字塔時，縮圖直接取自金字塔層，不逐 tile 掃描全圖。"""
+        from backend.src.roi.tile_server import _load_or_build_thumb, _thumb_from_pyramid
+
+        _write_pyramid(tmp_path / "slide.svs", size=512, levels=3)
+
+        fast = _thumb_from_pyramid(tmp_path / "slide.svs", 4)
+        assert fast is not None and fast.shape[:2] == (128, 128)
+
+        thumb = _load_or_build_thumb(tmp_path / "slide.svs", 4)
+        assert thumb.shape[:2] == (128, 128)
+        assert (tmp_path / "slide.thumb4.npy").exists()      # 已快取
+
+    def test_thumb_falls_back_for_flat_tiff(self, tmp_path):
+        """單層 BTF 沒有金字塔 → 回 None，改走既有的逐 tile 掃描。"""
+        from backend.src.roi.tile_server import _load_or_build_thumb, _thumb_from_pyramid
+
+        _write_tiled_btf(tmp_path / "img.btf", size=512)
+
+        assert _thumb_from_pyramid(tmp_path / "img.btf", 4) is None
+        assert _load_or_build_thumb(tmp_path / "img.btf", 4).shape[:2] == (128, 128)
