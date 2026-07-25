@@ -53,6 +53,12 @@ segmentation:
   output:
     mask_filename: segmentation_masks.npy
     mask_tif_filename: segmentation_masks.tif
+full_seg:                   # 全圖分割（Stage 1 的 /run_full 路徑）
+  tile_size: 1024           # MPS 安全值，比 2048 省 GPU 記憶體
+  overlap: 128              # 相鄰 tile 重疊寬度（px）
+  max_load_gb: 6.0          # 單次載入影像的安全上限（GB），超過則要求改用裁切
+  force_disable_cpsam: true # 全圖模式停用 cpsam（記憶體考量）；設 false 可由 API 參數開啟
+
 rna_counting:
   dilation_px: 6            # 1.64 µm — xenium_he_seg PQ=0.432 最佳參數
 

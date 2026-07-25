@@ -242,6 +242,8 @@ async def _run_full_segmentation(config: dict) -> None:
         output_dir = resolve_path(paths["output_dir"])
         btf_path   = paths.get("he_image", "")
         seg_cfg    = config.get("segmentation", {}).get("mcseg_v2", {})
+        full_cfg   = config.get("full_seg", {})
+        max_load_gb = float(full_cfg.get("max_load_gb", 6.0))
 
         if not btf_path or not Path(btf_path).exists():
             raise FileNotFoundError(f"找不到 BTF/TIFF：{btf_path}  請在 config paths.he_image 指定")
@@ -255,10 +257,10 @@ async def _run_full_segmentation(config: dict) -> None:
             h_img, w_img = shape[0], shape[1]
             n_ch = shape[2] if len(shape) > 2 else 1
             estimated_gb = h_img * w_img * n_ch / 1024 ** 3
-            if estimated_gb > 6.0:
+            if estimated_gb > max_load_gb:
                 raise MemoryError(
                     f"全圖 {w_img}×{h_img}px ≈ {estimated_gb:.1f} GB，"
-                    f"超過安全載入上限（6 GB）。"
+                    f"超過安全載入上限（{max_load_gb:g} GB）。"
                     f"請改用 ROI 裁切模式（Stage 0 + Stage 1）。"
                 )
             img = np.array(arr)
@@ -268,11 +270,14 @@ async def _run_full_segmentation(config: dict) -> None:
         _progress(0.05, f"全圖尺寸 {img.shape[1]}×{img.shape[0]}px，開始 tiled 分割...")
 
         # MPS 安全設定：tile_size=1024, batch_size≤2
-        tile_size = int(config.get("full_seg", {}).get("tile_size", 1024))
-        overlap   = int(config.get("full_seg", {}).get("overlap", 128))
+        tile_size = int(full_cfg.get("tile_size", 1024))
+        overlap   = int(full_cfg.get("overlap", 128))
         seg_cfg_safe = dict(seg_cfg)
         seg_cfg_safe["batch_size"] = min(int(seg_cfg_safe.get("batch_size", 2)), 2)
-        seg_cfg_safe["use_cpsam"] = False   # cpsam 在全圖模式太耗記憶體
+        # cpsam 在全圖模式極耗記憶體，預設強制停用；設 full_seg.force_disable_cpsam=false
+        # 後可由 API 參數（P0-10 的 FullSegParams.use_cpsam）決定
+        if full_cfg.get("force_disable_cpsam", True):
+            seg_cfg_safe["use_cpsam"] = False
 
         loop = asyncio.get_running_loop()
         import functools
