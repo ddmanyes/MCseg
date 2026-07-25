@@ -528,6 +528,10 @@ def main(argv: list[str] | None = None) -> int:
     bin_transform, bin_scale, transform_source = resolve_bin_to_image_transform(
         _cfg, image_shape
     )
+    # transform 已含縮放；同時傳 scale 會讓 bin_attribution 每次正常執行都警告
+    # 「同時指定 transform 與 scale」。與 resolve_full_count_inputs 的作法一致。
+    if bin_transform is not None:
+        bin_scale = (1.0, 1.0)
     log.info(f"  pixel_size_um = {pixel_size_um}")
 
     attribution = None

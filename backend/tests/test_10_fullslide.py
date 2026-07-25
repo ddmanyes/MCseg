@@ -344,6 +344,45 @@ class TestHitRateSanityCheck:
         assert "分割" in caplog.text
         assert "座標對不上" not in caplog.text
 
+    def test_small_crop_does_not_warn_about_out_of_bounds(self, tmp_path, caplog):
+        """裁切小窗格時不得對「越界 bin 很多」發警告。
+
+        實跑重現：從全片裁 768×768，全片 4,378,840 個 bin 有 100% 落在窗格外，
+        於是跳出「請確認 binned_outputs 是否為對應此影像的註冊版本」——
+        資料完全正常，卻把人導去查沒問題的東西。
+        """
+        import logging
+
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        # 遮罩只有 300×300，但 bins 散布在 6000×6000 的全片範圍
+        mask = self._dense_mask(size=300)
+        rows_cols = [(y, x) for y in range(0, 6000, 40) for x in range(0, 6000, 40)]
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, rows_cols)
+
+        with caplog.at_level(logging.WARNING, logger="pipeline.fullslide"):
+            bin_attribution(mask, tp, 0, 0)
+
+        assert "落在遮罩範圍外" not in caplog.text
+
+    def test_full_slide_still_warns_about_out_of_bounds(self, tmp_path, caplog):
+        """整片模式下，越界比例過高仍須警告（原有行為不可退化）。"""
+        import logging
+
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        # 遮罩涵蓋 bins 的範圍（整片），但 bins 被推到一半在界外
+        mask = self._dense_mask(size=600)
+        rows_cols = [(y, x) for y in range(0, 1000, 12) for x in range(0, 1000, 12)]
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, rows_cols)
+
+        with caplog.at_level(logging.WARNING, logger="pipeline.fullslide"):
+            bin_attribution(mask, tp, 0, 0)
+
+        assert "落在遮罩範圍外" in caplog.text
+
     def test_small_bin_count_is_not_judged(self, tmp_path, caplog):
         """bin 太少時不做判斷（統計不可信，小型 ROI 不該被誤觸）。"""
         import logging

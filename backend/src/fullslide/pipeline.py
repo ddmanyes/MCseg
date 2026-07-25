@@ -387,7 +387,9 @@ def bin_attribution(
 
     n_total = len(tp)
     n_oob = int((~in_bounds).sum())
-    if n_oob and n_total and n_oob / n_total > 0.3:
+    if n_oob and n_total and n_oob / n_total > 0.3 and _mask_covers_most_bins(
+        row, col, (h, w)
+    ):
         logger.warning(
             f"⚠️ {n_oob:,}/{n_total:,}（{n_oob/n_total:.1%}）個 bin 落在遮罩範圍外。"
             f"{desc}、crop=({crop_x0}, {crop_y0})、遮罩 {w}×{h}px —— "
@@ -406,6 +408,24 @@ def bin_attribution(
     if out_path is not None:
         attr.to_parquet(str(out_path), index=False)
     return attr
+
+
+def _mask_covers_most_bins(
+    row: np.ndarray, col: np.ndarray, mask_shape: tuple[int, int], min_frac: float = 0.5
+) -> bool:
+    """
+    遮罩是否涵蓋 bins 的大部分範圍（＝這是整片，不是一個小裁切窗格）。
+
+    「越界 bin 很多」只有在**整片**模式下才代表異常。裁一個 768×768 的窗格出來，
+    全片 400 多萬個 bin 當然有 100% 落在窗格外 —— 對這種情形發出「請確認
+    binned_outputs 是否為對應此影像的註冊版本」只會把人導去查沒問題的東西。
+    """
+    h, w = mask_shape
+    span_y = float(row.max() - row.min()) if len(row) else 0.0
+    span_x = float(col.max() - col.min()) if len(col) else 0.0
+    if span_y <= 0 or span_x <= 0:
+        return True
+    return (h / span_y) >= min_frac and (w / span_x) >= min_frac
 
 
 # 命中率（落在細胞內的 bin ÷ 界內的 bin）的合理下限。

@@ -51,6 +51,59 @@ class TestConfig:
         for key in ("dia_small", "dia_mid", "dia_large", "voronoi_distance"):
             assert key in mcseg, f"mcseg_v2 缺少必要欄位：{key}"
 
+    # 組織相關參數的擁有者是 config/profiles/，不是 pipeline.yaml
+    PROFILE_OWNED_KEYS = (
+        "dia_small", "dia_mid", "dia_large", "use_hematoxylin", "voronoi_distance",
+        "clahe_clip_limit", "flow_threshold", "cellprob_threshold",
+        "min_size", "max_size",
+    )
+
+    def test_pipeline_yaml_does_not_shadow_tissue_profile(self):
+        """`pipeline.yaml` 不得重複定義組織參數，否則 profile 形同虛設。
+
+        合併順序是 profile ← pipeline.yaml ← state.json（後者贏）。曾經
+        `pipeline.yaml` 複製了一整份 `mcseg_v2`，導致 `tissue_profile: luad`
+        改了等於沒改 —— 實測 7 個參數全被蓋回 CRC 的值，而 CLAUDE.md §14
+        與 README 都聲稱「換組織只需改一行」。
+        """
+        import yaml
+
+        raw = yaml.safe_load(
+            Path("config/pipeline.yaml").read_text(encoding="utf-8")
+        )
+        mcseg = (raw.get("segmentation") or {}).get("mcseg_v2") or {}
+
+        shadowed = [k for k in self.PROFILE_OWNED_KEYS if k in mcseg]
+        assert not shadowed, (
+            f"pipeline.yaml 重複定義了組織參數 {shadowed}，會蓋掉 "
+            f"config/profiles/ —— 請移到對應的 profile，或明確知道你正在覆寫它"
+        )
+
+    def test_switching_tissue_profile_actually_changes_params(self):
+        """換 profile 必須真的換到參數（CLAUDE.md §14 的核心承諾）。"""
+        import yaml
+
+        from backend.src.utils.config import _deep_merge
+
+        pipe = yaml.safe_load(Path("config/pipeline.yaml").read_text(encoding="utf-8"))
+        merged = {}
+        for tissue in ("crc", "luad"):
+            prof = yaml.safe_load(
+                Path(f"config/profiles/{tissue}.yaml").read_text(encoding="utf-8")
+            )
+            m = _deep_merge(prof, pipe)["segmentation"]["mcseg_v2"]
+            own = prof["segmentation"]["mcseg_v2"]
+            for key in self.PROFILE_OWNED_KEYS:
+                assert m.get(key) == own.get(key), (
+                    f"{tissue}.{key}：profile 說 {own.get(key)!r}，"
+                    f"合併後變成 {m.get(key)!r}"
+                )
+            merged[tissue] = m
+
+        # 兩個 profile 必須真的不同，否則上面的斷言可能是巧合
+        assert merged["crc"]["dia_mid"] != merged["luad"]["dia_mid"]
+        assert merged["crc"]["max_size"] != merged["luad"]["max_size"]
+
     def test_primary_model_is_cpsam_not_cyto3(self):
         """釘死「實際載入的是哪個模型」—— 別再靠文件宣稱。
 

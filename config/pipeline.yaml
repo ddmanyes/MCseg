@@ -23,15 +23,18 @@ rois:
   pixel_size_um: 0.2737
 segmentation:
   mcseg_v2:
+    # ⚠️ 只放**跨組織通用**的設定。組織相關參數（直徑／Voronoi／CLAHE／
+    #    Cellpose QC 門檻）一律由 config/profiles/{tissue}.yaml 提供。
+    #
+    #    原因：合併順序是 profile ← pipeline.yaml ← state.json（後者贏），
+    #    所以在這裡重複寫一份組織參數，會把 profile 整個蓋掉 ——
+    #    `tissue_profile: luad` 改了等於沒改（實測 7 個參數全被蓋回 CRC 值）。
+    #    要為單一專案覆寫某個組織參數時才在此加入，並清楚知道你正在蓋掉 profile。
+    #
     # GPU / 批次
     use_gpu: true
     batch_size: 4
-    # 多直徑集成（模型為 cpsam；見 README「關於模型名稱」）
-    dia_small: 13.0          # small cells（淋巴細胞等）
-    dia_mid: 17.0            # 主要 pass（集成基底）
-    dia_large: 22.0          # 大型細胞（上皮、巨噬細胞）
     # 可選 pass
-    use_hematoxylin: true    # 額外對 Ruifrok Hematoxylin 通道跑一輪
     use_cpsam: false         # cpsam 集成（可選，顯著增加時間）
     # cpsam 7-pass 獨立規格（僅 use_cpsam=true 時生效；論文 Pass 5/6/7）
     dia_cpsam_auto: 0.0      # Pass 5/7 直徑；0 = Cellpose 自動偵測（~30px）
@@ -39,15 +42,6 @@ segmentation:
     cellprob_cpsam_auto: -1.0   # Pass 5（CLAHE-RGB, auto dia）
     cellprob_cpsam_small: -3.0  # Pass 6（CLAHE-RGB, dia=16）
     cellprob_cpsam_hema: -1.0   # Pass 7（Hematoxylin, auto dia）
-    # Voronoi 擴張
-    voronoi_distance: 9      # px，約 2.5µm（VISIUM_UM_PX=0.2737）
-    # 細胞過濾
-    min_size: 20             # px²
-    max_size: 6000           # px²
-    # Cellpose 品質控制
-    flow_threshold: 0.4
-    cellprob_threshold: -2.0
-    clahe_clip_limit: 3.0
     # 轉錄本密度補救（需 vhd_pseudo_transcripts.csv）
     use_transcript_rescue: true
   output:
