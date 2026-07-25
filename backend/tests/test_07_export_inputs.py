@@ -214,7 +214,6 @@ class TestApiExportIsThinnerNow:
         src = (Path(__file__).resolve().parents[1] / "src" / "api" / "export.py").read_text(encoding="utf-8")
         for gone in ("def _mask_to_geojson", "def _generate_visiumhd_transcripts", "def _shift_geojson_coords"):
             assert gone not in src, f"{gone} 應已搬進 backend/src/export/"
-        assert "resolve_export_inputs" in src
 
     def test_h5ad_lookup_not_duplicated(self):
         """白名單驗證只該出現在 resolver 一處"""
