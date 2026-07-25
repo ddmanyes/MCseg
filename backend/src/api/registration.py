@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from backend.src.utils.config import load_config, resolve_path
+from backend.src.utils.config import load_config, resolve_path, save_state
 
 router = APIRouter()
 logger = logging.getLogger("pipeline.api.registration")
@@ -25,6 +25,13 @@ class QCPatchParams(BaseModel):
     n: int = 3
     size: int = 512
     seed: int = 0
+
+
+class ApplyParams(BaseModel):
+    roi_name: Optional[str] = None
+    downsample: int = 32
+    # 預設 false：壞估計被靜默套用比不修正更糟，一律要求使用者看過 residual 再啟用
+    enable: bool = False
 
 
 def _resolve_inputs(config: dict) -> tuple[Path, Path, tuple[int, int]] | None:
@@ -142,3 +149,65 @@ async def get_qc_images():
             continue
         images.append({"name": p.stem, "data": f"data:image/png;base64,{b64}"})
     return {"status": "ok", "data": images}
+
+
+@router.post("/apply")
+async def apply_alignment(params: Optional[ApplyParams] = None):
+    """
+    估計仿射修正並寫入 `state.json` 的 `alignment`。
+
+    **不自動啟用**：`enable` 預設 false，寫入的 `enabled` 亦為 false。前端顯示
+    矩陣與 residual 之後，由使用者按「套用」才以 `enable=true` 再呼叫一次 ——
+    估計錯誤而被靜默套用，比完全不修正更糟。
+    """
+    params = params or ApplyParams()
+    config = load_config()
+    resolved = _resolve_inputs(config)
+    if resolved is None:
+        return {"status": "error", "message": "找不到 H&E 影像或 tissue_positions.parquet"}
+    he, tp, full_shape = resolved
+
+    try:
+        from backend.src.registration.align import (
+            estimate_affine,
+            render_bin_density,
+            tissue_gray,
+        )
+        from backend.src.roi.tile_server import _load_or_build_thumb
+
+        transform, source = _resolve_transform(config, full_shape)
+        ds = params.downsample
+        ref = tissue_gray(_load_or_build_thumb(he, ds))
+        mov = render_bin_density(tp, full_shape, ds, transform)
+        hh, ww = min(ref.shape[0], mov.shape[0]), min(ref.shape[1], mov.shape[1])
+
+        affine = estimate_affine(ref[:hh, :ww], mov[:hh, :ww])
+    except (ValueError, OSError, NotImplementedError) as e:
+        logger.warning(f"仿射估計失敗：{e}")
+        return {"status": "error", "message": f"仿射估計失敗：{e}"}
+
+    # 估計是在 1/ds 縮圖上做的 → 平移項需乘回 fullres px（線性部分與尺度無關）
+    m = affine.array.copy()
+    m[:, 2] *= ds
+    record = {
+        "enabled": bool(params.enable),
+        "matrix": [[float(v) for v in row] for row in m],
+        "source": "spaceranger_fullres",
+        "target": "raw_btf",
+        "estimated_error": affine.estimated_error,
+    }
+    save_state({"alignment": record})
+
+    return {
+        "status": "ok",
+        "data": {
+            **record,
+            "downsample": ds,
+            "transform_source": source,
+            "translation_px": [round(float(m[0, 2]), 2), round(float(m[1, 2]), 2)],
+        },
+        "message": (
+            "已寫入 state.json（尚未啟用，請確認 residual 後再套用）"
+            if not params.enable else "已寫入並啟用對位修正"
+        ),
+    }

@@ -666,3 +666,64 @@ class TestEstimateAffine:
         flat = np.zeros((256, 256), dtype=np.float32)
         with pytest.raises(ValueError):
             estimate_affine(flat, flat)
+
+
+class TestRegistrationApply:
+    """/api/registration/apply：估計 → 寫入 state（預設不啟用）"""
+
+    @pytest.mark.asyncio
+    async def test_registration_apply_writes_state(self, monkeypatch, tmp_path):
+        from httpx import ASGITransport, AsyncClient
+
+        import backend.src.api.registration as reg
+        from backend.main import app
+
+        btf, tp = _make_synthetic_slide(tmp_path, size=1024, shift=(0, 0), seed=4)
+        spatial = tmp_path / "b002" / "spatial"
+        spatial.mkdir(parents=True)
+        tp.rename(spatial / "tissue_positions.parquet")
+
+        written: dict = {}
+        monkeypatch.setattr(
+            reg, "load_config",
+            lambda: {"paths": {"he_image": str(btf), "binned_002": str(tmp_path / "b002"),
+                               "output_dir": str(tmp_path / "out")}},
+        )
+        monkeypatch.setattr(reg, "save_state", lambda d: written.update(d))
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.post("/api/registration/apply", json={"downsample": 8})
+
+        body = r.json()
+        assert body["status"] == "ok"
+        assert written["alignment"]["enabled"] is False       # 不自動啟用
+        assert len(written["alignment"]["matrix"]) == 2
+        assert "尚未啟用" in body["message"]
+
+    @pytest.mark.asyncio
+    async def test_registration_apply_can_enable_explicitly(self, monkeypatch, tmp_path):
+        from httpx import ASGITransport, AsyncClient
+
+        import backend.src.api.registration as reg
+        from backend.main import app
+
+        btf, tp = _make_synthetic_slide(tmp_path, size=1024, shift=(0, 0), seed=4)
+        spatial = tmp_path / "b002" / "spatial"
+        spatial.mkdir(parents=True)
+        tp.rename(spatial / "tissue_positions.parquet")
+
+        written: dict = {}
+        monkeypatch.setattr(
+            reg, "load_config",
+            lambda: {"paths": {"he_image": str(btf), "binned_002": str(tmp_path / "b002"),
+                               "output_dir": str(tmp_path / "out")}},
+        )
+        monkeypatch.setattr(reg, "save_state", lambda d: written.update(d))
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.post("/api/registration/apply", json={"downsample": 8, "enable": True})
+
+        assert written["alignment"]["enabled"] is True
+        assert "已寫入並啟用" in r.json()["message"]
