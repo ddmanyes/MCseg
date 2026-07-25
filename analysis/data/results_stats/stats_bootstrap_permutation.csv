@@ -1,0 +1,4 @@
+metric,comparison,n_rois,obs_mean_diff,boot_mean_diff,ci_95_lo,ci_95_hi,ci_excludes_zero,perm_p,direction
+NED,MCseg vs SR,15,0.0157,0.01573,0.00491,0.02747,True,0.0077,higher_better
+Doublet_rate,MCseg vs SR,15,-0.00176,-0.00177,-0.00354,-0.00045,True,0.0102,lower_better
+NED,MCseg vs Proseg,15,-0.02669,-0.02669,-0.03122,-0.02229,False,1.0,higher_better

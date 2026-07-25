@@ -15,7 +15,7 @@ stroke = '#2B2D42'
 text_color = '#1A1A1A'
 
 # 主標題
-ax.text(12, 11.2, "MCseg v2: Spatial Transcriptomics Segmentation Pipeline", ha='center', va='center', fontsize=22, fontweight='black', color='#1D3557', family='sans-serif')
+ax.text(12, 11.2, "MCseg: Spatial Transcriptomics Segmentation Pipeline", ha='center', va='center', fontsize=22, fontweight='black', color='#1D3557', family='sans-serif')
 
 def draw_section(x, y, w, h, title, subtitle, color, ec):
     # 畫陰影
@@ -44,7 +44,7 @@ for i, txt in enumerate(["High-Res H&E Image", "2µm Spatial Bins", "ROI Designa
 ax.annotate('', xy=(7.3, 6), xytext=(6.2, 6), arrowprops=dict(arrowstyle="-|>,head_width=0.6,head_length=0.8", color=stroke, lw=4), zorder=0)
 
 # ================= 2. 中間引擎區 (MCseg v2) =================
-draw_section(7.5, 0.5, 9, 9.5, "MCseg v2 AI Ensemble", "", '#FFFDF7', '#D90429')
+draw_section(7.5, 0.5, 9, 9.5, "MCseg AI Ensemble", "", '#FFFDF7', '#D90429')
 
 y_pos = 8.8
 ax.text(12, y_pos, "Stage 1: Cyto3 Scaffold (Multi-Diameter)", ha='center', va='center', fontsize=12, fontweight='bold', color='#1D3557', zorder=4)
