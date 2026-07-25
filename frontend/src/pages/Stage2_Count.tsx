@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
 import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
-import { getCellposeCountStatus, runCellposeCount, listCountRois } from '../api/client'
+import { getCellposeCountStatus, runCellposeCount, listCountRois, runFullCount, getFullCountStatus } from '../api/client'
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
 import { useT } from '../i18n'
@@ -49,6 +49,47 @@ export default function Stage2_Count() {
     refetchStatus()
   }
 
+  // ── 全圖計數（吃 Stage 1 的 full_image_segmentation_masks.npy）─────────────
+  const [fullStatus, setFullStatus] = useState<{ status: string; progress?: number; message?: string } | null>(null)
+  const fullPollRef = useRef<ReturnType<typeof setInterval>>()
+
+  const startFullPoll = () => {
+    clearInterval(fullPollRef.current)
+    fullPollRef.current = setInterval(async () => {
+      try {
+        const res = await getFullCountStatus()
+        const d = res.data?.data ?? res.data
+        setFullStatus(d)
+        if (d?.status !== 'running') clearInterval(fullPollRef.current)
+      } catch { clearInterval(fullPollRef.current) }
+    }, 2000)
+  }
+
+  useEffect(() => {
+    getFullCountStatus().then(res => {
+      const d = res.data?.data ?? res.data
+      if (d) {
+        setFullStatus(d)
+        if (d.status === 'running') startFullPoll()
+      }
+    }).catch(() => {})
+    return () => clearInterval(fullPollRef.current)
+  }, [])
+
+  const handleRunFullCount = async () => {
+    setFullStatus({ status: 'running', progress: 0, message: t('stage2.full_count.starting') })
+    try {
+      const res = await runFullCount()
+      if (res.data?.status === 'error') {
+        setFullStatus({ status: 'error', message: res.data.message })
+        return
+      }
+      startFullPoll()
+    } catch (e: any) {
+      setFullStatus({ status: 'error', message: e?.response?.data?.message ?? 'API error' })
+    }
+  }
+
   const readyRois   = roiInfos.filter(r => r.has_mask)
   const doneRois    = roiInfos.filter(r => r.has_count)
   const missingRois = roiInfos.filter(r => !r.has_mask)
@@ -91,6 +132,55 @@ export default function Stage2_Count() {
           </button>
         </div>
       </StageCard>
+
+      {/* ── 全圖計數區塊 ─────────────────────────────────────────────────── */}
+      <div className="rounded-xl border border-surface-border bg-surface-card p-4 space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-200">{t('stage2.full_count.title')}</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {t('stage2.full_count.description')}
+              <code className="mx-1 text-yellow-400">fullslide/cells.h5ad</code>
+            </p>
+          </div>
+          <button
+            onClick={handleRunFullCount}
+            disabled={fullStatus?.status === 'running'}
+            className="shrink-0 px-4 py-2 text-sm rounded-lg font-medium transition-colors
+                       bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+          >
+            {fullStatus?.status === 'running' ? t('common.running') : t('stage2.full_count.run')}
+          </button>
+        </div>
+
+        {fullStatus && fullStatus.status !== 'idle' && (
+          <div className={`rounded-lg px-3 py-2 text-xs font-mono space-y-1
+            ${fullStatus.status === 'error' ? 'bg-red-900/30 text-red-300 border border-red-800'
+              : fullStatus.status === 'done' ? 'bg-green-900/30 text-green-300 border border-green-800'
+              : 'bg-gray-800 text-gray-300 border border-gray-700'}`}
+          >
+            <div className="flex items-center justify-between">
+              <span>
+                {fullStatus.status === 'running' && '⏳ '}
+                {fullStatus.status === 'done' && '✓ '}
+                {fullStatus.status === 'error' && '✗ '}
+                {fullStatus.message ?? fullStatus.status}
+              </span>
+              {fullStatus.progress != null && fullStatus.status === 'running' && (
+                <span className="text-gray-400">{Math.round(fullStatus.progress * 100)}%</span>
+              )}
+            </div>
+            {fullStatus.status === 'running' && fullStatus.progress != null && (
+              <div className="w-full bg-gray-700 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className="bg-indigo-500 h-full transition-all duration-500"
+                  style={{ width: `${Math.round(fullStatus.progress * 100)}%` }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* ROI status table */}
       {roiInfos.length > 0 && (

@@ -270,10 +270,30 @@ export default function Stage1_Segmentation() {
     }, 2000)
   }
 
+  // 裁切窗格（空字串 = 該邊取影像邊界）
+  const [fullCrop, setFullCrop] = useState({ x0: '', x1: '', y0: '', y1: '' })
+  const [fullCpsam, setFullCpsam] = useState(false)
+
+  const parseCrop = (v: string): number | null => {
+    const n = parseInt(v, 10)
+    return Number.isFinite(n) ? n : null
+  }
+
   const handleRunFullSeg = async () => {
     setFullSegStatus({ status: 'running', progress: 0, message: '啟動全圖分割...' })
     try {
-      await runFullSegmentation()
+      const res = await runFullSegmentation({
+        crop_x0: parseCrop(fullCrop.x0),
+        crop_x1: parseCrop(fullCrop.x1),
+        crop_y0: parseCrop(fullCrop.y0),
+        crop_y1: parseCrop(fullCrop.y1),
+        use_cpsam: fullCpsam || null,
+      })
+      const body = res.data
+      if (body?.status === 'error') {
+        setFullSegStatus({ status: 'error', message: body.message ?? '參數驗證失敗' })
+        return
+      }
       startFullSegPoll()
     } catch (e: any) {
       setFullSegStatus({ status: 'error', message: e?.response?.data?.message ?? '啟動失敗' })
@@ -1015,6 +1035,41 @@ export default function Stage1_Segmentation() {
           >
             {fullSegStatus?.status === 'running' ? t('stage1.full_seg.running') : t('stage1.full_seg.run')}
           </button>
+        </div>
+
+        {/* 裁切窗格：留空 = 整張影像 */}
+        <div className="rounded-lg border border-gray-700 bg-gray-900/40 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-gray-300">{t('stage1.full_seg.crop_title')}</span>
+            <label className="flex items-center gap-1.5 text-xs text-gray-400">
+              <input
+                type="checkbox"
+                checked={fullCpsam}
+                onChange={e => setFullCpsam(e.target.checked)}
+                disabled={fullSegStatus?.status === 'running'}
+                className="accent-indigo-500"
+              />
+              {t('stage1.full_seg.use_cpsam')}
+            </label>
+          </div>
+          <p className="text-[11px] text-gray-500">{t('stage1.full_seg.crop_hint')}</p>
+          <div className="grid grid-cols-4 gap-2">
+            {([['x0', 'X0'], ['x1', 'X1'], ['y0', 'Y0'], ['y1', 'Y1']] as const).map(([key, label]) => (
+              <label key={key} className="flex flex-col gap-1">
+                <span className="text-[11px] text-gray-500">{label}</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={fullCrop[key]}
+                  onChange={e => setFullCrop(prev => ({ ...prev, [key]: e.target.value }))}
+                  disabled={fullSegStatus?.status === 'running'}
+                  placeholder={t('stage1.full_seg.crop_placeholder')}
+                  className="px-2 py-1 text-xs rounded bg-gray-800 border border-gray-700
+                             text-gray-200 placeholder-gray-600 disabled:opacity-50"
+                />
+              </label>
+            ))}
+          </div>
         </div>
 
         {fullSegStatus && (

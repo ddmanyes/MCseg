@@ -135,10 +135,18 @@ export const translations: TransDict = {
   'stage1.full_seg.description': { zh: '對完整 H&E 影像進行分塊分割（1024px × 1024px，overlap 128px），使用 MPS 安全模式，完成後儲存為', en: 'Tile-based segmentation of the full H&E image (1024px × 1024px, overlap 128px) with MPS safety mode. Result saved to' },
   'stage1.full_seg.run': { zh: '執行全圖分割', en: 'Run Full Segmentation' },
   'stage1.full_seg.running': { zh: '執行中...', en: 'Running...' },
+  'stage1.full_seg.crop_title': { zh: '裁切窗格（fullres px）', en: 'Crop Window (fullres px)' },
+  'stage1.full_seg.crop_hint': { zh: '留空 = 該邊取影像邊界；四格皆空 = 整張影像。縮小範圍可避開記憶體上限。', en: 'Leave blank to use the image edge; all blank = whole image. Narrowing the window avoids the memory limit.' },
+  'stage1.full_seg.crop_placeholder': { zh: '邊界', en: 'edge' },
+  'stage1.full_seg.use_cpsam': { zh: '啟用 cpsam（7-pass）', en: 'Enable cpsam (7-pass)' },
 
   // ── Stage 2: Count ─────────────────────────────────────────────────────────
   'stage2.title':         { zh: 'RNA 計數（MCseg v2）', en: 'RNA Counting (MCseg v2)' },
   'stage2.run_all':       { zh: '執行全部', en: 'Run All' },
+  'stage2.full_count.title': { zh: '全圖 RNA 計數', en: 'Full-Image RNA Counting' },
+  'stage2.full_count.description': { zh: '使用 Stage 1 的全圖遮罩直接對應 2µm bins（免經 ROI 裁切），輸出', en: 'Maps 2µm bins directly onto the Stage 1 full-image mask (no ROI crop needed). Output:' },
+  'stage2.full_count.run': { zh: '執行全圖計數', en: 'Run Full Count' },
+  'stage2.full_count.starting': { zh: '啟動全圖計數...', en: 'Starting full-image count...' },
   'stage2.run_single':    { zh: '執行',    en: 'Run' },
   'stage2.ready_rois':    { zh: '已有遮罩的 ROI', en: 'ROIs with masks' },
   'stage2.done_rois':     { zh: '已完成計數', en: 'Counting done' },

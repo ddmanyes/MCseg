@@ -34,7 +34,15 @@ export const previewPreproc = (body: object) => api.post('/segmentation/preview_
 export const getRoiSegOverrides = () => api.get('/segmentation/roi_overrides')
 export const saveRoiSegOverrides = (overrides: Record<string, Record<string, unknown>>) =>
   api.put('/segmentation/roi_overrides', overrides)
-export const runFullSegmentation = () => api.post('/segmentation/run_full')
+export interface FullSegBody {
+  crop_x0?: number | null
+  crop_x1?: number | null
+  crop_y0?: number | null
+  crop_y1?: number | null
+  use_cpsam?: boolean | null
+}
+export const runFullSegmentation = (body?: FullSegBody) =>
+  api.post('/segmentation/run_full', body ?? {})
 export const getFullSegStatus = () => api.get('/segmentation/full_seg_status')
 
 // Stage 2: Cellpose RNA 計數
@@ -42,6 +50,8 @@ export const runCellposeCount = (roiName: string | null) =>
   api.post('/count/run', roiName ? { roi_name: roiName } : {})
 export const getCellposeCountStatus = () => api.get('/count/status')
 export const listCountRois = () => api.get('/count/available_rois')
+export const runFullCount = () => api.post('/count/run_full')
+export const getFullCountStatus = () => api.get('/count/full_status')
 
 // Stage 3: Analysis (舊版整合執行)
 export const runAnalysis = (params?: object) => api.post('/analysis/run', params ?? {})
