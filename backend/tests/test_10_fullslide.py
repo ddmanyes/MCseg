@@ -254,6 +254,113 @@ def _write_h5(path, barcodes, gene_names, counts):
     return path
 
 
+class TestHitRateSanityCheck:
+    """命中率健全性檢查
+
+    回答「分割的圖是不是 Space Ranger 的輸入圖」。判斷錯了**不會報錯** ——
+    錯的座標仍讓 bin 落在影像界內，只是落在錯的細胞上，越界檢查完全抓不到。
+
+    2026-07-25 實測：正確慣例命中 20.9–52.9%，錯誤慣例 0.8–3.9%。
+    """
+
+    @staticmethod
+    def _dense_mask(size=600, cell=8, pitch=16):
+        """鋪滿方形細胞的遮罩，正常座標下命中率遠高於門檻。"""
+        m = np.zeros((size, size), dtype=np.int32)
+        lbl = 1
+        for y in range(0, size - cell, pitch):
+            for x in range(0, size - cell, pitch):
+                m[y:y + cell, x:x + cell] = lbl
+                lbl += 1
+        return m
+
+    @staticmethod
+    def _bins_on_cells(n=5000, cell=8, pitch=16, size=600, offset=0):
+        """落在細胞中心的 bin 座標；`offset` 用來模擬座標系錯配。"""
+        out = []
+        for y in range(0, size - cell, pitch):
+            for x in range(0, size - cell, pitch):
+                out.append((y + cell // 2 + offset, x + cell // 2 + offset))
+                if len(out) >= n:
+                    return out
+        return out
+
+    def test_correct_coords_do_not_warn(self, tmp_path, caplog):
+        """座標正確時不得警告。"""
+        import logging
+
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        mask = self._dense_mask()
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, self._bins_on_cells())
+
+        with caplog.at_level(logging.WARNING, logger="pipeline.fullslide"):
+            attr = bin_attribution(mask, tp, 0, 0)
+
+        assert attr.attrs["coverage"]["hit_rate"] > 0.9
+        assert "座標對不上" not in caplog.text
+
+    def test_shifted_coords_warn_about_coordinates(self, tmp_path, caplog):
+        """bin 全部落在界內卻幾乎不命中 → 必須警告，且指向座標。
+
+        這正是我 2026-07-25 親身踩到的情形：拿 scale=1 去讀一張需要 ×1.54 的
+        遮罩，界內率 100%、命中率 3.3%，而當時**沒有任何警告**。
+        """
+        import logging
+
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        mask = self._dense_mask()
+        tp = tmp_path / "tp.parquet"
+        # 位移到細胞之間的空隙（cell=8、pitch=16 → 偏移 8 剛好全部落空）
+        _write_tissue_positions(tp, self._bins_on_cells(offset=8))
+
+        with caplog.at_level(logging.WARNING, logger="pipeline.fullslide"):
+            attr = bin_attribution(mask, tp, 0, 0)
+
+        cov = attr.attrs["coverage"]
+        assert cov["n_in_bounds"] == cov["n_total"], "bin 應全部落在界內（越界檢查抓不到）"
+        assert cov["hit_rate"] < 0.08
+        assert "座標對不上" in caplog.text
+        assert "Space Ranger" in caplog.text
+
+    def test_empty_mask_blames_segmentation_not_coordinates(self, tmp_path, caplog):
+        """遮罩沒有任何細胞時，訊息須指向分割而非座標。
+
+        兩者症狀相同但要查的地方完全不同 —— 講錯會把人帶去查錯的東西。
+        """
+        import logging
+
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        mask = np.zeros((600, 600), dtype=np.int32)
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, self._bins_on_cells())
+
+        with caplog.at_level(logging.WARNING, logger="pipeline.fullslide"):
+            bin_attribution(mask, tp, 0, 0)
+
+        assert "分割" in caplog.text
+        assert "座標對不上" not in caplog.text
+
+    def test_small_bin_count_is_not_judged(self, tmp_path, caplog):
+        """bin 太少時不做判斷（統計不可信，小型 ROI 不該被誤觸）。"""
+        import logging
+
+        from backend.src.fullslide.pipeline import bin_attribution
+
+        mask = self._dense_mask()
+        tp = tmp_path / "tp.parquet"
+        _write_tissue_positions(tp, self._bins_on_cells(n=50, offset=8))
+
+        with caplog.at_level(logging.WARNING, logger="pipeline.fullslide"):
+            attr = bin_attribution(mask, tp, 0, 0)
+
+        assert "hit_rate" not in attr.attrs["coverage"]
+        assert "座標對不上" not in caplog.text
+
+
 class TestAggregateCells:
     """bins → cells×genes 聚合"""
 

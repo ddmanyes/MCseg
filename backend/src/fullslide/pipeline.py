@@ -401,10 +401,61 @@ def bin_attribution(
         "n_assigned": int(len(attr)),
         "frac_out_of_image": (n_oob / n_total) if n_total else 0.0,
     }
+    _warn_if_hit_rate_implausible(mask, attr.attrs["coverage"], desc)
 
     if out_path is not None:
         attr.to_parquet(str(out_path), index=False)
     return attr
+
+
+# 命中率（落在細胞內的 bin ÷ 界內的 bin）的合理下限。
+#
+# 這條檢查回答一個問題：**你分割的那張圖，是不是就是餵給 Space Ranger 的那張圖？**
+# 是 → `pxl_*_in_fullres` 直接可用；否（例如另外掃了更高解析的圖）→ 需要縮放。
+# 判斷錯了**不會報錯** —— 錯的座標仍讓 bin 乖乖落在影像界內，只是落在錯的細胞上。
+#
+# 門檻取自實測（2026-07-25，五個樣本）：
+#   正確慣例：dpcp01 20.9%、SDS_D02 25.2%、SDS_D35 27.6%、CRC ROI 45–53%
+#   錯誤慣例：0.8% – 3.9%
+# 兩者差 6 倍以上，中間空隙很大，取 8%。
+MIN_PLAUSIBLE_HIT_RATE = 0.08
+
+# 低於此 bin 數不做判斷（統計量不可信，且小型測試遮罩會誤觸）
+_HIT_RATE_MIN_BINS = 1000
+
+
+def _warn_if_hit_rate_implausible(mask: np.ndarray, coverage: dict, desc: str) -> None:
+    """
+    命中率過低時警告，並區分「座標錯」與「分割沒產出細胞」。
+
+    區分這兩者很重要：兩者的症狀相同（幾乎沒有 bin 拿到 cell_id），但要查的
+    地方完全不同 —— 一個是去確認影像來源，一個是去看分割參數。
+    """
+    n_in = coverage["n_in_bounds"]
+    if n_in < _HIT_RATE_MIN_BINS:
+        return
+
+    hit_rate = coverage["n_assigned"] / n_in
+    coverage["hit_rate"] = hit_rate
+    if hit_rate >= MIN_PLAUSIBLE_HIT_RATE:
+        return
+
+    # 遮罩本身有沒有細胞？只看 max()，memmap 上也便宜
+    if int(mask.max()) == 0:
+        logger.warning(
+            f"⚠️ 遮罩內沒有任何細胞（max label = 0）—— 這是**分割**沒有產出結果，"
+            f"不是座標問題。請檢查分割參數與輸入影像。"
+        )
+        return
+
+    logger.warning(
+        f"⚠️ 只有 {coverage['n_assigned']:,}/{n_in:,}（{hit_rate:.1%}）個界內 bin 落在細胞上，"
+        f"遠低於正常值（實測 20–50%）。遮罩本身有細胞，所以這通常是**座標對不上**：\n"
+        f"    請確認「拿來分割的影像」就是「餵給 Space Ranger 的影像」。\n"
+        f"    若是另外掃描的高解析影像，需要縮放 —— "
+        f"scale = scalefactors 的 microns_per_pixel ÷ 分割影像的 µm/px。\n"
+        f"    目前採用的變換：{desc}"
+    )
 
 
 def _apply_homography(
