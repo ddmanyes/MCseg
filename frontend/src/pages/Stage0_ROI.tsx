@@ -9,6 +9,7 @@ import RoiSelector from '../components/roi/RoiSelector'
 import AlignmentPanel from '../components/shared/AlignmentPanel'
 import { useStageStatus } from '../hooks/useStageStatus'
 import { useT } from '../i18n'
+import { errText, apiErrorMessage } from '../utils/errText'
 
 export default function Stage0_ROI() {
   useStageLog('roi')
@@ -18,10 +19,14 @@ export default function Stage0_ROI() {
   const [form, setForm] = useState<Partial<RoiDefinition>>({ pixel_size_um: 0.2737 })
   const [formError, setFormError] = useState<string | null>(null)
   const [configPixelSize, setConfigPixelSize] = useState<number>(0.2737)
+  // B 類讀取降級：載入失敗只是清單／預填值取不到，不擋人
+  const [loadWarn, setLoadWarn] = useState<string | null>(null)
   const t = useT()
 
   useEffect(() => {
-    listRois().then(r => setRois(r.data.data ?? []))
+    listRois()
+      .then(r => setRois(r.data.data ?? []))
+      .catch((e: unknown) => setLoadWarn(`無法載入 ROI 清單（${errText(e)}）`))
     // 從 config 讀取 pixel_size_um（Data Setup 掃描時寫入）
     getConfig().then((r: any) => {
       const ps = r.data?.data?.global?.pixel_size_um
@@ -29,16 +34,40 @@ export default function Stage0_ROI() {
         setConfigPixelSize(ps)
         setForm(f => ({ ...f, pixel_size_um: ps }))
       }
-    }).catch(() => {})
+    }).catch((e: unknown) => {
+      setLoadWarn(`無法讀取 config 的 pixel_size_um（${errText(e)}），沿用預設 ${configPixelSize}`)
+    })
   }, [])
 
   const handleRun = async () => {
     updateStage('roi', { status: 'running', progress: 0, message: t('stage0.running') })
     try {
-      await runRoiExtract()
-      refetchStatus()
-    } catch (e: any) {
-      updateStage('roi', { status: 'error', message: e.message })
+      // A 類寫入：HTTP 200 也可能是失敗（例如 ROI 清單為空），必須檢查 body
+      const res = await runRoiExtract()
+      const msg = apiErrorMessage(res)
+      if (msg) {
+        updateStage('roi', { status: 'error', progress: 0, message: msg })
+        setFormError(msg)
+        return
+      }
+      setFormError(null)
+      void refetchStatus()
+    } catch (e: unknown) {
+      updateStage('roi', { status: 'error', message: errText(e) })
+    }
+  }
+
+  // A 類寫入：刪除失敗必須報錯，否則 ROI 只是「畫面上消失」
+  const handleDelete = async (name: string) => {
+    try {
+      const res = await deleteRoi(name)
+      const msg = apiErrorMessage(res)
+      if (msg) { setFormError(`刪除 ROI「${name}」失敗：${msg}`); return }
+      const updated = await listRois()
+      setRois(updated.data.data ?? [])
+      setFormError(null)
+    } catch (e: unknown) {
+      setFormError(`刪除 ROI「${name}」失敗（${errText(e)}）`)
     }
   }
 
@@ -46,10 +75,18 @@ export default function Stage0_ROI() {
     if (!form.name) { setFormError(t('stage0.form.name') + ' required'); return }
     if (!form.tissue) { setFormError(t('stage0.form.tissue') + ' required'); return }
     setFormError(null)
-    await addRoi(form as RoiDefinition)
-    const updated = await listRois()
-    setRois(updated.data.data ?? [])
-    setForm({ pixel_size_um: configPixelSize })
+    // A 類寫入：失敗必須報錯，否則使用者以為 ROI 已新增
+    try {
+      const res = await addRoi(form as RoiDefinition)
+      // HTTP 200 也可能是失敗（`{"status":"error"}`）
+      const msg = apiErrorMessage(res)
+      if (msg) { setFormError(`新增 ROI 失敗：${msg}`); return }
+      const updated = await listRois()
+      setRois(updated.data.data ?? [])
+      setForm({ pixel_size_um: configPixelSize })
+    } catch (e: unknown) {
+      setFormError(`新增 ROI 失敗（${errText(e)}）—— 表單內容保留，請修正後再試`)
+    }
   }
 
   return (
@@ -73,7 +110,7 @@ export default function Stage0_ROI() {
                 )}
               </div>
               <button
-                onClick={() => deleteRoi(roi.name).then(() => listRois().then(r => setRois(r.data.data ?? [])))}
+                onClick={() => void handleDelete(roi.name)}
                 className="text-red-400 hover:text-red-300 text-xs"
               >
                 {t('common.delete')}
@@ -135,6 +172,7 @@ export default function Stage0_ROI() {
             + {t('stage0.add_roi')}
           </button>
           {formError && <p className="mt-2 text-xs text-red-400">{formError}</p>}
+          {loadWarn && <p className="mt-2 text-xs text-amber-400/80">ⓘ {loadWarn}</p>}
         </div>
       </StageCard>
 

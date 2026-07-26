@@ -6,6 +6,8 @@ import { runSegmentation, getSegmentationStatus, getSegmentationPreview, runSegm
 import { useT } from '../i18n'
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
+import { errText, apiErrorMessage } from '../utils/errText'
+import { startStatusPoll, type PollStatus } from '../utils/pollStatus'
 
 // MCseg v2 ROI 個別參數覆寫（欄位與 SegmentationParams 對應）
 interface RoiOverride {
@@ -226,6 +228,8 @@ export default function Stage1_Segmentation() {
   const [params, setParams] = useState<SegParams>(DEFAULT_PARAMS)
   const [showParams, setShowParams] = useState(false)
   const [previewSrc, setPreviewSrc] = useState<string | null>(null)
+  // B 類讀取降級：遮罩疊不上 H&E（尺寸不符／缺檔）時說明原因，不然只看到孤立輪廓
+  const [previewWarn, setPreviewWarn] = useState<string | null>(null)
   const [previewFlows, setPreviewFlows] = useState<string | null>(null)
   const [previewTab, setPreviewTab] = useState<'overlay' | 'flows'>('overlay')
   const [previewRoi, setPreviewRoi] = useState('')
@@ -255,19 +259,22 @@ export default function Stage1_Segmentation() {
   const [preprocLoading, setPreprocLoading] = useState(false)
 
   // ── 全圖分割狀態 ──────────────────────────────────────────────────────────
-  const [fullSegStatus, setFullSegStatus] = useState<{ status: string; progress?: number; message?: string } | null>(null)
+  const [fullSegStatus, setFullSegStatus] = useState<PollStatus | null>(null)
+  const [fullSegRetry, setFullSegRetry] = useState<string | null>(null)
   const fullSegPollRef = useRef<ReturnType<typeof setInterval>>()
 
   const startFullSegPoll = () => {
     clearInterval(fullSegPollRef.current)
-    fullSegPollRef.current = setInterval(async () => {
-      try {
+    setFullSegRetry(null)
+    fullSegPollRef.current = startStatusPoll({
+      fetchStatus: async () => {
         const res = await getFullSegStatus()
-        const d = res.data?.data ?? res.data
-        setFullSegStatus(d)
-        if (d?.status !== 'running') clearInterval(fullSegPollRef.current)
-      } catch { clearInterval(fullSegPollRef.current) }
-    }, 2000)
+        return (res.data?.data ?? res.data) as PollStatus | null
+      },
+      onStatus: d => { setFullSegRetry(null); setFullSegStatus(d) },
+      onTransientFailure: (n, max) => setFullSegRetry(`與後端連線不穩，重試中 ${n}/${max}...`),
+      onLost: msg => { setFullSegRetry(null); setFullSegStatus({ status: 'error', message: msg }) },
+    })
   }
 
   // 裁切窗格（空字串 = 該邊取影像邊界）
@@ -301,38 +308,64 @@ export default function Stage1_Segmentation() {
   }
 
   useEffect(() => {
-    // 載入時查一次目前狀態
+    // 載入時查一次目前狀態（B 類讀取：失敗只是狀態未知，不擋人）
     getFullSegStatus().then(res => {
       const d = res.data?.data ?? res.data
       if (d) {
         setFullSegStatus(d)
         if (d.status === 'running') startFullSegPoll()
       }
-    }).catch(() => { })
+    }).catch((e: unknown) => {
+      setFullSegRetry(`無法取得全圖分割狀態（${errText(e)}）`)
+    })
     return () => clearInterval(fullSegPollRef.current)
   }, [])
 
   // ── ROI 個別參數覆寫 ────────────────────────────────────────────────────
   const [roiOverrides, setRoiOverrides] = useState<Record<string, RoiOverride>>({})
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  // 寫入型失敗必須可見：存檔失敗時後端仍是舊參數，下次執行會用舊值
+  const [overrideSaveError, setOverrideSaveError] = useState<string | null>(null)
+  // 讀取型失敗只做低調降級，不擋人
+  const [overrideLoadWarn, setOverrideLoadWarn] = useState<string | null>(null)
 
   useEffect(() => {
     getRoiSegOverrides().then(res => {
       if (res.data?.data) setRoiOverrides(res.data.data)
-    }).catch(() => { })
+    }).catch((e: unknown) => {
+      setOverrideLoadWarn(`無法載入已存的 ROI 覆寫（${errText(e)}），表格顯示為全域預設值`)
+    })
     // 重整頁面後 store 清空，自動補載 ROI 清單
     if (rois.length === 0) {
       listRois().then(res => {
         if (res.data?.data) setRois(res.data.data)
-      }).catch(() => { })
+      }).catch((e: unknown) => {
+        setOverrideLoadWarn(`無法載入 ROI 清單（${errText(e)}）`)
+      })
     }
   }, [])
 
+  /**
+   * 存檔（debounce）。失敗時只顯示錯誤，**不回捲輸入框** ——
+   * 使用者很可能已經改到下一個值，回捲會打斷打字。
+   */
+  const _saveOverrides = (next: Record<string, RoiOverride>) => {
+    const fail = (detail: string) => setOverrideSaveError(
+      `ROI 覆寫存檔失敗（${detail}）—— 後端仍是舊參數，直接執行會用到舊值。請修正後再改一次任一欄位重試。`
+    )
+    saveRoiSegOverrides(next as Record<string, Record<string, unknown>>)
+      .then(res => {
+        // HTTP 200 也可能是失敗（`{"status":"error"}`），必須另外檢查
+        const msg = apiErrorMessage(res)
+        if (msg) fail(msg)
+        else setOverrideSaveError(null)
+      })
+      .catch((e: unknown) => fail(errText(e)))
+  }
+
   const _persistOverrides = (next: Record<string, RoiOverride>) => {
     clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = setTimeout(() => {
-      saveRoiSegOverrides(next as Record<string, Record<string, unknown>>).catch(() => { })
-    }, 600)
+    saveTimerRef.current = setTimeout(() => _saveOverrides(next), 600)
   }
 
   const updateRoiField = (roiName: string, field: keyof RoiOverride, value: unknown) => {
@@ -351,12 +384,14 @@ export default function Stage1_Segmentation() {
     const next = { ...roiOverrides }
     delete next[roiName]
     setRoiOverrides(next)
-    saveRoiSegOverrides(next as Record<string, Record<string, unknown>>).catch(() => { })
+    clearTimeout(saveTimerRef.current)
+    _saveOverrides(next)
   }
 
   const resetAllOverrides = () => {
     setRoiOverrides({})
-    saveRoiSegOverrides({}).catch(() => { })
+    clearTimeout(saveTimerRef.current)
+    _saveOverrides({})
   }
 
   const set = <K extends keyof SegParams>(key: K, value: SegParams[K]) =>
@@ -368,24 +403,46 @@ export default function Stage1_Segmentation() {
     Object.entries(roiOverrides).filter(([, ov]) => Object.values(ov).some(v => v != null))
   )
 
+  /** 啟動失敗必須把 stage 帶回 error，否則會永遠停在「running」 */
+  const _startSegmentation = async (body: object, message: string) => {
+    updateStage('segmentation', { status: 'running', progress: 0, message })
+    try {
+      const res = await runSegmentation(body)
+      const msg = apiErrorMessage(res)
+      if (msg) {
+        updateStage('segmentation', { status: 'error', message: `啟動失敗：${msg}` })
+        return
+      }
+    } catch (e: unknown) {
+      updateStage('segmentation', { status: 'error', message: `啟動失敗：${errText(e)}` })
+      return
+    }
+    void refetchStatus()
+  }
+
   const handleRunAll = async () => {
-    updateStage('segmentation', { status: 'running', progress: 0, message: '啟動 MCseg v2（全部 ROI）...' })
     setRunningRoi(null)
-    await runSegmentation({ ...params, mode: 'roi', roi_overrides: _buildCleanOverrides() })
-    refetchStatus()
+    await _startSegmentation(
+      { ...params, mode: 'roi', roi_overrides: _buildCleanOverrides() },
+      '啟動 MCseg v2（全部 ROI）...',
+    )
   }
 
   const handleRunSingleRoi = async (roiName: string) => {
-    updateStage('segmentation', { status: 'running', progress: 0, message: `啟動 MCseg v2（${roiName}）...` })
     setRunningRoi(roiName)
-    await runSegmentation({ ...params, mode: 'roi', roi_overrides: _buildCleanOverrides(), target_roi: roiName })
-    refetchStatus()
+    await _startSegmentation(
+      { ...params, mode: 'roi', roi_overrides: _buildCleanOverrides(), target_roi: roiName },
+      `啟動 MCseg v2（${roiName}）...`,
+    )
   }
 
   const handlePreview = async (roi?: string) => {
-    const res = await getSegmentationPreview(roi)
-    const d = res.data?.data
-    if (d?.image_b64) {
+    try {
+      const res = await getSegmentationPreview(roi)
+      const apiMsg = apiErrorMessage(res)
+      if (apiMsg) { setPreviewWarn(apiMsg); return }
+      const d = res.data?.data
+      if (!d?.image_b64) { setPreviewWarn('後端沒有回傳預覽影像'); return }
       setPreviewSrc(`data:image/jpeg;base64,${d.image_b64}`)
       setPreviewFlows(d.flows_b64 ? `data:image/jpeg;base64,${d.flows_b64}` : null)
       setPreviewTab('overlay')
@@ -393,7 +450,10 @@ export default function Stage1_Segmentation() {
       if (d.roi) setPreviewRoi(d.roi)
       if (d.n_cells != null) setPreviewNCells(d.n_cells)
       if (d.orig_w && d.orig_h) setPreviewOrigSize({ w: d.orig_w, h: d.orig_h })
+      setPreviewWarn(d.warning ?? null)
       setPreviewClickMsg('')
+    } catch (e: unknown) {
+      setPreviewWarn(`載入分割預覽失敗（${errText(e)}）`)
     }
   }
 
@@ -671,6 +731,15 @@ export default function Stage1_Segmentation() {
             </div>
           </div>
 
+          {/* A 類：寫入失敗 —— 明確報錯（沿用 quickError 樣式） */}
+          {overrideSaveError && (
+            <p className="text-xs text-red-400 bg-red-900/20 rounded px-3 py-2">⚠ {overrideSaveError}</p>
+          )}
+          {/* B 類：讀取失敗 —— 低調降級，不擋人 */}
+          {overrideLoadWarn && !overrideSaveError && (
+            <p className="text-xs text-amber-400/80">ⓘ {overrideLoadWarn}</p>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse">
               <thead>
@@ -943,6 +1012,10 @@ export default function Stage1_Segmentation() {
               </button>
             </div>
           </div>
+          {/* 還沒有預覽圖時（例如尚未執行分割）也要看得到原因 */}
+          {previewWarn && !previewSrc && (
+            <p className="text-xs text-amber-400/80">ⓘ {previewWarn}</p>
+          )}
           {previewSrc && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -963,9 +1036,14 @@ export default function Stage1_Segmentation() {
                 </div>
               </div>
               <p className="text-xs text-gray-500">
-                {previewTab === 'overlay' && 'H&E 原圖 + 綠色細胞邊界（來自已存遮罩）'}
+                {previewTab === 'overlay' && (previewWarn
+                  ? '灰底 + 綠色細胞邊界（H&E 疊圖不可用，見下方說明）'
+                  : 'H&E 原圖 + 綠色細胞邊界（來自已存遮罩）')}
                 {previewTab === 'flows' && 'Cellpose 小尺寸 dP 光流方向圖（色相 = 方向，飽和度 = 強度）'}
               </p>
+              {previewWarn && (
+                <p className="text-xs text-amber-400/80">ⓘ {previewWarn}</p>
+              )}
               {/* 互動預覽圖：懸停顯示座標，點擊填入快速測試 */}
               <div
                 className="relative rounded-lg overflow-hidden border border-surface-border cursor-crosshair select-none"
@@ -975,7 +1053,7 @@ export default function Stage1_Segmentation() {
               >
                 <img
                   ref={previewImgRef}
-                  src={previewTab === 'flows' ? (previewFlows ?? previewSrc!) : previewSrc!}
+                  src={previewTab === 'flows' ? (previewFlows ?? previewSrc) : previewSrc}
                   alt="segmentation preview"
                   className="w-full block"
                 />
@@ -1071,6 +1149,10 @@ export default function Stage1_Segmentation() {
             ))}
           </div>
         </div>
+
+        {fullSegRetry && (
+          <p className="text-xs text-amber-400/80">ⓘ {fullSegRetry}</p>
+        )}
 
         {fullSegStatus && (
           <div className={`rounded-lg px-3 py-2 text-xs font-mono space-y-1

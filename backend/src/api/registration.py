@@ -88,6 +88,10 @@ async def estimate_alignment(roi_name: Optional[str] = None):
     except (ValueError, OSError, NotImplementedError) as e:
         logger.warning(f"位移估計失敗：{e}")
         return {"status": "error", "message": f"位移估計失敗：{e}"}
+    except Exception as e:
+        # 未預期的例外若直接往上拋，FastAPI 只回裸 500，traceback 進不了 log
+        logger.error(f"位移估計發生未預期錯誤：{e}", exc_info=True)
+        return {"status": "error", "message": f"位移估計發生未預期錯誤：{e}（詳見 log）"}
 
     return {
         "status": "ok",
@@ -125,6 +129,9 @@ async def make_qc_patches(params: Optional[QCPatchParams] = None):
     except (ValueError, OSError, NotImplementedError) as e:
         logger.warning(f"QC 疊圖產生失敗：{e}")
         return {"status": "error", "message": f"QC 疊圖產生失敗：{e}"}
+    except Exception as e:
+        logger.error(f"QC 疊圖發生未預期錯誤：{e}", exc_info=True)
+        return {"status": "error", "message": f"QC 疊圖發生未預期錯誤：{e}（詳見 log）"}
 
     return {
         "status": "ok",
@@ -185,6 +192,9 @@ async def apply_alignment(params: Optional[ApplyParams] = None):
     except (ValueError, OSError, NotImplementedError) as e:
         logger.warning(f"仿射估計失敗：{e}")
         return {"status": "error", "message": f"仿射估計失敗：{e}"}
+    except Exception as e:
+        logger.error(f"仿射估計發生未預期錯誤：{e}", exc_info=True)
+        return {"status": "error", "message": f"仿射估計發生未預期錯誤：{e}（詳見 log）"}
 
     # 估計是在 1/ds 縮圖上做的 → 平移項需乘回 fullres px（線性部分與尺度無關）
     m = affine.array.copy()

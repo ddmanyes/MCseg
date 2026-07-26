@@ -90,8 +90,15 @@ def read_btf_crop(
     with tifffile.TiffFile(str(btf_path)) as tf:
         page = tf.pages[0]
         img_h, img_w = page.imagelength, page.imagewidth
-        TW = getattr(page, "tilewidth",  512)
-        TH = getattr(page, "tilelength", 512)
+        # strip-based TIFF 的 tilewidth 屬性存在但為 0，getattr 的預設值不會生效 ——
+        # 直接往下算會得到 ZeroDivisionError，錯誤訊息看不出真正原因
+        TW = getattr(page, "tilewidth",  512) or 0
+        TH = getattr(page, "tilelength", 512) or 0
+        if not TW or not TH:
+            raise NotImplementedError(
+                f"TIFF 檔 '{btf_path}' 不是 tiled 格式（tilewidth={TW}, tilelength={TH}），"
+                "無法進行 tile-based 讀取。請改用 read_image_crop() 自動分派 strip 讀取。"
+            )
         n_tiles_x = (img_w + TW - 1) // TW
 
         # 計算帶 margin 的 ROI 邊界
@@ -139,6 +146,42 @@ def read_btf_crop(
         cy0 = fy0 - ty0 * TH
         crop = canvas[cy0: cy0 + (fy1 - fy0), cx0: cx0 + (fx1 - fx0)]
 
+    return crop, fx0, fy0
+
+
+def read_image_crop(
+    img_path: Path,
+    x0: int,
+    y0: int,
+    w: int,
+    h: int,
+    margin: int = 0,
+) -> tuple[np.ndarray, int, int]:
+    """
+    讀取 TIFF ROI crop，自動分派 tiled / strip 兩種版面（皆不全圖載入）。
+
+    Space Ranger 輸出的 H&E 有 tiled（BTF）與 strip-based（一般 TIFF）兩種，
+    對後者呼叫 `read_btf_crop` 會失敗。所有裁切點一律走這個函數。
+
+    Returns
+    -------
+    (crop_rgb, actual_x0, actual_y0)
+        tiled 版面會對齊 tile 邊界，實際原點可能與請求值不同 —— 下游座標
+        必須以回傳的 origin 為準，用請求值會整批偏移。
+    """
+    import tifffile
+
+    with tifffile.TiffFile(str(img_path)) as tf:
+        is_tiled = bool(tf.pages[0].tags.get("TileOffsets"))
+
+    if is_tiled:
+        return read_btf_crop(img_path, x0, y0, w, h, margin=margin)
+
+    from backend.src.roi.tile_server import read_strip_crop
+
+    fx0 = max(0, x0 - margin)
+    fy0 = max(0, y0 - margin)
+    crop = read_strip_crop(img_path, fx0, fy0, w + (x0 - fx0) + margin, h + (y0 - fy0) + margin)
     return crop, fx0, fy0
 
 
@@ -450,10 +493,19 @@ class RoiExtractor:
         self.config = config
         self.rois = config.get("rois", [])
 
-    def run_all(self) -> None:
-        """對所有定義的 ROI 執行裁切"""
-        logger.info(f"開始裁切 {len(self.rois)} 個 ROI")
+    def run_all(self) -> dict:
+        """
+        對所有定義的 ROI 執行裁切。
 
+        回傳 ``{"total", "ok", "failed"}``；``failed`` 為失敗的 ROI 名稱清單。
+        呼叫端必須依此判定成敗 —— 單一 ROI 失敗只記 log 不中斷，
+        但整體狀態不得回報「完成」（否則畫面顯示成功、實際沒有產出）。
+        """
+        logger.info(f"開始裁切 {len(self.rois)} 個 ROI")
+        if not self.rois:
+            raise ValueError("ROI 清單為空，沒有任何可裁切的區域")
+
+        failed: list[str] = []
         for roi in self.rois:
             name = roi.get("name", "unnamed")
             logger.info(f"處理 ROI: {name}")
@@ -462,6 +514,9 @@ class RoiExtractor:
                 self._extract_he_crop(roi)
             except Exception as e:
                 logger.error(f"ROI '{name}' 裁切失敗：{e}")
+                failed.append(name)
+
+        return {"total": len(self.rois), "ok": len(self.rois) - len(failed), "failed": failed}
 
     def _extract_visium(self, roi: dict) -> None:
         """裁切 Visium HD AnnData（2µm 和 8µm）"""
@@ -482,6 +537,12 @@ class RoiExtractor:
             out_path = out_dir / f"adata_{bin_size}um.h5ad"
             sub.write_h5ad(str(out_path))
             logger.info(f"  已儲存：{out_path} ({sub.n_obs:,} bins)")
+            if sub.n_obs == 0:
+                # 框在組織外／座標系搞錯時會產生空 h5ad，要等到 Stage 2 才爆炸
+                logger.warning(
+                    f"  ⚠️ ROI '{roi['name']}' 的 {bin_size}um 沒有命中任何 bin —— "
+                    f"請確認框選範圍落在組織上，且座標為 fullres pixel"
+                )
 
     def _extract_he_crop(self, roi: dict) -> None:
         """裁切 H&E 影像 ROI"""
@@ -497,17 +558,7 @@ class RoiExtractor:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         x0, y0, w, h = roi_to_fullres_px(roi)
-
-        import tifffile as _tifffile
-        with _tifffile.TiffFile(str(he_path)) as _tf:
-            _is_tiled = bool(_tf.pages[0].tags.get("TileOffsets"))
-
-        if _is_tiled:
-            crop, ax0, ay0 = read_btf_crop(he_path, x0, y0, w, h)
-        else:
-            from backend.src.roi.tile_server import read_strip_crop
-            crop = read_strip_crop(he_path, x0, y0, w, h)
-            ax0, ay0 = x0, y0
+        crop, ax0, ay0 = read_image_crop(he_path, x0, y0, w, h)
 
         out_path = out_dir / "he_crop.tif"
         tifffile.imwrite(str(out_path), crop)

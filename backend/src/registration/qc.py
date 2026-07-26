@@ -57,7 +57,7 @@ def render_overlay_patches(
     import tifffile
 
     from backend.src.registration.align import load_bin_xy
-    from backend.src.roi.extractor import read_btf_crop
+    from backend.src.roi.extractor import read_image_crop
 
     btf_path = Path(btf_path)
     out_dir = Path(out_dir)
@@ -82,7 +82,7 @@ def render_overlay_patches(
         x0 = int(np.clip(x[k] - size / 2, 0, max(0, w - size)))
         y0 = int(np.clip(y[k] - size / 2, 0, max(0, h - size)))
         try:
-            crop, ax0, ay0 = read_btf_crop(btf_path, x0, y0, size, size)
+            crop, ax0, ay0 = read_image_crop(btf_path, x0, y0, size, size)
         except (OSError, ValueError, NotImplementedError) as e:
             logger.warning(f"QC patch ({x0}, {y0}) 讀取失敗，略過：{e}")
             continue

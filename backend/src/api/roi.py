@@ -120,8 +120,20 @@ async def _run_extract(config: dict):
     try:
         from backend.src.roi.extractor import RoiExtractor
         extractor = RoiExtractor(config)
-        await asyncio.get_running_loop().run_in_executor(None, extractor.run_all)
-        _task_status = {"status": "done", "progress": 1.0, "message": "裁切完成"}
+        summary = await asyncio.get_running_loop().run_in_executor(None, extractor.run_all)
+        # 有 ROI 失敗就不能回報「完成」，否則畫面顯示成功、實際沒有產出
+        if summary["failed"]:
+            names = "、".join(summary["failed"])
+            _task_status = {
+                "status": "error", "progress": 0.0,
+                "message": f"{summary['ok']}/{summary['total']} 個 ROI 裁切完成，"
+                           f"失敗：{names}（詳見 log）",
+            }
+        else:
+            _task_status = {
+                "status": "done", "progress": 1.0,
+                "message": f"裁切完成（{summary['ok']} 個 ROI）",
+            }
     except Exception as e:
         logger.error(f"ROI 裁切失敗：{e}")
         _task_status = {"status": "error", "progress": 0.0, "message": "ROI 裁切失敗，請查閱 log"}
@@ -134,6 +146,14 @@ async def run_extract(background_tasks: BackgroundTasks):
         if _task_status["status"] == "running":
             return {"status": "error", "message": "任務執行中"}
         config = load_config()
+        # 空清單跑起來會「0 個 ROI → 立刻完成」，看起來成功但什麼都沒產出。
+        # 注意：config/state.json 的 rois 會整份蓋掉 pipeline.yaml 的 rois。
+        if not config.get("rois"):
+            logger.warning("ROI 清單為空，拒絕啟動裁切")
+            return {
+                "status": "error",
+                "message": "尚未定義任何 ROI —— 請先在下方框選範圍並按「+ 新增 ROI」存檔後再執行",
+            }
         _task_status["status"] = "running"
         _task_status["progress"] = 0.0
         _task_status["message"] = "準備裁切..."

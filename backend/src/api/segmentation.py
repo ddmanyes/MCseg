@@ -605,6 +605,9 @@ async def get_preview(roi_name: Optional[str] = None):
     try:
         mask = tifffile.imread(str(roi_dir / mask_tif)).astype(np.int32)
         he_path = roi_dir / "he_crop.tif"
+        # 灰底是「疊不上去」的降級結果，不是正常畫面 —— 必須說明原因，
+        # 否則使用者只看到孤零零的輪廓，無從得知遮罩其實已經過期
+        warning: Optional[str] = None
         if he_path.exists():
             he = tifffile.imread(str(he_path))
             if he.ndim == 2:
@@ -612,8 +615,16 @@ async def get_preview(roi_name: Optional[str] = None):
             elif he.shape[-1] == 4:
                 he = he[..., :3]
             if he.shape[:2] != mask.shape[:2]:
+                warning = (
+                    f"遮罩 {mask.shape[1]}×{mask.shape[0]} 與 H&E crop "
+                    f"{he.shape[1]}×{he.shape[0]} 尺寸不符 —— 遮罩是舊 ROI 範圍留下的，"
+                    f"請重新執行 Stage 1 分割。目前以灰底顯示，非真實組織。"
+                )
+                logger.warning(f"ROI '{target}' {warning}")
                 he = np.full((*mask.shape, 3), 240, dtype=np.uint8)
         else:
+            warning = "找不到 he_crop.tif（請先在 Stage 0 執行 ROI 裁切），目前以灰底顯示"
+            logger.warning(f"ROI '{target}' {warning}")
             he = np.full((*mask.shape, 3), 240, dtype=np.uint8)
 
         from skimage.segmentation import find_boundaries
@@ -644,6 +655,7 @@ async def get_preview(roi_name: Optional[str] = None):
                 "available_rois": available,
                 "orig_w":         w,
                 "orig_h":         h,
+                "warning":        warning,
             },
         }
     except Exception as e:

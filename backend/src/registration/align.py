@@ -300,7 +300,7 @@ def estimate_shift_fullres(
     """
     import tifffile
 
-    from backend.src.roi.extractor import read_btf_crop
+    from backend.src.roi.extractor import read_image_crop
     from backend.src.roi.tile_server import THUMB_SCALE, _load_or_build_thumb
 
     coarse_ds = THUMB_SCALE if coarse_ds is None else coarse_ds
@@ -328,7 +328,7 @@ def estimate_shift_fullres(
     ests: list[tuple[float, float]] = []
     for x0, y0 in _pick_dense_windows(dens[:hh, :ww], coarse_ds, n_windows, window, full_shape):
         try:
-            crop, ax0, ay0 = read_btf_crop(btf_path, x0, y0, window, window)
+            crop, ax0, ay0 = read_image_crop(btf_path, x0, y0, window, window)
         except (OSError, ValueError, NotImplementedError) as e:
             logger.warning(f"窗格 ({x0}, {y0}) 讀取失敗，略過：{e}")
             continue
