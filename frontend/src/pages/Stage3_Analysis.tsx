@@ -14,6 +14,7 @@ import {
 } from '../api/client'
 import QcHistogram, { type HistogramMetric } from '../components/shared/QcHistogram'
 import { useT } from '../i18n'
+import { errText } from '../utils/errText'
 
 // ── 小工具 ────────────────────────────────────────────────────────
 
@@ -278,6 +279,10 @@ export default function Stage4_Analysis() {
   const [histLoading, setHistLoading] = useState(false)
   const [histError, setHistError] = useState('')
   const [applyLabelError, setApplyLabelError] = useState('')
+  // B 類讀取降級：圖表／清單載入失敗時說出來，不擋人（見前端錯誤處理修復計畫 F1）
+  const [loadWarn, setLoadWarn] = useState('')
+  const onLoadFail = (what: string) => (e: unknown) =>
+    setLoadWarn(`${what}載入失敗（${errText(e)}）—— 畫面上該區塊為空並不代表沒有結果`)
   const [markerCsvError, setMarkerCsvError] = useState('')
   const [logScales, setLogScales] = useState<Record<string, boolean>>({})
 
@@ -318,14 +323,14 @@ export default function Stage4_Analysis() {
         n_neighbors: cl.n_neighbors ?? p.n_neighbors,
         min_dist: cl.min_dist ?? p.min_dist,
       }))
-    })
+    }).catch(onLoadFail('分析預設參數'))
   }, [])
 
   // ── 載入 CellTypist 模型清單 ──
   useEffect(() => {
     getCelltypistModels().then(r => {
       if (r.data?.data) setCelltypistModels(r.data.data)
-    })
+    }).catch(onLoadFail('CellTypist 模型清單'))
   }, [])
 
   // ── TanStack Query: 四步驟 status 輪詢 ──
@@ -356,8 +361,8 @@ export default function Stage4_Analysis() {
   // ── 各步驟完成後自動拉取圖表（包含頁面初次載入 / 後端重啟後恢復） ──
   useEffect(() => {
     if (qcSt?.status === 'done') {
-      getQCImages().then(r => { if (r.data.data) setQcImages(r.data.data) })
-      getRoiOverlays().then(r => { if (r.data?.data) setRoiOverlays(r.data.data) })
+      getQCImages().then(r => { if (r.data.data) setQcImages(r.data.data) }).catch(onLoadFail('QC 圖表'))
+      getRoiOverlays().then(r => { if (r.data?.data) setRoiOverlays(r.data.data) }).catch(onLoadFail('ROI overlay'))
       updateStage('analysis', { status: 'done', progress: 1, message: t('stage3.status.qc_done') })
     } else if (qcSt?.status === 'error') {
       updateStage('analysis', { status: 'error', progress: 0, message: qcSt.message ?? t('stage3.status.qc_failed') })
@@ -372,7 +377,7 @@ export default function Stage4_Analysis() {
           const keys = Object.keys(r.data.data).filter(k => k !== 'grid')
           if (keys.length) setSelectedRes(keys[0])
         }
-      })
+      }).catch(onLoadFail('UMAP 圖表'))
       updateStage('analysis', { status: 'done', progress: 1, message: t('stage3.status.umap_done') })
     } else if (umapSt?.status === 'error') {
       updateStage('analysis', { status: 'error', progress: 0, message: umapSt.message ?? t('stage3.status.umap_failed') })
@@ -381,7 +386,7 @@ export default function Stage4_Analysis() {
 
   useEffect(() => {
     if (heatSt?.status === 'done') {
-      getHeatmapImage().then(r => { if (r.data.data) setHeatmapImages(r.data.data) })
+      getHeatmapImage().then(r => { if (r.data.data) setHeatmapImages(r.data.data) }).catch(onLoadFail('熱圖'))
       updateStage('analysis', { status: 'done', progress: 1, message: t('stage3.status.analysis_done') })
     }
   }, [heatSt?.status])
@@ -434,7 +439,7 @@ export default function Stage4_Analysis() {
         setClusterLabels(init)
         if (Object.values(existing_labels).some(v => v)) setLabelApplied(true)
       }
-    })
+    }).catch(onLoadFail('cluster 資訊'))
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableResolutions.join(',')])
 
@@ -502,13 +507,18 @@ export default function Stage4_Analysis() {
     setLabelApplied(false)
     updateStage('analysis', { status: 'running', progress: 0, message: 'QC 前處理中...' })
     const mergeFlag = analysisMode === 'merge' && hasMultipleRois
-    await runQC({
-      ...qcParams,
-      merge_rois: mergeFlag,
-      roi_name: mergeFlag ? undefined : (selectedRoi || undefined),
-      input_source: inputSource,
-    })
-    refetchQcSt()
+    try {
+      await runQC({
+        ...qcParams,
+        merge_rois: mergeFlag,
+        roi_name: mergeFlag ? undefined : (selectedRoi || undefined),
+        input_source: inputSource,
+      })
+    } catch (e: unknown) {
+      updateStage('analysis', { status: 'error', progress: 0, message: `QC 啟動失敗：${errText(e)}` })
+      return
+    }
+    void refetchQcSt()
   }
 
   const handleRunUMAP = async () => {
@@ -518,33 +528,48 @@ export default function Stage4_Analysis() {
     setHeatmapImages({})
     updateStage('analysis', { status: 'running', progress: 0, message: 'UMAP 計算中...' })
     const mergeFlag = analysisMode === 'merge' && hasMultipleRois
-    await runUMAPExplore({ ...umapParams, resolutions, merge_rois: mergeFlag })
-    refetchUmapSt()
+    try {
+      await runUMAPExplore({ ...umapParams, resolutions, merge_rois: mergeFlag })
+    } catch (e: unknown) {
+      updateStage('analysis', { status: 'error', progress: 0, message: `UMAP 啟動失敗：${errText(e)}` })
+      return
+    }
+    void refetchUmapSt()
   }
 
   const handleRunHeatmap = async () => {
     if (!selectedRes) return
     setHeatmapImages({})
     updateStage('analysis', { status: 'running', progress: 0, message: '熱圖產生中...' })
-    await runHeatmap({ resolution: parseFloat(selectedRes), n_top_genes: nTopGenes, n_heatmap_genes: nHeatmapGenes })
-    refetchHeatSt()
+    try {
+      await runHeatmap({ resolution: parseFloat(selectedRes), n_top_genes: nTopGenes, n_heatmap_genes: nHeatmapGenes })
+    } catch (e: unknown) {
+      updateStage('analysis', { status: 'error', progress: 0, message: `熱圖啟動失敗：${errText(e)}` })
+      return
+    }
+    void refetchHeatSt()
   }
 
   const handleRunAnnotate = async () => {
     if (!annotateRes) return
     // 先清空舊的 meta，使 UI 進入等待狀態
     setClusterMeta({})
-    await runAnnotate({
-      resolution: parseFloat(annotateRes),
-      model_name: annotateModel,
-      mode: annotateMode,
-      immune_conf_threshold: immuneConfThreshold,
-      score_threshold: scoreThreshold,
-      uncertain_threshold: uncertainThreshold,
-      enable_tier3: enableTier3,
-      tier3_conf_threshold: tier3ConfThreshold,
-    })
-    refetchAnnotSt()
+    try {
+      await runAnnotate({
+        resolution: parseFloat(annotateRes),
+        model_name: annotateModel,
+        mode: annotateMode,
+        immune_conf_threshold: immuneConfThreshold,
+        score_threshold: scoreThreshold,
+        uncertain_threshold: uncertainThreshold,
+        enable_tier3: enableTier3,
+        tier3_conf_threshold: tier3ConfThreshold,
+      })
+    } catch (e: unknown) {
+      updateStage('analysis', { status: 'error', progress: 0, message: `CellTypist 啟動失敗：${errText(e)}` })
+      return
+    }
+    void refetchAnnotSt()
   }
 
   const handleApplyLabels = async () => {
@@ -586,6 +611,10 @@ export default function Stage4_Analysis() {
 
   return (
     <div className="space-y-4">
+
+      {loadWarn && (
+        <p className="text-xs text-amber-400/80 px-1">ⓘ {loadWarn}</p>
+      )}
 
       {/* ═══════════════════════════════════════════
           區塊 1：QC 前處理
@@ -705,7 +734,6 @@ export default function Stage4_Analysis() {
                   showMin={true}
                   showMax={false}
                   onMinChange={v => setQcParams(p => ({ ...p, min_counts: v ?? 0 }))}
-                  onMaxChange={() => {}}
                   logScale={!!logScales.total_counts}
                   onLogScaleToggle={() => setLogScales(s => ({ ...s, total_counts: !s.total_counts }))}
                   totalCells={histData.n_cells}
@@ -737,8 +765,6 @@ export default function Stage4_Analysis() {
                   showMin={false}
                   showMax={false}
                   showMad={true}
-                  onMinChange={() => {}}
-                  onMaxChange={() => {}}
                   logScale={!!logScales.cell_area}
                   onLogScaleToggle={() => setLogScales(s => ({ ...s, cell_area: !s.cell_area }))}
                   totalCells={histData.n_cells}
@@ -755,7 +781,6 @@ export default function Stage4_Analysis() {
                   showMax={false}
                   showMad={true}
                   onMinChange={v => setQcParams(p => ({ ...p, min_complexity: v ?? 0 }))}
-                  onMaxChange={() => {}}
                   logScale={!!logScales.complexity}
                   onLogScaleToggle={() => setLogScales(s => ({ ...s, complexity: !s.complexity }))}
                   totalCells={histData.n_cells}
@@ -771,7 +796,6 @@ export default function Stage4_Analysis() {
                   showMin={false}
                   showMax={true}
                   showMad={true}
-                  onMinChange={() => {}}
                   onMaxChange={v => setQcParams(p => ({ ...p, max_pct_mito: v ?? 100 }))}
                   logScale={!!logScales.pct_counts_mt}
                   onLogScaleToggle={() => setLogScales(s => ({ ...s, pct_counts_mt: !s.pct_counts_mt }))}

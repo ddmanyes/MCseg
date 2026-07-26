@@ -1,6 +1,7 @@
-import { useEffect } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import TopNav from './components/layout/TopNav'
+import ErrorBoundary from './components/shared/ErrorBoundary'
 import DataSetup from './pages/DataSetup'
 import Stage0_ROI from './pages/Stage0_ROI'
 import Stage1_Segmentation from './pages/Stage1_Segmentation'
@@ -10,9 +11,13 @@ import Stage35_SpatialExplorer from './pages/Stage35_SpatialExplorer'
 import Stage4_Export from './pages/Stage4_Export'
 import { getDiskStatus } from './api/client'
 import { usePipelineStore } from './stores/pipelineStore'
+import { errText } from './utils/errText'
 
 export default function App() {
   const { updateStage } = usePipelineStore()
+  const location = useLocation()
+  // 磁碟掃描失敗只影響「已完成」標記的還原，不擋任何操作 → 低調降級
+  const [diskWarn, setDiskWarn] = useState<string | null>(null)
 
   // 啟動時掃描磁碟，恢復各 Stage 完成狀態
   useEffect(() => {
@@ -23,23 +28,34 @@ export default function App() {
       if (d.segmentation?.done) updateStage('segmentation', { status: 'done', message: 'Segmentation masks found' })
       if (d.count?.done)        updateStage('count',        { status: 'done', message: 'RNA counting complete' })
       if (d.analysis?.done)     updateStage('analysis',     { status: 'done', message: 'Analysis complete' })
-    }).catch(() => {/* 靜默失敗 */})
+      setDiskWarn(null)
+    }).catch((e: unknown) => {
+      setDiskWarn(`無法掃描磁碟狀態（${errText(e)}）—— 各 Stage 的「已完成」標記可能未還原`)
+    })
   }, [])
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-surface">
       <TopNav />
+      {diskWarn && (
+        <p className="px-6 py-1.5 text-xs text-amber-400/80 bg-amber-900/10 border-b border-amber-900/30">
+          ⓘ {diskWarn}
+        </p>
+      )}
       <main className="flex-1 overflow-y-auto p-6">
-        <Routes>
-          <Route path="/" element={<Navigate to="/data" replace />} />
-          <Route path="/data" element={<DataSetup />} />
-          <Route path="/roi" element={<Stage0_ROI />} />
-          <Route path="/segmentation" element={<Stage1_Segmentation />} />
-          <Route path="/count" element={<Stage2_Count />} />
-          <Route path="/analysis" element={<Stage3_Analysis />} />
-          <Route path="/spatial" element={<Stage35_SpatialExplorer />} />
-          <Route path="/export" element={<Stage4_Export />} />
-        </Routes>
+        {/* key = 路徑：換頁時重新 mount，壞掉的頁面不會把整個 app 永久卡住 */}
+        <ErrorBoundary key={location.pathname} label={location.pathname}>
+          <Routes>
+            <Route path="/" element={<Navigate to="/data" replace />} />
+            <Route path="/data" element={<DataSetup />} />
+            <Route path="/roi" element={<Stage0_ROI />} />
+            <Route path="/segmentation" element={<Stage1_Segmentation />} />
+            <Route path="/count" element={<Stage2_Count />} />
+            <Route path="/analysis" element={<Stage3_Analysis />} />
+            <Route path="/spatial" element={<Stage35_SpatialExplorer />} />
+            <Route path="/export" element={<Stage4_Export />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   )

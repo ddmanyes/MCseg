@@ -41,8 +41,10 @@ interface Props {
   minVal: number | null
   /** 目前的 max 閾值（null = 無限制） */
   maxVal: number | null
-  onMinChange: (v: number | null) => void
-  onMaxChange: (v: number | null) => void
+  /** showMin=false 時可省略 */
+  onMinChange?: (v: number | null) => void
+  /** showMax=false 時可省略 */
+  onMaxChange?: (v: number | null) => void
   showMin?: boolean
   showMax?: boolean
   showMad?: boolean
@@ -149,8 +151,8 @@ export default function QcHistogram({
     const clamped = Math.max(xMin, Math.min(xMax, raw))
     const range = xMax - xMin
     const rounded = range <= 10 ? Number(clamped.toFixed(3)) : Math.round(clamped)
-    if (dragging.current === 'min') onMinChange(rounded)
-    else onMaxChange(rounded)
+    if (dragging.current === 'min') onMinChange?.(rounded)
+    else onMaxChange?.(rounded)
   }, [xMin, xMax, xInvert, onMinChange, onMaxChange])
 
   const handleMouseUp = useCallback(() => { dragging.current = null }, [])

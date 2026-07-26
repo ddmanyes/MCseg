@@ -55,7 +55,7 @@ export default function TopNav() {
   }, [])
 
   const isLocked = (dep: string | null) =>
-    dep !== null && stages[dep as keyof typeof stages]?.status !== 'done'
+    dep !== null && stages[dep]?.status !== 'done'
 
   const runningStage = STAGE_KEYS.find(s => stages[s.stage]?.status === 'running')
 

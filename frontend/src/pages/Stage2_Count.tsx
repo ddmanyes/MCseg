@@ -6,6 +6,8 @@ import { getCellposeCountStatus, runCellposeCount, listCountRois, runFullCount, 
 import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
 import { useT } from '../i18n'
+import { errText } from '../utils/errText'
+import { startStatusPoll, type PollStatus } from '../utils/pollStatus'
 
 interface RoiCountInfo {
   name: string
@@ -19,50 +21,58 @@ export default function Stage2_Count() {
   const stage = stages['count']
   const { refetch: refetchStatus } = useStageStatus('count', getCellposeCountStatus, 3000)
   const [roiInfos, setRoiInfos] = useState<RoiCountInfo[]>([])
+  const [roiListWarn, setRoiListWarn] = useState<string | null>(null)
   const t = useT()
 
   useEffect(() => {
+    // B 類讀取：失敗只是清單空白，做可見降級即可
     listCountRois().then(res => {
       if (res.data?.data) setRoiInfos(res.data.data)
-    }).catch(() => {})
+      setRoiListWarn(null)
+    }).catch((e: unknown) => {
+      setRoiListWarn(`無法載入 ROI 清單（${errText(e)}）—— 下方清單並非「沒有 ROI」，而是查不到`)
+    })
   }, [stage.status])
 
   const handleRunAll = async () => {
     updateStage('count', { status: 'running', progress: 0, message: t('stage2.run_all') + '...' })
     try {
       await runCellposeCount(null)
-    } catch (e) {
-      updateStage('count', { status: 'error', message: `API error: ${e}` })
+    } catch (e: unknown) {
+      updateStage('count', { status: 'error', message: errText(e) })
       return
     }
-    refetchStatus()
+    void refetchStatus()
   }
 
   const handleRunSingle = async (roiName: string) => {
     updateStage('count', { status: 'running', progress: 0, message: `RNA Count (${roiName})...` })
     try {
       await runCellposeCount(roiName)
-    } catch (e) {
-      updateStage('count', { status: 'error', message: `API error: ${e}` })
+    } catch (e: unknown) {
+      updateStage('count', { status: 'error', message: errText(e) })
       return
     }
-    refetchStatus()
+    void refetchStatus()
   }
 
   // ── 全圖計數（吃 Stage 1 的 full_image_segmentation_masks.npy）─────────────
-  const [fullStatus, setFullStatus] = useState<{ status: string; progress?: number; message?: string } | null>(null)
+  const [fullStatus, setFullStatus] = useState<PollStatus | null>(null)
+  const [fullRetry, setFullRetry] = useState<string | null>(null)
   const fullPollRef = useRef<ReturnType<typeof setInterval>>()
 
   const startFullPoll = () => {
     clearInterval(fullPollRef.current)
-    fullPollRef.current = setInterval(async () => {
-      try {
+    setFullRetry(null)
+    fullPollRef.current = startStatusPoll({
+      fetchStatus: async () => {
         const res = await getFullCountStatus()
-        const d = res.data?.data ?? res.data
-        setFullStatus(d)
-        if (d?.status !== 'running') clearInterval(fullPollRef.current)
-      } catch { clearInterval(fullPollRef.current) }
-    }, 2000)
+        return (res.data?.data ?? res.data) as PollStatus | null
+      },
+      onStatus: d => { setFullRetry(null); setFullStatus(d) },
+      onTransientFailure: (n, max) => setFullRetry(`與後端連線不穩，重試中 ${n}/${max}...`),
+      onLost: msg => { setFullRetry(null); setFullStatus({ status: 'error', message: msg }) },
+    })
   }
 
   useEffect(() => {
@@ -72,7 +82,9 @@ export default function Stage2_Count() {
         setFullStatus(d)
         if (d.status === 'running') startFullPoll()
       }
-    }).catch(() => {})
+    }).catch((e: unknown) => {
+      setFullRetry(`無法取得全圖計數狀態（${errText(e)}）`)
+    })
     return () => clearInterval(fullPollRef.current)
   }, [])
 
@@ -112,14 +124,25 @@ export default function Stage2_Count() {
   const [qcBusy, setQcBusy] = useState(false)
   const [qcError, setQcError] = useState<string | null>(null)
 
+  /**
+   * QC 回應結構防呆。
+   *
+   * 後端若回非預期結構（例如 SPA catch-all 把 index.html 當成 JSON 回來），
+   * 直接 setQc 會讓下方 `qc.sections.map` 在 render 期間拋錯 → 整頁空白。
+   * 這裡先驗形狀，形狀不對就走 qcError 路徑。
+   */
+  const isQcResult = (d: unknown): d is QcResult =>
+    !!d && typeof d === 'object' && Array.isArray((d as QcResult).sections)
+
   const handleRunQc = async () => {
     setQcBusy(true); setQcError(null)
     try {
       const res = await runCoverageQc()
       if (res.data?.status === 'error') setQcError(res.data.message)
-      else { setQc(res.data.data); setQcError(null) }
-    } catch (e: any) {
-      setQcError(e?.response?.data?.message ?? 'API error')
+      else if (isQcResult(res.data?.data)) { setQc(res.data.data); setQcError(null) }
+      else setQcError('QC 回應結構不符預期（缺少 sections 陣列），請檢查後端輸出')
+    } catch (e: unknown) {
+      setQcError(errText(e))
     } finally {
       setQcBusy(false)
     }
@@ -147,6 +170,10 @@ export default function Stage2_Count() {
             <li>Output: <code>cellpose_cells.h5ad</code> (cells × genes, for Stage 3)</li>
           </ul>
         </div>
+
+        {roiListWarn && (
+          <p className="mt-3 text-xs text-amber-400/80">ⓘ {roiListWarn}</p>
+        )}
 
         {/* Run button */}
         <div className="mt-4 flex items-center justify-between">
@@ -189,6 +216,10 @@ export default function Stage2_Count() {
             {fullStatus?.status === 'running' ? t('common.running') : t('stage2.full_count.run')}
           </button>
         </div>
+
+        {fullRetry && (
+          <p className="text-xs text-amber-400/80">ⓘ {fullRetry}</p>
+        )}
 
         {fullStatus && fullStatus.status !== 'idle' && (
           <div className={`rounded-lg px-3 py-2 text-xs font-mono space-y-1

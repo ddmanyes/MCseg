@@ -1,22 +1,9 @@
-import { useState, useEffect, useRef, useMemo, Component, type ReactNode } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getSpatialGeneList, postSpatialGenePlot, postRegionStats, getAvailableRois } from '../api/client'
 import RegionSelector, { type RegionSelection } from '../components/shared/RegionSelector'
+import ErrorBoundary from '../components/shared/ErrorBoundary'
 import { useT } from '../i18n'
-
-class ErrorBoundary extends Component<{ children: ReactNode }, { error: string }> {
-  state = { error: '' }
-  static getDerivedStateFromError(e: Error) { return { error: e.message } }
-  render() {
-    if (this.state.error) return (
-      <div className="p-6 text-red-400 text-sm font-mono whitespace-pre-wrap">
-        <p className="font-bold mb-2">Render error:</p>
-        {this.state.error}
-      </div>
-    )
-    return this.props.children
-  }
-}
 
 const CMAPS = ['viridis', 'magma', 'plasma', 'inferno', 'Reds', 'Blues', 'YlOrRd']
 const MAX_GENES = 4
@@ -183,12 +170,10 @@ function SpatialExplorerInner() {
     queryFn: () => getAvailableRois().then(r => r.data),
     staleTime: 30000,
   })
-  const availableRois: string[] = useMemo(() =>
-    ((roisData as any)?.data ?? [])
-      .filter((r: any) => r.available)
-      .map((r: any) => r.name as string),
-    [roisData]
-  )
+  const availableRois: string[] = useMemo(() => {
+    const rows = (roisData as { data?: { name: string; available: boolean }[] } | undefined)?.data ?? []
+    return rows.filter(r => r.available).map(r => r.name)
+  }, [roisData])
 
   useEffect(() => {
     if (!selectedRoi && availableRois.length > 0) setSelectedRoi(availableRois[0])
@@ -201,8 +186,8 @@ function SpatialExplorerInner() {
     enabled: true,
     staleTime: 60000,
   })
-  const allGenes: string[] = (geneListData as any)?.data?.genes ?? []
-  const isMergeMode: boolean = (geneListData as any)?.data?.merge_mode ?? false
+  const allGenes: string[] = (geneListData as { data?: { genes?: string[] } } | undefined)?.data?.genes ?? []
+  const isMergeMode: boolean = (geneListData as { data?: { merge_mode?: boolean } } | undefined)?.data?.merge_mode ?? false
 
   // Search: starts-with priority, then contains, cap at 30
   const filteredGenes = (() => {

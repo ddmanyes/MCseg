@@ -113,7 +113,8 @@ export default function AlignmentPanel() {
             className={btn}
             disabled={busy !== ''}
             onClick={() => {
-              if (window.confirm(t('align.confirm_apply'))) run('apply', true)
+              // run 內部已有 try/catch → setError
+              if (window.confirm(t('align.confirm_apply'))) void run('apply', true)
             }}
           >
             {t('align.apply')}

@@ -11,6 +11,7 @@ import useStageLog from '../hooks/useStageLog'
 import { useStageStatus } from '../hooks/useStageStatus'
 import { useQuery } from '@tanstack/react-query'
 import { useT } from '../i18n'
+import { errText } from '../utils/errText'
 
 type TabId = 'spatial' | 'umap' | 'dotplot' | 'heatmap'
 
@@ -53,7 +54,7 @@ export default function Stage4_Export() {
     if (s.status === 'done') {
       setResultRunning(false)
       setResultMessage(t('stage4.result.done'))
-      refetchResultImages()
+      void refetchResultImages()
     } else if (s.status === 'error') {
       setResultRunning(false)
       setResultMessage(s.message ?? t('stage4.result.failed'))
@@ -62,23 +63,40 @@ export default function Stage4_Export() {
     }
   }, [resultStatusData])
 
+  // 啟動失敗必須報錯，否則畫面會永遠停在「執行中」
   const handleGenerateResult = async () => {
     setResultRunning(true)
     setResultMessage(t('stage4.result.starting'))
-    await generateResult()
-    refetchResultStatus()
+    try {
+      await generateResult()
+    } catch (e: unknown) {
+      setResultRunning(false)
+      setResultMessage(`啟動失敗：${errText(e)}`)
+      return
+    }
+    void refetchResultStatus()
   }
 
   const handleXenium = async () => {
     updateStage('xenium', { status: 'running', progress: 0, message: t('stage4.xenium.starting') })
-    await exportXenium({})
-    refetchXenium()
+    try {
+      await exportXenium({})
+    } catch (e: unknown) {
+      updateStage('xenium', { status: 'error', progress: 0, message: `啟動失敗：${errText(e)}` })
+      return
+    }
+    void refetchXenium()
   }
 
   const handleLoupe = async () => {
     updateStage('loupe', { status: 'running', progress: 0, message: t('stage4.loupe.starting') })
-    await exportLoupe({})
-    refetchLoupe()
+    try {
+      await exportLoupe({})
+    } catch (e: unknown) {
+      updateStage('loupe', { status: 'error', progress: 0, message: `啟動失敗：${errText(e)}` })
+      return
+    }
+    void refetchLoupe()
   }
 
   const images: Record<string, string> = (resultImagesData as { status?: string; data?: Record<string, string> })?.data ?? {}

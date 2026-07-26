@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { scanData, applyData, getDataStatus, browseDir, getOutputDir } from '../api/client'
 import { FolderSearch, Check, AlertTriangle, HardDrive, FileSearch, FolderOpen, ChevronRight, ArrowUp, File, X } from 'lucide-react'
 import { useT } from '../i18n'
+import { errText } from '../utils/errText'
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -75,12 +76,13 @@ function FolderBrowser({
         }
     }, [])
 
+    // navigate 內部已有 try/catch → setError，此處刻意不再處理
     useEffect(() => {
-        navigate('~')
+        void navigate('~')
     }, [navigate])
 
     const handlePathSubmit = () => {
-        if (pathInput.trim()) navigate(pathInput.trim())
+        if (pathInput.trim()) void navigate(pathInput.trim())
     }
 
     const QUICK_LOCATIONS = [
@@ -237,14 +239,22 @@ export default function DataSetup() {
     const [savedOutput, setSavedOutput] = useState(false)
     const [outputError, setOutputError] = useState('')
 
+    // B 類讀取降級：狀態讀不到時要說出來，否則會被誤讀成「路徑都沒設定」
+    const [statusWarn, setStatusWarn] = useState('')
+
     // 載入目前配置狀態
     useEffect(() => {
         getDataStatus().then((r: { data: { status: string; data: Record<string, PathStatus> } }) => {
             if (r.data.status === 'ok') setPathStatus(r.data.data)
-        }).catch(() => { })
+            setStatusWarn('')
+        }).catch((e: unknown) => {
+            setStatusWarn(`無法讀取目前資料路徑設定（${errText(e)}）—— 下方勾選狀態不代表實際設定`)
+        })
         getOutputDir().then((r: { data: { status: string; data: { output_dir: string; resolved: string } } }) => {
             if (r.data.status === 'ok') setOutputDir(r.data.data.resolved)
-        }).catch(() => { })
+        }).catch((e: unknown) => {
+            setStatusWarn(`無法讀取輸出目錄設定（${errText(e)}）`)
+        })
     }, [applied])
 
     const handleScan = async () => {
@@ -386,6 +396,9 @@ export default function DataSetup() {
                         <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
                         <p className="text-xs text-red-400">{scanError}</p>
                     </div>
+                )}
+                {statusWarn && !scanError && (
+                    <p className="text-xs text-amber-400/80">ⓘ {statusWarn}</p>
                 )}
                 <div className="flex gap-2">
                     <button
