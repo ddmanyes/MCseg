@@ -317,6 +317,15 @@ class TestCliBinToImageTransform:
         from backend.src.cli.segment import _load_cli_config
         from backend.src.fullslide.pipeline import resolve_bin_to_image_transform
 
+        # _load_cli_config() 刻意會讀真實 state.json 的 alignment 設定（CLI 設計上
+        # 就是要沿用使用者透過 UI「指定對位 JSON」存的值）——這裡要測的是「spatial/
+        # 內自動偵測」這條路徑，必須把即時環境的 extra_alignment_json 隔離掉，
+        # 否則使用者若真的透過 UI 設定過（例如指到另一個樣本的對位檔），這個測試
+        # 會撿到不屬於本測試的真實檔案而報錯（2026-08-05 實際發生過一次：
+        # state.json 指到有勝樣本的 H1-KRDKFYF-...json，serialNumber 跟本測試
+        # 自己造的 old.json 對不上）。
+        monkeypatch.setattr("backend.src.utils.config.load_config", lambda *a, **k: {"alignment": {}})
+
         binned = cli_sample["binned"]
         sp = _write_spatial(binned, hires_size=(2870, 6000), scalef=0.25475544, mpp=0.5464)
         _write_align(sp / "old.json", scale_transform=0.2, scale_images=0.2 * 0.5464)

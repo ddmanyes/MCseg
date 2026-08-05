@@ -525,3 +525,52 @@ class TestReadImageCropNdpi:
 
         assert via_dispatch[1:] == via_direct[1:]          # 對齊後的 origin 一致
         np.testing.assert_array_equal(via_dispatch[0], via_direct[0])
+
+
+# ── _to_rgb() 高位元深度縮放（2026-08-05，診斷有勝 IF 樣本時發現）───────────
+#
+# 舊版對非 uint8 輸入直接 .astype(uint8)：16-bit 螢光影像常見數值（例如
+# ~40000）會回捲成隨機小數，不是變暗——這裡釘住「線性縮放，不是截斷」，
+# 以及「既有 uint8 H&E 路徑完全不受影響」兩件事。
+
+class TestToRgbBitDepth:
+    def test_uint16_is_linearly_rescaled_not_truncated(self):
+        from backend.src.utils.slide_reader import _to_rgb
+
+        # 40000 / 65535 * 255 ≈ 155；naive astype(uint8) 會回捲成 40000 % 256 = 160
+        # ——兩個數字刻意選得接近，用來確認測到的真的是縮放邏輯而非巧合
+        arr = np.full((4, 4), 40000, dtype=np.uint16)
+        out = _to_rgb(arr)
+
+        assert out.dtype == np.uint8
+        assert out.shape == (4, 4, 3)
+        expected = round(40000 / 65535 * 255)
+        assert out[0, 0, 0] == expected
+
+    def test_uint16_max_value_maps_to_255(self):
+        from backend.src.utils.slide_reader import _to_rgb
+
+        arr = np.array([[0, 65535]], dtype=np.uint16)
+        out = _to_rgb(arr)
+
+        assert out[0, 0, 0] == 0
+        assert out[0, 1, 0] == 255
+
+    def test_uint8_input_unchanged(self):
+        """既有 H&E RGB（uint8）路徑必須零回歸——不進入縮放分支。"""
+        from backend.src.utils.slide_reader import _to_rgb
+
+        rng = np.random.default_rng(3)
+        arr = rng.integers(0, 255, (8, 8, 3), dtype=np.uint8)
+        out = _to_rgb(arr)
+
+        np.testing.assert_array_equal(out, arr)
+
+    def test_uint16_grayscale_still_replicated_to_three_channels(self):
+        from backend.src.utils.slide_reader import _to_rgb
+
+        arr = np.full((4, 4), 65535, dtype=np.uint16)
+        out = _to_rgb(arr)
+
+        assert out.shape == (4, 4, 3)
+        assert (out == 255).all()

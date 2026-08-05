@@ -80,8 +80,21 @@ def open_slide(path: str | Path) -> SlideReader:
 
 
 def _to_rgb(arr: np.ndarray) -> np.ndarray:
-    """統一成 (h, w, 3) uint8：灰階補成三通道、RGBA 丟棄 alpha。"""
+    """統一成 (h, w, 3) uint8：灰階補成三通道、RGBA 丟棄 alpha、高位元深度線性縮放。
+
+    螢光顯微影像（IF：DAPI/marker channel）常見 16-bit——直接 `.astype(uint8)`
+    是**截斷／回捲**，不是縮放，數值 > 255 會變成隨機雜訊而不是變暗
+    （2026-08-05 診斷有勝 IF 樣本時發現：這裡原本就是這樣直接截斷）。
+    非 uint8 的整數型別一律先依 dtype 的理論最大值線性縮放到 0–255 再轉型；
+    既有 uint8 H&E 資料完全不受影響（`dtype != np.uint8` 才會進入這段）。
+    """
     arr = np.asarray(arr)
+    if arr.dtype != np.uint8:
+        if np.issubdtype(arr.dtype, np.integer):
+            max_val = float(np.iinfo(arr.dtype).max)
+        else:
+            max_val = float(arr.max()) or 1.0
+        arr = np.round(arr.astype(np.float32) / max_val * 255.0).clip(0, 255).astype(np.uint8)
     if arr.ndim == 2:
         arr = np.repeat(arr[:, :, None], 3, axis=2)
     elif arr.shape[2] > 3:
