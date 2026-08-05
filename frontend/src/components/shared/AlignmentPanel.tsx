@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   getRegistrationEstimate,
   makeRegistrationQcPatches,
   getRegistrationQcImages,
   applyRegistration,
+  getAlignmentJson,
+  setAlignmentJson,
 } from '../../api/client'
 import { useT } from '../../i18n'
 
@@ -35,6 +37,40 @@ export default function AlignmentPanel() {
   const [applied, setApplied] = useState('')
   const [pending, setPending] = useState<{ matrix: number[][]; estimated_error: number | null } | null>(null)
 
+  // 對位 JSON（Loupe 重新對位）路徑
+  const [jsonPath, setJsonPath] = useState('')
+  const [currentJsonPath, setCurrentJsonPath] = useState<string | null>(null)
+  const [jsonBusy, setJsonBusy] = useState(false)
+  const [jsonError, setJsonError] = useState('')
+  const [jsonResult, setJsonResult] = useState('')
+
+  useEffect(() => {
+    getAlignmentJson()
+      .then(r => {
+        const p = r.data?.data?.path ?? null
+        setCurrentJsonPath(p)
+        if (p) setJsonPath(p)
+      })
+      .catch(() => {})   // B 類讀取降級：讀不到只是欄位空白，不擋人
+  }, [])
+
+  const handleSetJson = async () => {
+    if (!jsonPath.trim()) return
+    setJsonBusy(true)
+    setJsonError('')
+    setJsonResult('')
+    try {
+      const r = await setAlignmentJson(jsonPath.trim())
+      if (r.data.status !== 'ok') { setJsonError(r.data.message ?? 'Error'); return }
+      setCurrentJsonPath(jsonPath.trim())
+      setJsonResult(r.data.message ?? '')
+    } catch (e: any) {
+      setJsonError(e.response?.data?.detail ?? e.message ?? 'Unknown error')
+    } finally {
+      setJsonBusy(false)
+    }
+  }
+
   const run = async (kind: 'estimate' | 'qc' | 'apply', enable = false) => {
     setBusy(kind)
     setError('')
@@ -65,6 +101,33 @@ export default function AlignmentPanel() {
 
   return (
     <div className="space-y-3">
+      <div className="bg-surface/50 rounded px-3 py-2 space-y-2">
+        <p className="text-xs text-gray-400 font-medium">{t('align.json_title')}</p>
+        <p className="text-xs text-gray-500">{t('align.json_subtitle')}</p>
+        <p className="text-xs text-gray-500">
+          {t('align.json_current')}：{' '}
+          <span className="text-gray-300 font-mono">{currentJsonPath ?? t('align.json_none')}</span>
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={jsonPath}
+            onChange={e => { setJsonPath(e.target.value); setJsonError(''); setJsonResult('') }}
+            placeholder={t('align.json_placeholder')}
+            className="flex-1 px-2 py-1.5 bg-surface border border-surface-border rounded text-xs font-mono text-gray-200 focus:border-primary focus:outline-none"
+          />
+          <button
+            className={btn}
+            disabled={jsonBusy || !jsonPath.trim()}
+            onClick={() => void handleSetJson()}
+          >
+            {jsonBusy ? t('align.json_applying') : t('align.json_apply')}
+          </button>
+        </div>
+        {jsonError && <p className="text-xs text-red-400">{jsonError}</p>}
+        {jsonResult && <p className="text-xs text-green-400">{jsonResult}</p>}
+      </div>
+
       <div className="flex items-center gap-2 flex-wrap">
         <button className={btn} disabled={busy !== ''} onClick={() => run('estimate')}>
           {busy === 'estimate' ? t('align.estimating') : t('align.estimate')}

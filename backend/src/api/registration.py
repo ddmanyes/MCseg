@@ -34,6 +34,10 @@ class ApplyParams(BaseModel):
     enable: bool = False
 
 
+class SetAlignmentJsonParams(BaseModel):
+    path: str
+
+
 def _resolve_inputs(config: dict) -> tuple[Path, Path, tuple[int, int]] | None:
     """取 (he_image, tissue_positions, full_shape)；缺件回 None。"""
     import tifffile
@@ -52,16 +56,10 @@ def _resolve_inputs(config: dict) -> tuple[Path, Path, tuple[int, int]] | None:
 
 
 def _resolve_transform(config: dict, full_shape: tuple[int, int]):
-    """取用於計數的 bin→影像 變換（與 Stage 2 同一份決策邏輯）。"""
-    from backend.src.fullslide.pipeline import resolve_bin_to_image_transform
+    """取用於計數的 bin→影像 變換（與 Stage 2、Stage 0 ROI 裁切同一份決策邏輯）。"""
+    from backend.src.fullslide.pipeline import resolve_dense_bin_to_image_transform
 
-    transform, scale, source = resolve_bin_to_image_transform(config, full_shape)
-    if transform is None:
-        import numpy as np
-
-        # 近似縮放也表達成 3×3，讓下游只需處理一種型別
-        transform = np.diag([scale[0], scale[1], 1.0])
-    return transform, source
+    return resolve_dense_bin_to_image_transform(config, full_shape)
 
 
 @router.get("/estimate")
@@ -220,4 +218,68 @@ async def apply_alignment(params: Optional[ApplyParams] = None):
             "已寫入 state.json（尚未啟用，請確認 residual 後再套用）"
             if not params.enable else "已寫入並啟用對位修正"
         ),
+    }
+
+
+@router.get("/alignment_json")
+async def get_alignment_json():
+    """回傳目前設定的 `alignment.extra_alignment_json` 路徑（未設定時為 null）。"""
+    config = load_config()
+    path = (config.get("alignment") or {}).get("extra_alignment_json")
+    return {"status": "ok", "data": {"path": path}}
+
+
+@router.post("/set_alignment_json")
+async def set_alignment_json(params: SetAlignmentJsonParams):
+    """
+    指定 Loupe 對高解析圖重新對位後產生的 JSON（`alignment.extra_alignment_json`）。
+
+    用途：這批樣本沒有 CytAssist 註冊檔（或只有低解析版本）時，使用者可能會
+    另外輸出一張更清晰的圖、用 Loupe Browser 重新對位產生新 JSON——這裡讓
+    使用者指定該檔案，取代原本只能手動編輯 `state.json` 的做法。
+
+    驗證流程：檔案存在 → `load_alignment` 能解析格式 → 試算一次
+    `resolve_bin_to_image_transform`（沿用目前 config + 這個新路徑）。三者都
+    通過才寫入 `state.json`，避免半殘設定讓 Stage 0 ROI 裁切／Stage 2 計數
+    在使用者不知情下悄悄退回近似縮放 fallback。
+    """
+    path = Path(params.path).expanduser()
+    if not path.exists():
+        return {"status": "error", "message": f"找不到檔案：{path}"}
+
+    try:
+        from backend.src.registration.alignment import load_alignment, matrix_scale
+
+        load_alignment(path)   # 只驗證格式；實際是否被選用交給 resolve_*_transform 判定
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
+    config = load_config()
+    resolved = _resolve_inputs(config)
+    if resolved is None:
+        return {"status": "error", "message": "找不到 H&E 影像或 tissue_positions.parquet，無法驗證"}
+    he, tp, full_shape = resolved
+
+    trial_config = dict(config)
+    trial_config["alignment"] = {**(config.get("alignment") or {}), "extra_alignment_json": str(path)}
+
+    try:
+        transform, source = _resolve_transform(trial_config, full_shape)
+    except (ValueError, OSError, NotImplementedError) as e:
+        return {"status": "error", "message": f"對位 JSON 驗證失敗：{e}"}
+    except Exception as e:
+        logger.error(f"對位 JSON 驗證發生未預期錯誤：{e}", exc_info=True)
+        return {"status": "error", "message": f"對位 JSON 驗證發生未預期錯誤：{e}（詳見 log）"}
+
+    if "對位 JSON" not in source:
+        # 試算成功但實際落回近似縮放 fallback（例如 mpp 對不上、或跟 H_old 是
+        # 同一張圖）—— 仍寫入設定並如實告知，不擋使用者，但不能假裝生效了。
+        logger.warning(f"指定的對位 JSON 未被實際採用（{source}）")
+
+    save_state({"alignment": {"extra_alignment_json": str(path)}})
+
+    return {
+        "status": "ok",
+        "data": {"transform_source": source, "equivalent_scale": round(matrix_scale(transform), 5)},
+        "message": f"已寫入 state.json，目前變換來源：{source}",
     }

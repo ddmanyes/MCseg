@@ -12,9 +12,7 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import logging
-import pathlib
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -187,88 +185,81 @@ def read_image_crop(
 
 # ── Visium HD AnnData 裁切 ──────────────────────────────────
 
-def subset_anndata_roi(adata, roi: dict, binned_dir: str | Path = None):
+def _resolve_roi_bin_transform(config: dict) -> tuple[np.ndarray, str]:
+    """
+    取得「Space Ranger fullres px → he_image（ROI 畫框所在的 raw TIFF）px」的變換。
+
+    與 Stage 2 全片計數（`fullslide.pipeline.resolve_bin_to_image_transform`）走
+    同一份決策邏輯（對位 JSON 優先、近似縮放 fallback，見該函式 docstring）——
+    Stage 0 互動式 ROI 裁切過去自行維護一份只認單一寫死檔名
+    （`H1-WGR3TC4-D1-fiducials-image-registration.json`，dpcp01 樣本殘留）的轉換，
+    換一個 mpp≠0.2737 的樣本就靜默退化成「兩個座標系當同一個」，每次都篩到
+    0 個 bin（2026-08-05，康育 SDS-D0D1D2 實測）。
+    """
+    import tifffile
+    from backend.src.fullslide.pipeline import resolve_dense_bin_to_image_transform
+
+    he_path = Path(config.get("paths", {}).get("he_image", ""))
+    if not he_path.exists():
+        raise FileNotFoundError(f"找不到 H&E 影像：{he_path}")
+
+    with tifffile.TiffFile(str(he_path)) as tf:
+        page = tf.pages[0]
+        full_shape = (int(page.imagelength), int(page.imagewidth))
+
+    return resolve_dense_bin_to_image_transform(config, full_shape)
+
+
+def subset_anndata_roi(adata, roi: dict, config: dict | None = None):
     """
     根據 ROI fullres pixel 座標，裁切 Visium HD AnnData。
 
-    期望 adata.obs 含有：
-    - pxl_col_in_fullres (X)
-    - pxl_row_in_fullres (Y)
+    ROI 的 `x`/`y`/`width_px`/`height_px` 是 UI 在 `he_image`（raw TIFF）上畫框
+    得到的座標；`adata.obs` 的 `pxl_col_in_fullres`/`pxl_row_in_fullres` 是
+    **Space Ranger 自己的 fullres 座標系**，兩者未必同尺度（CytAssist 樣本常見，
+    可能差 1.5～2 倍甚至更多，取決於掃描機解析度）。篩選前一律先用
+    `_resolve_roi_bin_transform` 把 bin 投影到 he_image 座標系再比對。
+
+    投影後的座標會寫回 `obsm['spatial']`——下游（Stage 2 `counter.py`、
+    `export/transcripts.py` 等）都假設這個值跟 ROI 的 `x`/`y` 同一座標系，這裡
+    是唯一該做轉換的地方，下游不需要、也不應該再各自轉一次（CLAUDE.md §11 DRY）。
+
+    Parameters
+    ----------
+    config : 完整 pipeline config（需含 `paths.he_image`／`paths.binned_002`／
+        `alignment.*`）。為 `None` 時無法解析變換，退回「兩座標系同尺度」的
+        假設並記警告——只有 mpp 剛好等於專案預設 `VISIUM_UM_PX`（如官方 CRC
+        樣本）時這個假設才成立，其餘情況會靜默篩到 0 bin。
     """
     x0, y0, w, h = roi_to_fullres_px(roi)
     x1, y1 = x0 + w, y0 + h
 
-    if binned_dir is not None:
-        import json
-        import pathlib
-        import numpy as np
-        reg_path = pathlib.Path(binned_dir) / "spatial" / "H1-WGR3TC4-D1-fiducials-image-registration.json"
-        if reg_path.exists():
-            with open(reg_path) as f:
-                data = json.load(f)
-            if "cytAssistInfo" in data and "transformImages" in data["cytAssistInfo"]:
-                try:
-                    T1 = np.array(data["cytAssistInfo"]["transformImages"])
-                    T2 = np.array(data["transform"])
-                    T2_inv = np.linalg.inv(T2)
-                    M = T2_inv @ T1
-                    
-                    pts = np.array([
-                        [x0, y0, 1], [x1, y0, 1],
-                        [x0, y1, 1], [x1, y1, 1]
-                    ]).T
-                    res = M @ pts
-                    xs = res[0, :] / res[2, :]
-                    ys = res[1, :] / res[2, :]
-                    mapped_x0, mapped_x1 = min(xs), max(xs)
-                    mapped_y0, mapped_y1 = min(ys), max(ys)
-                    logger.info(f"CytAssist 座標自動修正: 映射至內部 X={mapped_x0:.1f}~{mapped_x1:.1f}, Y={mapped_y0:.1f}~{mapped_y1:.1f}")
-                    
-                    # Compute Raw TIFF coordinates for all bins
-                    M_inv = np.linalg.inv(M)
-                    all_cols = adata.obs["pxl_col_in_fullres"].values
-                    all_rows = adata.obs["pxl_row_in_fullres"].values
-                    all_pts = np.vstack([all_cols, all_rows, np.ones_like(all_cols)])
-                    raw_res = M_inv @ all_pts
-                    adata.obs["raw_tiff_col"] = raw_res[0, :] / raw_res[2, :]
-                    adata.obs["raw_tiff_row"] = raw_res[1, :] / raw_res[2, :]
-                    
-                    # Update global obsm['spatial'] to align with Raw TIFF
-                    adata.obsm["spatial"] = np.stack([
-                        adata.obs["raw_tiff_col"].values,
-                        adata.obs["raw_tiff_row"].values,
-                    ], axis=1)
-                    
-                    # Update mask to use the mapped coordinates for filtering
-                    mask = (
-                        (adata.obs["pxl_col_in_fullres"] >= mapped_x0) &
-                        (adata.obs["pxl_col_in_fullres"] <  mapped_x1) &
-                        (adata.obs["pxl_row_in_fullres"] >= mapped_y0) &
-                        (adata.obs["pxl_row_in_fullres"] <  mapped_y1)
-                    )
-                except Exception as e:
-                    logger.error(f"CytAssist 矩陣轉換失敗: {e}")
-                    mask = (
-                        (adata.obs["pxl_col_in_fullres"] >= x0) &
-                        (adata.obs["pxl_col_in_fullres"] <  x1) &
-                        (adata.obs["pxl_row_in_fullres"] >= y0) &
-                        (adata.obs["pxl_row_in_fullres"] <  y1)
-                    )
-        else:
-            mask = (
-                (adata.obs["pxl_col_in_fullres"] >= x0) &
-                (adata.obs["pxl_col_in_fullres"] <  x1) &
-                (adata.obs["pxl_row_in_fullres"] >= y0) &
-                (adata.obs["pxl_row_in_fullres"] <  y1)
+    sr_col = adata.obs["pxl_col_in_fullres"].values.astype(float)
+    sr_row = adata.obs["pxl_row_in_fullres"].values.astype(float)
+
+    img_col, img_row = sr_col, sr_row
+    if config is not None:
+        try:
+            transform, source = _resolve_roi_bin_transform(config)
+            pts = np.vstack([sr_col, sr_row, np.ones_like(sr_col)])
+            proj = transform @ pts
+            img_col = proj[0, :] / proj[2, :]
+            img_row = proj[1, :] / proj[2, :]
+            logger.info(f"ROI 對位變換：{source}")
+        except Exception as e:   # noqa: BLE001 — 診斷輔助不得中斷裁切（CLAUDE.md §11）
+            logger.warning(
+                f"ROI 對位變換解析失敗（{type(e).__name__}: {e}），"
+                "退回兩座標系同尺度假設（僅官方 mpp=0.2737 樣本才正確）"
             )
     else:
-        mask = (
-            (adata.obs["pxl_col_in_fullres"] >= x0) &
-            (adata.obs["pxl_col_in_fullres"] <  x1) &
-            (adata.obs["pxl_row_in_fullres"] >= y0) &
-            (adata.obs["pxl_row_in_fullres"] <  y1)
-        )
+        logger.warning("subset_anndata_roi 未收到 config，無法解析對位變換，退回兩座標系同尺度假設")
+
+    mask = (
+        (img_col >= x0) & (img_col < x1) &
+        (img_row >= y0) & (img_row < y1)
+    )
     sub = adata[mask].copy()
+    sub.obsm["spatial"] = np.stack([img_col[mask], img_row[mask]], axis=1)
     logger.info(f"AnnData ROI 裁切：{mask.sum()} / {len(adata)} bins")
     return sub
 
@@ -533,7 +524,7 @@ class RoiExtractor:
                 logger.warning(f"  {dir_key} 路徑不存在，跳過")
                 continue
             adata = load_visium_adata(binned_dir, bin_size)
-            sub = subset_anndata_roi(adata, roi, binned_dir=binned_dir)
+            sub = subset_anndata_roi(adata, roi, config=self.config)
             out_path = out_dir / f"adata_{bin_size}um.h5ad"
             sub.write_h5ad(str(out_path))
             logger.info(f"  已儲存：{out_path} ({sub.n_obs:,} bins)")

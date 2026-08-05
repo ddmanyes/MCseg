@@ -158,6 +158,23 @@ def resolve_bin_to_image_transform(
     return transform, (1.0, 1.0) if residual is not None else scale, source
 
 
+def resolve_dense_bin_to_image_transform(
+    config: dict, mask_shape: tuple[int, int]
+) -> tuple[np.ndarray, str]:
+    """
+    `resolve_bin_to_image_transform` 的稠密版本：一律回傳 3×3 矩陣。
+
+    呼叫端若不需要區分「有變換」vs「只有近似縮放」這兩種語意（多數只想要
+    一個能直接拿去乘的矩陣），改叫這個函式即可、不用自己再正規化一次
+    `None → np.diag(scale)`。目前 `api/registration.py` 與 `roi/extractor.py`
+    共用此函式（CLAUDE.md §11 DRY —— 過去這段正規化在多處各自重寫過）。
+    """
+    transform, scale, source = resolve_bin_to_image_transform(config, mask_shape)
+    if transform is None:
+        transform = np.diag([scale[0], scale[1], 1.0])
+    return transform, source
+
+
 def _resolve_residual_alignment(align_cfg: dict):
     """
     取 `alignment.matrix` 的殘餘修正；**未啟用或為單位矩陣時回 None**。

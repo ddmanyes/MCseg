@@ -353,6 +353,13 @@ export const translations: TransDict = {
   'align.apply':          { zh: '套用此變換', en: 'Apply Transform' },
   'align.confirm_apply':  { zh: '確定要啟用此對位修正？錯誤的修正會讓 RNA 靜默錯位。', en: 'Enable this alignment correction? A wrong correction silently misplaces RNA.' },
   'align.spread_hint':    { zh: 'spread < 3 px 表示三個窗格估計一致，可信度高；偏大代表可能有旋轉/縮放或組織形變', en: 'spread < 3 px means the three windows agree (reliable); larger suggests rotation/scale or tissue deformation' },
+  'align.json_title':      { zh: '對位 JSON（Loupe 重新對位）', en: 'Alignment JSON (Loupe re-registration)' },
+  'align.json_subtitle':   { zh: '若這批樣本沒有可用的 CytAssist 註冊檔，或你另外輸出高解析圖用 Loupe Browser 重新對位過，在這裡指定產生的 JSON', en: 'If this sample has no usable CytAssist registration file, or you re-registered a higher-res image via Loupe Browser, point to the generated JSON here' },
+  'align.json_current':    { zh: '目前設定', en: 'Currently set to' },
+  'align.json_none':       { zh: '尚未指定（找不到 JSON 時退回近似縮放）', en: 'Not set (falls back to approximate scaling when no JSON is found)' },
+  'align.json_placeholder':{ zh: '/path/to/loupe_alignment_file.json', en: '/path/to/loupe_alignment_file.json' },
+  'align.json_apply':      { zh: '驗證並套用', en: 'Validate & Apply' },
+  'align.json_applying':   { zh: '驗證中...', en: 'Validating...' },
   'data.output.description':  { zh: '所有分析結果（ROI 裁切、分割遮罩、計數矩陣、圖表）將存放於此目錄下的', en: 'All analysis results (ROI crops, segmentation masks, count matrix, charts) will be stored under' },
 
   // ── Stage 3: missing translations ────────────────────────────────────────
