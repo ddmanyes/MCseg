@@ -472,3 +472,56 @@ class TestNdpiQuirks:
 
         corr = np.corrcoef(l0_ds.ravel(), l1.ravel())[0, 1]
         assert corr > 0.8, f"L0 與 L1 內容不相關（corr={corr:+.3f}）→ 座標映射有誤"
+
+
+# ── roi/extractor.py::read_image_crop() 對 NDPI 的支援（2026-08-05）────────
+#
+# 舊版 read_image_crop() 只認 tiled/strip TIFF，NDPI 落進 strip 分支後把
+# JPEG 壓縮資料當成未壓縮 bytes reshape 而壞掉。這裡釘住：①NDPI 走新分支不
+# 報錯、在組織上讀得到紋理，②既有 tiled BTF 路徑完全不受影響（零回歸）。
+
+class TestReadImageCropNdpi:
+    def test_ndpi_crop_reads_real_texture(self):
+        """真實 NDPI：read_image_crop() 在組織密集區塊裁得出有紋理的內容。"""
+        if not NDPI_REAL.exists():
+            pytest.skip(f"需要真實 NDPI 檔案：{NDPI_REAL.name}")
+
+        from backend.src.roi.extractor import read_image_crop
+        from backend.src.utils.slide_reader import open_slide
+
+        r = open_slide(NDPI_REAL)
+        cx, cy = _densest_tissue_xy(r)
+
+        crop, ax0, ay0 = read_image_crop(NDPI_REAL, cx - 128, cy - 128, 256, 256)
+
+        assert crop.shape == (256, 256, 3)
+        assert crop.std() > 5, "NDPI crop 在組織密集區仍無紋理（可能 reshape 錯位/回空資料）"
+        assert (ax0, ay0) == (cx - 128, cy - 128), "NDPI 不做 tile 邊界對齊，原點應等於請求值"
+
+    def test_ndpi_crop_respects_margin(self):
+        """margin 的換算式對 NDPI 分支與既有 strip 分支必須一致（同一套算式）。"""
+        if not NDPI_REAL.exists():
+            pytest.skip(f"需要真實 NDPI 檔案：{NDPI_REAL.name}")
+
+        from backend.src.roi.extractor import read_image_crop
+        from backend.src.utils.slide_reader import open_slide
+
+        r = open_slide(NDPI_REAL)
+        cx, cy = _densest_tissue_xy(r)
+
+        crop, ax0, ay0 = read_image_crop(NDPI_REAL, cx, cy, 128, 128, margin=32)
+
+        assert crop.shape == (128 + 2 * 32, 128 + 2 * 32, 3)
+        assert (ax0, ay0) == (cx - 32, cy - 32)
+
+    def test_tiled_btf_crop_unaffected_by_ndpi_branch(self, tmp_path):
+        """既有 tiled BTF 路徑不受新增的 NDPI 分支影響（零回歸）。"""
+        from backend.src.roi.extractor import read_btf_crop, read_image_crop
+
+        img = _write_tiled_btf(tmp_path / "slide.btf", size=512, tile=256, seed=7)
+
+        via_dispatch = read_image_crop(tmp_path / "slide.btf", 50, 60, 100, 80)
+        via_direct = read_btf_crop(tmp_path / "slide.btf", 50, 60, 100, 80)
+
+        assert via_dispatch[1:] == via_direct[1:]          # 對齊後的 origin 一致
+        np.testing.assert_array_equal(via_dispatch[0], via_direct[0])

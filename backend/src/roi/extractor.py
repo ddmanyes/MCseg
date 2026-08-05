@@ -156,17 +156,38 @@ def read_image_crop(
     margin: int = 0,
 ) -> tuple[np.ndarray, int, int]:
     """
-    讀取 TIFF ROI crop，自動分派 tiled / strip 兩種版面（皆不全圖載入）。
+    讀取 H&E ROI crop，依副檔名分派讀取路徑（皆不全圖載入）。
 
     Space Ranger 輸出的 H&E 有 tiled（BTF）與 strip-based（一般 TIFF）兩種，
-    對後者呼叫 `read_btf_crop` 會失敗。所有裁切點一律走這個函數。
+    對後者呼叫 `read_btf_crop` 會失敗，一律改走 strip 讀取。NDPI/SVS/MRXS
+    這類自帶金字塔的格式則走 `PyramidSlideReader`（與 DZI 檢視器、
+    `open_slide()` 同一套讀取邏輯）——**舊版這裡只認 tiled/strip TIFF**，
+    NDPI 的像素資料是 JPEG 壓縮，被 strip 分支當成未壓縮 bytes reshape 會
+    壞掉：DZI 檢視器能正常瀏覽 NDPI，但實際按下裁切會炸或裁出垃圾內容
+    （2026-08-05 診斷有勝樣本時發現）。所有裁切點一律走這個函數。
 
     Returns
     -------
     (crop_rgb, actual_x0, actual_y0)
         tiled 版面會對齊 tile 邊界，實際原點可能與請求值不同 —— 下游座標
-        必須以回傳的 origin 為準，用請求值會整批偏移。
+        必須以回傳的 origin 為準，用請求值會整批偏移。strip TIFF 與
+        NDPI/SVS/MRXS 一樣不做邊界對齊，回傳的即是請求值（扣掉 margin 後）。
     """
+    img_path = Path(img_path)
+    fx0 = max(0, x0 - margin)
+    fy0 = max(0, y0 - margin)
+    fw = w + (x0 - fx0) + margin
+    fh = h + (y0 - fy0) + margin
+
+    from backend.src.utils.slide_reader import PYRAMID_SUFFIXES
+
+    if img_path.suffix.lower() in PYRAMID_SUFFIXES:
+        from backend.src.utils.slide_reader import PyramidSlideReader
+
+        with PyramidSlideReader(img_path) as reader:
+            crop = reader.read_region(fx0, fy0, fw, fh, level=0)
+        return crop, fx0, fy0
+
     import tifffile
 
     with tifffile.TiffFile(str(img_path)) as tf:
@@ -177,9 +198,7 @@ def read_image_crop(
 
     from backend.src.roi.tile_server import read_strip_crop
 
-    fx0 = max(0, x0 - margin)
-    fy0 = max(0, y0 - margin)
-    crop = read_strip_crop(img_path, fx0, fy0, w + (x0 - fx0) + margin, h + (y0 - fy0) + margin)
+    crop = read_strip_crop(img_path, fx0, fy0, fw, fh)
     return crop, fx0, fy0
 
 
