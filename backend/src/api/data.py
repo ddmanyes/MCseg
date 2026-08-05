@@ -45,6 +45,8 @@ async def apply_paths(req: ApplyRequest):
     """將發現的路徑寫入 pipeline.yaml"""
     try:
         config = load_config()
+        previous_data_root = config.get("paths", {}).get("data_root", "")
+        existing_rois = config.get("rois", [])
         paths = config.setdefault("paths", {})
         updates = req.model_dump(exclude_none=True)
 
@@ -80,7 +82,26 @@ async def apply_paths(req: ApplyRequest):
         elif "output_dir" in updates and updates["output_dir"]:
             resolve_path(updates["output_dir"]).mkdir(parents=True, exist_ok=True)
         logger.info(f"已套用 {len(updates)} 項路徑設定")
-        return {"status": "ok", "message": f"已更新 {len(updates)} 項路徑", "data": paths}
+
+        response: dict = {"status": "ok", "message": f"已更新 {len(updates)} 項路徑", "data": paths}
+
+        # 換了新樣本（data_root 真的不同）且還留著舊 ROI 定義時提醒——rois 是
+        # 全域清單，不會隨 data_root 切換自動隔離，舊座標（屬於另一張 he_image
+        # 的像素空間）可能被誤套到新樣本上（CLAUDE.md §11 不可靜默）。
+        if (
+            data_root_in_request
+            and previous_data_root
+            and data_root_in_request != previous_data_root
+            and existing_rois
+        ):
+            names = "、".join(r.get("name", "?") for r in existing_rois)
+            response["stale_rois_warning"] = (
+                f"偵測到已換成新樣本，但仍有 {len(existing_rois)} 個 ROI 定義"
+                f"（{names}）屬於前一個樣本的座標系統，套用到新樣本上很可能是錯的，"
+                f"建議先清空再重新畫框。"
+            )
+
+        return response
     except Exception as e:
         logger.error(f"套用失敗：{e}", exc_info=True)
         return {"status": "error", "message": "套用路徑失敗，請查閱 log"}
@@ -231,7 +252,7 @@ async def browse_directory(path: str = Query("~", description="要瀏覽的目�
                     except OSError:
                         size = 0
                     ext = entry.suffix.lower()
-                    if ext in (".btf", ".tif", ".tiff", ".h5", ".h5ad", ".parquet", ".zarr", ".yaml", ".json"):
+                    if ext in (".btf", ".tif", ".tiff", ".ndpi", ".svs", ".mrxs", ".h5", ".h5ad", ".parquet", ".zarr", ".yaml", ".json"):
                         units = ["B", "KB", "MB", "GB"]
                         s = float(size)
                         u = 0

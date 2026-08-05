@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { scanData, applyData, getDataStatus, browseDir, getOutputDir } from '../api/client'
+import { scanData, applyData, getDataStatus, browseDir, getOutputDir, listRois, deleteRoi } from '../api/client'
 import { FolderSearch, Check, AlertTriangle, HardDrive, FileSearch, FolderOpen, ChevronRight, ArrowUp, File, X } from 'lucide-react'
 import { useT } from '../i18n'
 import { errText } from '../utils/errText'
@@ -242,6 +242,10 @@ export default function DataSetup() {
     // B 類讀取降級：狀態讀不到時要說出來，否則會被誤讀成「路徑都沒設定」
     const [statusWarn, setStatusWarn] = useState('')
 
+    // 換樣本時舊 ROI 座標可能誤套到新樣本（不同 he_image 像素空間）
+    const [staleRoisWarning, setStaleRoisWarning] = useState('')
+    const [clearingRois, setClearingRois] = useState(false)
+
     // 載入目前配置狀態
     useEffect(() => {
         getDataStatus().then((r: { data: { status: string; data: Record<string, PathStatus> } }) => {
@@ -285,6 +289,7 @@ export default function DataSetup() {
     const handleApply = async () => {
         if (!scanResult) return
         setApplying(true)
+        setStaleRoisWarning('')
         try {
             const paths: Record<string, string | number> = {}
             paths.data_root = scanResult.data_root
@@ -293,12 +298,31 @@ export default function DataSetup() {
             if (scanResult.binned_008) paths.binned_008 = scanResult.binned_008.path
             const psVal = parseFloat(pixelSizeOverride)
             if (!isNaN(psVal) && psVal > 0) paths.pixel_size_um = psVal
-            await applyData(paths)
+            const r = await applyData(paths)
             setApplied(true)
+            if (r.data?.stale_rois_warning) setStaleRoisWarning(r.data.stale_rois_warning)
         } catch {
             // noop
         } finally {
             setApplying(false)
+        }
+    }
+
+    // 換樣本後清掉屬於前一個樣本座標系的舊 ROI（沿用既有的逐筆刪除 API，
+    // 不新增批次刪除端點）
+    const handleClearStaleRois = async () => {
+        setClearingRois(true)
+        try {
+            const list = await listRois()
+            const names: string[] = (list.data?.data ?? []).map((r: { name: string }) => r.name)
+            for (const name of names) {
+                await deleteRoi(name)
+            }
+            setStaleRoisWarning('')
+        } catch (e: unknown) {
+            setStatusWarn(`清空 ROI 失敗（${errText(e)}），請到 Stage 0 頁面手動刪除`)
+        } finally {
+            setClearingRois(false)
         }
     }
 
@@ -439,6 +463,9 @@ export default function DataSetup() {
                 <p className="text-xs text-gray-400">
                     {t('data.output.description')} <span className="font-mono text-gray-300">roi/</span>, <span className="font-mono text-gray-300">analysis/</span>.
                 </p>
+                <p className="text-xs text-amber-400/70">
+                    {t('data.output.auto_overwrite_hint')}
+                </p>
                 {outputError && (
                     <div className="flex items-center gap-2 px-3 py-2 bg-red-900/20 border border-red-700/40 rounded-lg">
                         <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
@@ -499,6 +526,29 @@ export default function DataSetup() {
                             </button>
                         )}
                     </div>
+
+                    {/* 輸出目錄自動預覽：套用當下就看得到答案，不用等套用完才發現有沒有換成功 */}
+                    <p className="text-xs text-gray-500">
+                        {t('data.output.preview_label')}{' '}
+                        <span className="font-mono text-gray-300">{scanResult.data_root}/MCseg_result/analysis</span>
+                        {applied && <span className="text-green-400 ml-1">✓ {t('data.output.preview_applied')}</span>}
+                    </p>
+
+                    {staleRoisWarning && (
+                        <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-900/20 border border-amber-700/40 rounded-lg">
+                            <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                            <div className="min-w-0 flex-1 space-y-1.5">
+                                <p className="text-xs text-amber-300">{staleRoisWarning}</p>
+                                <button
+                                    onClick={() => void handleClearStaleRois()}
+                                    disabled={clearingRois}
+                                    className="px-3 py-1 bg-amber-900/40 text-amber-300 rounded text-xs hover:bg-amber-900/60 transition-colors disabled:opacity-40"
+                                >
+                                    {clearingRois ? t('common.saving') : t('data.output.clear_stale_rois')}
+                                </button>
+                            </div>
+                        </div>
+                    )}
 
                     <div className="space-y-2">
                         {(['he_image', 'binned_002', 'binned_008'] as const).map(key => {
