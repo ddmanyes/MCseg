@@ -13,7 +13,7 @@ import {
   getRawHistogram,
 } from '../api/client'
 import QcHistogram, { type HistogramMetric } from '../components/shared/QcHistogram'
-import { useT } from '../i18n'
+import { useT, useLang } from '../i18n'
 import { errText } from '../utils/errText'
 
 // ── 小工具 ────────────────────────────────────────────────────────
@@ -212,6 +212,7 @@ export default function Stage4_Analysis() {
   const { updateStage } = usePipelineStore()
   const queryClient = useQueryClient()
   const t = useT()
+  const lang = useLang()
 
   // ── 分析來源選擇 ──
   const [analysisMode, setAnalysisMode] = useState<'single' | 'merge'>('single')
@@ -399,10 +400,27 @@ export default function Stage4_Analysis() {
         label: string; confidence: number; source: string
         immune_label?: string; immune_conf?: number
         crc_label?: string; crc_conf?: number
+        uncertain?: boolean
+        state?: string | null
+        state_score?: number
+        tier3_label?: string
+        tier3_conf?: number
       } | string>  // 相容舊格式
       if (Object.keys(suggestions).length === 0) return
       const labels: Record<string, string> = {}
-      const meta: Record<string, { confidence: number; source: string; immune_label?: string; immune_conf?: number; crc_label?: string; crc_conf?: number }> = {}
+      const meta: Record<string, {
+        confidence: number
+        source: string
+        uncertain?: boolean
+        state?: string | null
+        state_score?: number
+        tier3_label?: string
+        tier3_conf?: number
+        immune_label?: string
+        immune_conf?: number
+        crc_label?: string
+        crc_conf?: number
+      }> = {}
       Object.entries(suggestions).forEach(([cluster, info]) => {
         if (typeof info === 'string') {
           labels[cluster] = info
@@ -412,6 +430,11 @@ export default function Stage4_Analysis() {
           meta[cluster] = {
             confidence: info.confidence,
             source: info.source,
+            uncertain: info.uncertain,
+            state: info.state,
+            state_score: info.state_score,
+            tier3_label: info.tier3_label,
+            tier3_conf: info.tier3_conf,
             immune_label: info.immune_label,
             immune_conf: info.immune_conf,
             crc_label: info.crc_label,
@@ -422,7 +445,7 @@ export default function Stage4_Analysis() {
       setClusterLabels(prev => ({ ...prev, ...labels }))
       setClusterMeta(meta)
     }
-  }, [annotSt?.status])
+  }, [annotSt?.status, annotSt?.suggestions])
 
   // ── 可用的 resolution 列表（供 Heatmap / 標註下拉）——必須在用到它的 useEffect 之前宣告 ──
   const availableResolutions = Object.keys(umapImages).filter(k => k !== 'grid' && k !== 'roi').sort()
@@ -436,13 +459,39 @@ export default function Stage4_Analysis() {
       if (r.data?.data) {
         const { cluster_ids, existing_labels } = r.data.data
         const init: Record<string, string> = {}
-        cluster_ids.forEach((id: string) => { init[id] = existing_labels[id] ?? '' })
+        const meta: Record<string, any> = {}
+        cluster_ids.forEach((id: string) => {
+          if (existing_labels[id]) {
+            init[id] = existing_labels[id]
+          } else if (annotSt?.suggestions?.[id]) {
+            const s = annotSt.suggestions[id]
+            init[id] = typeof s === 'string' ? s : s.label
+            if (typeof s !== 'string') {
+              meta[id] = {
+                confidence: s.confidence,
+                source: s.source,
+                uncertain: s.uncertain,
+                state: s.state,
+                state_score: s.state_score,
+                tier3_label: s.tier3_label,
+                tier3_conf: s.tier3_conf,
+                immune_label: s.immune_label,
+                immune_conf: s.immune_conf,
+                crc_label: s.crc_label,
+                crc_conf: s.crc_conf,
+              }
+            }
+          } else {
+            init[id] = ''
+          }
+        })
         setClusterLabels(init)
+        if (Object.keys(meta).length > 0) setClusterMeta(meta)
         if (Object.values(existing_labels).some(v => v)) setLabelApplied(true)
       }
     }).catch(onLoadFail(t('stage3.sec.cluster_info')))
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableResolutions.join(',')])
+  }, [availableResolutions.join(','), annotSt?.suggestions])
 
   // ── 解析 resolution 文字輸入 ──
   const parseResolutions = useCallback((): number[] => {
@@ -598,8 +647,34 @@ export default function Stage4_Analysis() {
       if (r.data?.data) {
         const { cluster_ids, existing_labels } = r.data.data
         const init: Record<string, string> = {}
-        cluster_ids.forEach((id: string) => { init[id] = existing_labels[id] ?? '' })
+        const meta: Record<string, any> = {}
+        cluster_ids.forEach((id: string) => {
+          if (existing_labels[id]) {
+            init[id] = existing_labels[id]
+          } else if (annotSt?.suggestions?.[id]) {
+            const s = annotSt.suggestions[id]
+            init[id] = typeof s === 'string' ? s : s.label
+            if (typeof s !== 'string') {
+              meta[id] = {
+                confidence: s.confidence,
+                source: s.source,
+                uncertain: s.uncertain,
+                state: s.state,
+                state_score: s.state_score,
+                tier3_label: s.tier3_label,
+                tier3_conf: s.tier3_conf,
+                immune_label: s.immune_label,
+                immune_conf: s.immune_conf,
+                crc_label: s.crc_label,
+                crc_conf: s.crc_conf,
+              }
+            }
+          } else {
+            init[id] = ''
+          }
+        })
         setClusterLabels(init)
+        if (Object.keys(meta).length > 0) setClusterMeta(meta)
         if (Object.values(existing_labels).some((v: unknown) => v)) setLabelApplied(true)
       }
     }).catch((e: unknown) => {
@@ -1026,11 +1101,11 @@ export default function Stage4_Analysis() {
         </div>
 
         {/* 解析度 + 模型 + 模式設定 */}
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 bg-surface-darker p-4 rounded-lg border border-surface-border mt-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 bg-surface-darker p-4 rounded-lg border border-surface-border mt-4">
           <div>
             <label className="block text-xs text-gray-400 mb-1">{t('stage3.annotation.resolution')}</label>
             <select
-              className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
+              className="w-full bg-surface-highlight border border-gray-600 rounded px-2.5 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-primary"
               value={annotateRes}
               onChange={e => handleAnnotateResChange(e.target.value)}
               disabled={!availableResolutions.length}
@@ -1045,13 +1120,20 @@ export default function Stage4_Analysis() {
           <div>
             <label className="block text-xs text-gray-400 mb-1">{t('stage3.annotation.tissue_model')}</label>
             <select
-              className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
+              className="w-full bg-surface-highlight border border-gray-600 rounded px-2.5 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-primary"
               value={annotateModel}
               onChange={e => setAnnotateModel(e.target.value)}
             >
-              {Object.entries(celltypistModels).map(([label, filename]) => (
-                <option key={filename} value={filename}>{label}</option>
-              ))}
+              {Object.entries(celltypistModels).map(([label, filename]) => {
+                const displayLabel =
+                  filename === 'Human_Colorectal_Cancer.pkl' ? (lang === 'zh' ? 'Human CRC（大腸癌）' : 'Human CRC (Colorectal Cancer)')
+                  : filename === 'Human_Lung_Atlas.pkl' ? (lang === 'zh' ? 'Human Lung Atlas（肺圖譜）' : 'Human Lung Atlas')
+                  : filename === 'Immune_All_Low.pkl' ? (lang === 'zh' ? 'Immune（精細免疫分型）' : 'Immune All Low (Fine Subtypes)')
+                  : filename === 'Immune_All_High.pkl' ? (lang === 'zh' ? 'Immune（粗分類免疫）' : 'Immune All High (Lineages)')
+                  : filename === 'Pan_Cancer.pkl' ? (lang === 'zh' ? 'Pan Cancer（泛癌）' : 'Pan-Cancer')
+                  : label
+                return <option key={filename} value={filename}>{displayLabel}</option>
+              })}
               {Object.keys(celltypistModels).length === 0 && (
                 <option value="Human_Colorectal_Cancer.pkl">{t('stage3.annotation.default_model')}</option>
               )}
@@ -1061,61 +1143,73 @@ export default function Stage4_Analysis() {
           <div>
             <label className="block text-xs text-gray-400 mb-1">{t('stage3.annotation.mode')}</label>
             <select
-              className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
+              className="w-full bg-surface-highlight border border-gray-600 rounded px-2.5 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-primary"
               value={annotateMode}
               onChange={e => setAnnotateMode(e.target.value as 'dual' | 'single')}
             >
-              <option value="dual">{t('stage3.annotation.mode_dual')}</option>
-              <option value="single">{t('stage3.annotation.mode_single')}</option>
+              <option value="dual">{lang === 'zh' ? '雙模型集成（免疫 + 組織）' : 'Dual Model (Immune + Tissue)'}</option>
+              <option value="single">{lang === 'zh' ? '單一模型標註' : 'Single Model'}</option>
             </select>
           </div>
 
           {annotateMode === 'dual' && (<>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">
-                {t('stage3.annotation.immune_conf')}<span className="text-gray-200">{immuneConfThreshold.toFixed(2)}</span>
-              </label>
+              <div className="flex justify-between items-center text-xs mb-1">
+                <span className="text-gray-400">{t('stage3.annotation.immune_conf')}</span>
+                <span className="font-mono text-gray-200 font-semibold">{immuneConfThreshold.toFixed(2)}</span>
+              </div>
               <input
                 type="range" min="0.1" max="0.9" step="0.05"
                 value={immuneConfThreshold}
                 onChange={e => setImmuneConfThreshold(parseFloat(e.target.value))}
-                className="w-full accent-brand-primary"
+                className="w-full accent-primary"
               />
-              <div className="flex justify-between text-xs text-gray-600 mt-0.5">
+              <div className="flex justify-between text-[11px] text-gray-500 mt-0.5">
                 <span>{t('stage3.annotation.loose')}</span><span>{t('stage3.annotation.strict')}</span>
               </div>
             </div>
+
             <div>
-              <label className="block text-xs text-gray-400 mb-1">
-                {t('stage3.annotation.uncertain')}<span className="text-gray-200">{uncertainThreshold.toFixed(2)}</span>
-              </label>
+              <div className="flex justify-between items-center text-xs mb-1">
+                <span className="text-gray-400">{t('stage3.annotation.uncertain_threshold')}</span>
+                <span className="font-mono text-gray-200 font-semibold">{uncertainThreshold.toFixed(2)}</span>
+              </div>
               <input
                 type="range" min="0.3" max="0.95" step="0.05"
                 value={uncertainThreshold}
                 onChange={e => setUncertainThreshold(parseFloat(e.target.value))}
                 className="w-full accent-orange-400"
               />
+              <div className="flex justify-between text-[11px] text-gray-500 mt-0.5">
+                <span>{t('stage3.annotation.loose')}</span><span>{t('stage3.annotation.strict')}</span>
+              </div>
             </div>
+
             <div>
-              <label className="block text-xs text-gray-400 mb-1">
-                {t('stage3.annotation.score')}<span className="text-gray-200">{scoreThreshold.toFixed(2)}</span>
-              </label>
+              <div className="flex justify-between items-center text-xs mb-1">
+                <span className="text-gray-400">{t('stage3.annotation.score_threshold')}</span>
+                <span className="font-mono text-gray-200 font-semibold">{scoreThreshold.toFixed(2)}</span>
+              </div>
               <input
                 type="range" min="0.1" max="0.8" step="0.05"
                 value={scoreThreshold}
                 onChange={e => setScoreThreshold(parseFloat(e.target.value))}
                 className="w-full accent-purple-400"
               />
+              <div className="flex justify-between text-[11px] text-gray-500 mt-0.5">
+                <span>0.10 (Min)</span><span>0.80 (Max)</span>
+              </div>
             </div>
+
             {/* Tier 3 開關 */}
-            <div className="col-span-full border-t border-gray-700 pt-3 mt-1">
+            <div className="col-span-full border-t border-surface-border pt-3 mt-1">
               <div className="flex items-center gap-3 mb-2">
                 <input
                   type="checkbox"
                   id="tier3-toggle"
                   checked={enableTier3}
                   onChange={e => setEnableTier3(e.target.checked)}
-                  className="w-4 h-4 accent-indigo-400 cursor-pointer"
+                  className="w-4 h-4 accent-primary cursor-pointer"
                 />
                 <label htmlFor="tier3-toggle" className="text-xs text-gray-300 cursor-pointer">
                   <span className="font-medium text-indigo-300">{t('stage3.annotation.tier3_toggle')}</span>
@@ -1123,10 +1217,11 @@ export default function Stage4_Analysis() {
                 </label>
               </div>
               {enableTier3 && (
-                <div className="ml-7">
-                  <label className="block text-xs text-gray-400 mb-1">
-                    {t('stage3.annotation.tier3_threshold')}<span className="text-gray-200">{tier3ConfThreshold.toFixed(2)}</span>
-                  </label>
+                <div className="ml-7 max-w-sm">
+                  <div className="flex justify-between items-center text-xs mb-1">
+                    <span className="text-gray-400">{t('stage3.annotation.tier3_threshold')}</span>
+                    <span className="font-mono text-gray-200 font-semibold">{tier3ConfThreshold.toFixed(2)}</span>
+                  </div>
                   <input
                     type="range" min="0.3" max="0.9" step="0.05"
                     value={tier3ConfThreshold}
@@ -1143,7 +1238,7 @@ export default function Stage4_Analysis() {
 
           <div className={`flex flex-col justify-end ${annotateMode === 'dual' ? '' : 'col-start-3'}`}>
             <RunButton
-              label={t('stage3.annotation.celltypist')}
+              label={t('stage3.annotation.btn_run')}
               onClick={handleRunAnnotate}
               status={annotSt?.status ?? 'idle'}
               disabled={!umapDone || !annotateRes}
