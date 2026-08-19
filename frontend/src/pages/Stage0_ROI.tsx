@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
 import StageCard from '../components/shared/StageCard'
 import Terminal from '../components/shared/Terminal'
-import { listRois, addRoi, deleteRoi, runRoiExtract, getRoiStatus, getConfig } from '../api/client'
+import { listRois, addRoi, deleteRoi, runRoiExtract, getRoiStatus, getConfig, getRoiBounds, type RnaBounds } from '../api/client'
 import type { RoiDefinition } from '../types/pipeline'
 import useStageLog from '../hooks/useStageLog'
 import RoiSelector from '../components/roi/RoiSelector'
@@ -19,6 +19,7 @@ export default function Stage0_ROI() {
   const [form, setForm] = useState<Partial<RoiDefinition>>({ pixel_size_um: 0.2737 })
   const [formError, setFormError] = useState<string | null>(null)
   const [configPixelSize, setConfigPixelSize] = useState<number>(0.2737)
+  const [captureBounds, setCaptureBounds] = useState<RnaBounds | null>(null)
   // B 類讀取降級：載入失敗只是清單／預填值取不到，不擋人
   const [loadWarn, setLoadWarn] = useState<string | null>(null)
   const t = useT()
@@ -26,7 +27,10 @@ export default function Stage0_ROI() {
   useEffect(() => {
     listRois()
       .then(r => setRois(r.data.data ?? []))
-      .catch((e: unknown) => setLoadWarn(`無法載入 ROI 清單（${errText(e)}）`))
+      .catch((e: unknown) => setLoadWarn(t('stage0.warn.load_failed', { err: errText(e) })))
+    getRoiBounds()
+      .then(r => { if (r.data?.data) setCaptureBounds(r.data.data) })
+      .catch(() => {})
     // 從 config 讀取 pixel_size_um（Data Setup 掃描時寫入）
     getConfig().then((r: any) => {
       const ps = r.data?.data?.global?.pixel_size_um
@@ -35,9 +39,10 @@ export default function Stage0_ROI() {
         setForm(f => ({ ...f, pixel_size_um: ps }))
       }
     }).catch((e: unknown) => {
-      setLoadWarn(`無法讀取 config 的 pixel_size_um（${errText(e)}），沿用預設 ${configPixelSize}`)
+      setLoadWarn(t('stage0.warn.pixel_size_failed', { err: errText(e), size: configPixelSize }))
     })
   }, [])
+
 
   const handleRun = async () => {
     updateStage('roi', { status: 'running', progress: 0, message: t('stage0.running') })
@@ -62,12 +67,12 @@ export default function Stage0_ROI() {
     try {
       const res = await deleteRoi(name)
       const msg = apiErrorMessage(res)
-      if (msg) { setFormError(`刪除 ROI「${name}」失敗：${msg}`); return }
+      if (msg) { setFormError(t('stage0.err.delete_failed', { name, msg })); return }
       const updated = await listRois()
       setRois(updated.data.data ?? [])
       setFormError(null)
     } catch (e: unknown) {
-      setFormError(`刪除 ROI「${name}」失敗（${errText(e)}）`)
+      setFormError(t('stage0.err.delete_failed', { name, msg: errText(e) }))
     }
   }
 
@@ -80,14 +85,27 @@ export default function Stage0_ROI() {
       const res = await addRoi(form as RoiDefinition)
       // HTTP 200 也可能是失敗（`{"status":"error"}`）
       const msg = apiErrorMessage(res)
-      if (msg) { setFormError(`新增 ROI 失敗：${msg}`); return }
+      if (msg) { setFormError(t('stage0.err.add_failed', { msg })); return }
       const updated = await listRois()
       setRois(updated.data.data ?? [])
       setForm({ pixel_size_um: configPixelSize })
     } catch (e: unknown) {
-      setFormError(`新增 ROI 失敗（${errText(e)}）—— 表單內容保留，請修正後再試`)
+      setFormError(t('stage0.err.add_failed_retry', { err: errText(e) }))
     }
   }
+
+
+  const isOutOfBounds = Boolean(
+    captureBounds &&
+    form.x != null && form.width_px != null &&
+    form.y != null && form.height_px != null &&
+    (
+      form.x + form.width_px < captureBounds.min_x ||
+      form.x > captureBounds.max_x ||
+      form.y + form.height_px < captureBounds.min_y ||
+      form.y > captureBounds.max_y
+    )
+  )
 
   return (
     <div className="space-y-4">
@@ -121,9 +139,23 @@ export default function Stage0_ROI() {
 
         {/* Interactive ROI selector */}
         <div className="border-t border-surface-border pt-4">
-          <p className="text-xs text-gray-400 font-medium uppercase tracking-wide mb-3">{t('stage0.interactive')}</p>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs text-gray-400 font-medium uppercase tracking-wide">{t('stage0.interactive')}</p>
+            {captureBounds && (
+              <span className="text-xs font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-2 py-0.5 rounded">
+                {t('stage0.capture_bounds.badge', {
+                  min_x: Math.round(captureBounds.min_x),
+                  max_x: Math.round(captureBounds.max_x),
+                  min_y: Math.round(captureBounds.min_y),
+                  max_y: Math.round(captureBounds.max_y),
+                  bins: captureBounds.total_bins.toLocaleString(),
+                })}
+              </span>
+            )}
+          </div>
           <RoiSelector
             existingRois={rois as any}
+            captureBounds={captureBounds}
             onSelect={(roi) => setForm(f => ({ ...f, ...roi }))}
           />
         </div>
@@ -165,6 +197,13 @@ export default function Stage0_ROI() {
               </div>
             ))}
           </div>
+
+          {isOutOfBounds && (
+            <div className="mt-3 p-2.5 bg-amber-950/40 border border-amber-500/40 rounded text-xs text-amber-300 flex items-start gap-2">
+              <span>{t('stage0.warn.out_of_bounds')}</span>
+            </div>
+          )}
+
           <button
             onClick={handleAdd}
             className="mt-3 px-4 py-1.5 bg-surface-border hover:bg-surface-border/80 rounded text-sm text-gray-200 transition-colors"

@@ -317,6 +317,12 @@ def _draw_per_cell_boundaries(
     import numpy as np
     from scipy.ndimage import binary_dilation
 
+    if seg_mask.shape != he_img.shape[:2]:
+        logger.warning(
+            f"遮罩尺寸 {seg_mask.shape} 與 H&E 影像尺寸 {he_img.shape[:2]} 不一致（可能重新裁切後未重跑 Stage 1 分割），跳過逐細胞輪廓繪製"
+        )
+        return False
+
     # 預計算全域鄰接邊界（一次性，O(H×W)）
     boundary = np.zeros(seg_mask.shape, dtype=bool)
     h_diff = seg_mask[:, :-1] != seg_mask[:, 1:]
@@ -345,6 +351,7 @@ def _draw_per_cell_boundaries(
                 kept_set[cid] = True
         pixels = cell_boundary & kept_set[seg_mask]
         he_img[pixels] = [0, 220, 220]
+    return True
 
 
 def _generate_overlay_images(
@@ -396,6 +403,7 @@ def _generate_overlay_images(
     elif he_combined.ndim == 3 and he_combined.shape[-1] == 4:
         he_combined = he_combined[..., :3]
 
+    draw_ok = False
     if has_mask:
         import re
         logger.info(f"為 {he_path.parent.name} 繪製逐細胞邊界輪廓")
@@ -407,13 +415,13 @@ def _generate_overlay_images(
 
         kept_ids   = [_get_id(n) for n, k in zip(pre_obs_names, kept_mask)   if k]
         removed_ids = [_get_id(n) for n, r in zip(pre_obs_names, removed_mask) if r]
-        _draw_per_cell_boundaries(he_combined, seg_mask, kept_ids, removed_ids)
+        draw_ok = _draw_per_cell_boundaries(he_combined, seg_mask, kept_ids, removed_ids)
 
     for dpi, suffix, s in [(150, "", 12), (300, "_hd", 3)]:
         figsize = (W / dpi, H / dpi)
         fig, ax = plt.subplots(figsize=figsize)
         ax.imshow(he_combined)
-        if not has_mask:
+        if not draw_ok:
             if removed_mask.any():
                 ax.scatter(x_px[removed_mask], y_px[removed_mask], s=s, c="red", alpha=0.5, linewidths=0, label=f"Removed ({n_removed:,})")
             ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="cyan", alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")
@@ -427,6 +435,7 @@ def _generate_overlay_images(
         path = fig_dir / f"overlay_qc{suffix}.png"
         fig.savefig(str(path), dpi=dpi, bbox_inches="tight", pad_inches=0.05)
         plt.close(fig)
+
         if not suffix:
             figures["qc_overlay"] = _encode_image(path)
         logger.info(f"已儲存 {path.name}")
@@ -478,6 +487,7 @@ def _save_roi_overlay_images(
     elif he_combined.ndim == 3 and he_combined.shape[-1] == 4:
         he_combined = he_combined[..., :3]
 
+    draw_ok = False
     if has_mask:
         import re
         logger.info(f"為 {he_path.parent.name} 繪製逐細胞邊界輪廓（per-ROI）")
@@ -489,7 +499,7 @@ def _save_roi_overlay_images(
 
         kept_ids    = [_get_id(n) for n, k in zip(pre_obs_names, kept_mask)    if k]
         removed_ids = [_get_id(n) for n, r in zip(pre_obs_names, removed_mask) if r]
-        _draw_per_cell_boundaries(he_combined, seg_mask, kept_ids, removed_ids)
+        draw_ok = _draw_per_cell_boundaries(he_combined, seg_mask, kept_ids, removed_ids)
 
     dpi = 150
     figsize = (W / dpi, H / dpi)
@@ -497,7 +507,7 @@ def _save_roi_overlay_images(
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.imshow(he_combined)
-    if not has_mask:
+    if not draw_ok:
         if removed_mask.any():
             ax.scatter(x_px[removed_mask], y_px[removed_mask], s=s, c="red", alpha=0.5, linewidths=0, label=f"Removed ({n_removed:,})")
         ax.scatter(x_px[kept_mask], y_px[kept_mask], s=s, c="cyan", alpha=0.7, linewidths=0, label=f"Kept ({n_kept:,})")

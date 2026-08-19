@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import OpenSeadragon from 'openseadragon'
 import { clsx } from 'clsx'
 import { useT } from '../../i18n'
+import { getRoiBounds, type RnaBounds } from '../../api/client'
 
 /**
  * 在全片影像上框選區域（矩形或多邊形）。
@@ -27,6 +28,7 @@ interface Props {
   onChange: (sel: RegionSelection | null) => void
   mode?: 'bbox' | 'polygon' | 'both'
   overlays?: BoxOverlay[]
+  captureBounds?: RnaBounds | null
   dziUrl?: string
   tilesUrl?: string
   height?: string
@@ -36,6 +38,7 @@ export default function RegionSelector({
   onChange,
   mode = 'bbox',
   overlays = [],
+  captureBounds,
   dziUrl = '/api/roi/dzi',
   tilesUrl = '/api/roi/dzi_files/',
   height = '26rem',
@@ -47,8 +50,20 @@ export default function RegionSelector({
   const [drawBox, setDrawBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const [poly, setPoly] = useState<{ x: number; y: number }[]>([])
   const [ready, setReady] = useState(false)
+  const [bounds, setBounds] = useState<RnaBounds | null>(captureBounds ?? null)
   const startPt = useRef<{ x: number; y: number } | null>(null)
   const t = useT()
+
+  useEffect(() => {
+    if (captureBounds !== undefined) {
+      setBounds(captureBounds)
+    } else {
+      getRoiBounds()
+        .then(res => { if (res.data?.data) setBounds(res.data.data) })
+        .catch(() => {})
+    }
+  }, [captureBounds])
+
 
   const allowBbox = mode === 'bbox' || mode === 'both'
   const allowPoly = mode === 'polygon' || mode === 'both'
@@ -120,12 +135,41 @@ export default function RegionSelector({
     }
   }, [dziUrl, tilesUrl])
 
-  // ── 重繪既有覆蓋框 ─────────────────────────────────────────────
+  // ── 重繪既有覆蓋框與晶片有效範圍 ─────────────────────────────
   useEffect(() => {
     const viewer = viewerRef.current
     if (!viewer || !ready) return
 
     viewer.clearOverlays()
+
+    // 1. 繪製 Visium HD 晶片有效捕獲區 (CaptureAreaBoundingBox)
+    if (bounds && bounds.min_x != null && bounds.max_x != null && bounds.min_y != null && bounds.max_y != null) {
+      const el = document.createElement('div')
+      el.style.border = '2px dashed #10b981'
+      el.style.background = 'rgba(16, 185, 129, 0.05)'
+      el.style.pointerEvents = 'none'
+
+      const label = document.createElement('span')
+      label.textContent = t('stage0.capture_overlay_label')
+      label.style.cssText = [
+        'position:absolute', 'top:4px', 'left:6px',
+        'font-size:11px', 'color:#10b981', 'font-weight:700',
+        'background:rgba(0,0,0,0.7)', 'padding:2px 6px', 'border-radius:4px',
+        'text-shadow:0 0 4px #000', 'white-space:nowrap',
+      ].join(';')
+      el.appendChild(label)
+
+      const w = bounds.max_x - bounds.min_x
+      const h = bounds.max_y - bounds.min_y
+      viewer.addOverlay({
+        element: el,
+        location: viewer.viewport.imageToViewportRectangle(
+          new OpenSeadragon.Rect(bounds.min_x, bounds.min_y, w, h),
+        ),
+      })
+    }
+
+    // 2. 繪製使用者定義的 ROIs
     for (const box of overlays) {
       if (box.x == null || box.width_px == null) continue
 
@@ -150,7 +194,7 @@ export default function RegionSelector({
         ),
       })
     }
-  }, [overlays, ready])
+  }, [overlays, bounds, ready])
 
   // 螢幕座標 → 全片影像座標
   const toImage = (cx: number, cy: number) => {

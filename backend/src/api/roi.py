@@ -113,6 +113,22 @@ async def get_overview():
         return {"status": "error", "message": "取得 overview 失敗，請檢查資料路徑設定"}
 
 
+@router.get("/bounds")
+async def get_bounds():
+    """取得 Visium HD 晶片有效定序範圍（H&E fullres 像素座標）"""
+    config = load_config()
+    try:
+        from backend.src.roi.extractor import get_rna_capture_bounds
+        bounds = get_rna_capture_bounds(config)
+        if bounds is None:
+            return {"status": "error", "message": "無法解析 RNA 晶片有效範圍（請檢查 binned 目錄）"}
+        return {"status": "ok", "data": bounds}
+    except Exception as e:
+        logger.error(f"取得 bounds 失敗：{e}")
+        return {"status": "error", "message": f"取得 bounds 失敗：{e}"}
+
+
+
 async def _run_extract(config: dict):
     global _task_status
     set_current_stage("roi")

@@ -362,7 +362,7 @@ function SpatialExplorerInner() {
               value={searchText}
               onChange={e => { setSearchText(e.target.value); setShowDropdown(true) }}
               onFocus={() => setShowDropdown(true)}
-              placeholder={geneLoading ? t('spatial.loading_genes') : selectedGenes.length >= MAX_GENES ? `已達上限 (${MAX_GENES})，請先移除基因` : t('spatial.gene_placeholder')}
+              placeholder={geneLoading ? t('spatial.loading_genes') : selectedGenes.length >= MAX_GENES ? t('spatial.max_genes_limit', { max: MAX_GENES }) : t('spatial.gene_placeholder')}
               disabled={geneLoading || selectedGenes.length >= MAX_GENES}
               className="w-full bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 focus:border-primary focus:outline-none disabled:opacity-50"
             />
@@ -401,20 +401,20 @@ function SpatialExplorerInner() {
                           ? 'border-amber-600/50 text-amber-400 hover:border-primary hover:text-primary'
                           : 'border-surface-border text-gray-400 hover:border-primary hover:text-primary'
                       }`}
-                      title={isOverridden ? `已修改：${overrides[ps.label]?.join(', ')}` : ps.genes.join(', ')}
+                      title={isOverridden ? `${t('spatial.modified')}：${overrides[ps.label]?.join(', ')}` : ps.genes.join(', ')}
                     >
                       {ps.label}{isOverridden && <span className="ml-1 text-amber-500">·</span>}
                     </button>
                     <button
                       onClick={() => openEditPreset(ps)}
                       className="px-1 py-0.5 text-xs border border-l-0 border-surface-border text-gray-700 hover:border-primary hover:text-primary opacity-0 group-hover/ps:opacity-100 transition-all"
-                      title="編輯基因"
+                      title={t('spatial.edit_genes')}
                     >✎</button>
                     {isOverridden && (
                       <button
                         onClick={() => resetOverride(ps.label)}
                         className="px-1 py-0.5 rounded-r-full text-xs border border-l-0 border-amber-600/40 text-amber-700 hover:text-red-400 hover:border-red-500 transition-colors"
-                        title="恢復預設"
+                        title={t('spatial.restore_default')}
                       >↺</button>
                     )}
                     {!isOverridden && <span className="rounded-r-full border border-l-0 border-surface-border opacity-0 group-hover/ps:opacity-0" />}
@@ -439,12 +439,12 @@ function SpatialExplorerInner() {
                   <button
                     onClick={() => openEditCustom(ps)}
                     className="px-1 py-0.5 text-xs border border-l-0 border-surface-border text-gray-600 hover:border-primary hover:text-primary transition-colors"
-                    title="編輯"
+                    title={t('spatial.edit_set')}
                   >✎</button>
                   <button
                     onClick={() => deleteCustomSet(ps.label)}
                     className="px-1.5 py-0.5 rounded-r-full text-xs border border-l-0 border-surface-border text-gray-600 hover:border-red-500 hover:text-red-400 transition-colors"
-                    title="刪除"
+                    title={t('common.delete')}
                   >×</button>
                 </span>
               ))}
@@ -455,24 +455,24 @@ function SpatialExplorerInner() {
           {showNewSet ? (
             <div className="flex items-center gap-2 mt-1">
               <span className="text-xs text-gray-600 w-28 shrink-0">
-                {editingLabel ? '編輯 Set' : '新增 Set'}
+                {editingLabel ? t('spatial.edit_set') : t('spatial.add_set')}
               </span>
               <input
                 type="text"
                 value={newSetName}
                 onChange={e => setNewSetName(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') saveSet(); if (e.key === 'Escape') cancelEdit() }}
-                placeholder="Set 名稱"
+                placeholder={t('spatial.set_name_placeholder')}
                 autoFocus
                 className="w-32 px-2 py-0.5 bg-surface border border-surface-border rounded text-xs text-gray-200 focus:border-primary focus:outline-none"
               />
-              <span className="text-xs text-gray-500">← {selectedGenes.length > 0 ? selectedGenes.join(', ') : '請先選基因'}</span>
+              <span className="text-xs text-gray-500">← {selectedGenes.length > 0 ? selectedGenes.join(', ') : t('spatial.select_genes_first')}</span>
               <button
                 onClick={saveSet}
                 disabled={!newSetName.trim() || selectedGenes.length === 0}
                 className="px-2.5 py-0.5 rounded-full text-xs border border-primary text-primary disabled:opacity-40 disabled:cursor-not-allowed"
-              >儲存</button>
-              <button onClick={cancelEdit} className="text-xs text-gray-600 hover:text-gray-400">取消</button>
+              >{t('common.save')}</button>
+              <button onClick={cancelEdit} className="text-xs text-gray-600 hover:text-gray-400">{t('common.cancel')}</button>
             </div>
           ) : (
             <div className="flex items-center gap-1.5">
@@ -480,9 +480,10 @@ function SpatialExplorerInner() {
               <button
                 onClick={() => { setEditingLabel(null); setNewSetName(''); setShowNewSet(true) }}
                 className="px-2.5 py-0.5 rounded-full text-xs border border-dashed border-surface-border text-gray-600 hover:border-primary hover:text-primary transition-colors"
-              >+ 新增 Set</button>
+              >{t('spatial.new_set')}</button>
             </div>
           )}
+
         </div>
 
         {/* Selected gene chips */}

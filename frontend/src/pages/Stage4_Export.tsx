@@ -71,7 +71,7 @@ export default function Stage4_Export() {
       await generateResult()
     } catch (e: unknown) {
       setResultRunning(false)
-      setResultMessage(`啟動失敗：${errText(e)}`)
+      setResultMessage(t('stage4.msg.start_failed', { err: errText(e) }))
       return
     }
     void refetchResultStatus()
@@ -82,7 +82,7 @@ export default function Stage4_Export() {
     try {
       await exportXenium({})
     } catch (e: unknown) {
-      updateStage('xenium', { status: 'error', progress: 0, message: `啟動失敗：${errText(e)}` })
+      updateStage('xenium', { status: 'error', progress: 0, message: t('stage4.msg.start_failed', { err: errText(e) }) })
       return
     }
     void refetchXenium()
@@ -93,11 +93,12 @@ export default function Stage4_Export() {
     try {
       await exportLoupe({})
     } catch (e: unknown) {
-      updateStage('loupe', { status: 'error', progress: 0, message: `啟動失敗：${errText(e)}` })
+      updateStage('loupe', { status: 'error', progress: 0, message: t('stage4.msg.start_failed', { err: errText(e) }) })
       return
     }
     void refetchLoupe()
   }
+
 
   const images: Record<string, string> = (resultImagesData as { status?: string; data?: Record<string, string> })?.data ?? {}
 

@@ -30,7 +30,7 @@ export default function Stage2_Count() {
       if (res.data?.data) setRoiInfos(res.data.data)
       setRoiListWarn(null)
     }).catch((e: unknown) => {
-      setRoiListWarn(`無法載入 ROI 清單（${errText(e)}）—— 下方清單並非「沒有 ROI」，而是查不到`)
+      setRoiListWarn(t('stage2.warn.roi_load_failed', { err: errText(e) }))
     })
   }, [stage.status])
 
@@ -70,7 +70,7 @@ export default function Stage2_Count() {
         return (res.data?.data ?? res.data) as PollStatus | null
       },
       onStatus: d => { setFullRetry(null); setFullStatus(d) },
-      onTransientFailure: (n, max) => setFullRetry(`與後端連線不穩，重試中 ${n}/${max}...`),
+      onTransientFailure: (n, max) => setFullRetry(t('stage2.msg.retrying', { n, max })),
       onLost: msg => { setFullRetry(null); setFullStatus({ status: 'error', message: msg }) },
     })
   }
@@ -83,7 +83,7 @@ export default function Stage2_Count() {
         if (d.status === 'running') startFullPoll()
       }
     }).catch((e: unknown) => {
-      setFullRetry(`無法取得全圖計數狀態（${errText(e)}）`)
+      setFullRetry(t('stage2.warn.full_status_failed', { err: errText(e) }))
     })
     return () => clearInterval(fullPollRef.current)
   }, [])
@@ -140,13 +140,14 @@ export default function Stage2_Count() {
       const res = await runCoverageQc()
       if (res.data?.status === 'error') setQcError(res.data.message)
       else if (isQcResult(res.data?.data)) { setQc(res.data.data); setQcError(null) }
-      else setQcError('QC 回應結構不符預期（缺少 sections 陣列），請檢查後端輸出')
+      else setQcError(t('stage2.err.qc_structure'))
     } catch (e: unknown) {
       setQcError(errText(e))
     } finally {
       setQcBusy(false)
     }
   }
+
 
   const qcMedian = qc?.sections_summary?.median_cells_per_1k_bins ?? 0
 
@@ -164,12 +165,14 @@ export default function Stage2_Count() {
       >
         {/* Info box */}
         <div className="mt-3 p-3 rounded-lg bg-blue-900/20 border border-blue-700/40 text-xs text-blue-300 space-y-1">
-          <p className="font-semibold text-blue-200">MCseg v2 RNA Counting</p>
+          <p className="font-semibold text-blue-200">MCseg v2 — Spatial Cell Attribution (Bin-to-Cell Mapping)</p>
+          <p className="text-blue-300/90">{t('stage2.subtitle')}</p>
           <ul className="list-disc pl-4 space-y-0.5 text-blue-400">
-            <li>Input: <code>adata_002um.h5ad</code> (Stage 0), <code>segmentation_masks.npy</code> (Stage 1)</li>
-            <li>Output: <code>cellpose_cells.h5ad</code> (cells × genes, for Stage 3)</li>
+            <li>{t('stage2.info.input')}</li>
+            <li>{t('stage2.info.output')}</li>
           </ul>
         </div>
+
 
         {roiListWarn && (
           <p className="mt-3 text-xs text-amber-400/80">ⓘ {roiListWarn}</p>

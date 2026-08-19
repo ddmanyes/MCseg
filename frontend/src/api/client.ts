@@ -18,12 +18,23 @@ export const browseDir = (path: string) => api.get('/data/browse', { params: { p
 export const getDiskStatus = () => api.get('/data/disk-status')
 
 // Stage 0: ROI
+export interface RnaBounds {
+  min_x: number
+  max_x: number
+  min_y: number
+  max_y: number
+  total_bins: number
+  he_width: number
+  he_height: number
+}
 export const listRois = () => api.get('/roi/list')
 export const addRoi = (roi: RoiDefinition) => api.post('/roi/add', roi)
 export const deleteRoi = (name: string) => api.delete(`/roi/${name}`)
 export const getRoiOverview = () => api.get('/roi/overview')
+export const getRoiBounds = () => api.get<{ status: string; data?: RnaBounds; message?: string }>('/roi/bounds')
 export const runRoiExtract = () => api.post('/roi/extract')
 export const getRoiStatus = () => api.get('/roi/status')
+
 
 // Stage 1: Segmentation
 export const runSegmentation = (params?: object) => api.post('/segmentation/run', params ?? {})

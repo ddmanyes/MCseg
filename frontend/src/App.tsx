@@ -12,10 +12,12 @@ import Stage4_Export from './pages/Stage4_Export'
 import { getDiskStatus } from './api/client'
 import { usePipelineStore } from './stores/pipelineStore'
 import { errText } from './utils/errText'
+import { useT } from './i18n'
 
 export default function App() {
   const { updateStage } = usePipelineStore()
   const location = useLocation()
+  const t = useT()
   // 磁碟掃描失敗只影響「已完成」標記的還原，不擋任何操作 → 低調降級
   const [diskWarn, setDiskWarn] = useState<string | null>(null)
 
@@ -30,9 +32,10 @@ export default function App() {
       if (d.analysis?.done)     updateStage('analysis',     { status: 'done', message: 'Analysis complete' })
       setDiskWarn(null)
     }).catch((e: unknown) => {
-      setDiskWarn(`無法掃描磁碟狀態（${errText(e)}）—— 各 Stage 的「已完成」標記可能未還原`)
+      setDiskWarn(t('app.warn.disk_scan_failed', { err: errText(e) }))
     })
   }, [])
+
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-surface">

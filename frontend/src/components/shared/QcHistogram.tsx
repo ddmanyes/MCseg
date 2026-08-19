@@ -9,7 +9,8 @@
  *  - 百分位統計列
  */
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import React, { useState, useRef, useCallback, useEffect } from 'react'
+import { useT } from '../../i18n'
 
 // ── SVG layout constants ──────────────────────────────────────────
 const PAD_L = 44
@@ -157,15 +158,18 @@ export default function QcHistogram({
 
   const handleMouseUp = useCallback(() => { dragging.current = null }, [])
 
+  const t = useT()
+
   // ── 資料無效時顯示佔位符（所有 hooks 已在上方完成，此處可安全 return）
   if (isInvalid) {
     return (
       <div className="flex flex-col gap-1.5">
         <span className="text-xs font-semibold text-gray-200">{metric.label}</span>
-        <div className="text-xs text-gray-500 italic py-4 text-center">無資料（細胞計數全為 0）</div>
+        <div className="text-xs text-gray-500 italic py-4 text-center">{t('qc.no_data')}</div>
       </div>
     )
   }
+
 
   // X-axis ticks
   const xTicks = logScale
@@ -243,9 +247,10 @@ export default function QcHistogram({
         <div className="flex items-center gap-3">
           <span className="text-xs text-gray-400">
             <span className={rateColor}>{passRate.toFixed(1)}%</span>
-            {' '}通過 ({passCount.toLocaleString()} / {totalCells.toLocaleString()})
+            {' '}{t('qc.passed')} ({passCount.toLocaleString()} / {totalCells.toLocaleString()})
           </span>
           {onLogScaleToggle && (
+
             <button
               onClick={onLogScaleToggle}
               className={`px-2 py-0.5 rounded text-xs border transition-colors ${
@@ -359,10 +364,11 @@ export default function QcHistogram({
         <span>P99: <span className="text-gray-300">{fmtNum(metric.p99)}</span></span>
         {showMad && (
           <span className="text-green-600/80">
-            MAD建議: {fmtNum(metric.mad_min)}–{fmtNum(metric.mad_max)}
+            {t('qc.mad_suggestion')}: {fmtNum(metric.mad_min)}–{fmtNum(metric.mad_max)}
           </span>
         )}
       </div>
     </div>
   )
 }
+

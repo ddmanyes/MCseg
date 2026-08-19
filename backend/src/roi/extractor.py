@@ -455,6 +455,70 @@ def rasterize_nucleus_mask(
 
 # ── 預覽產圖 ────────────────────────────────────────────────
 
+def get_rna_capture_bounds(config: dict) -> dict | None:
+    """
+    計算 Visium HD 晶片有效定序區域在 H&E fullres 像素座標系下的邊界。
+
+    回傳:
+        {
+            "min_x": float,
+            "max_x": float,
+            "min_y": float,
+            "max_y": float,
+            "total_bins": int,
+            "he_width": int,
+            "he_height": int,
+        }
+    """
+    import pandas as pd
+    from pathlib import Path
+    import tifffile
+
+    paths = config.get("paths", {})
+    binned_dir = paths.get("binned_008") or paths.get("binned_002")
+    if not binned_dir or not Path(binned_dir).exists():
+        return None
+
+    pos_path = Path(binned_dir) / "spatial" / "tissue_positions.parquet"
+    if not pos_path.exists():
+        return None
+
+    try:
+        df = pd.read_parquet(pos_path)
+        df_tissue = df[df["in_tissue"] == 1]
+        if len(df_tissue) == 0:
+            df_tissue = df
+
+        sr_col = df_tissue["pxl_col_in_fullres"].values.astype(float)
+        sr_row = df_tissue["pxl_row_in_fullres"].values.astype(float)
+
+        transform, _ = _resolve_roi_bin_transform(config)
+        pts = np.vstack([sr_col, sr_row, np.ones_like(sr_col)])
+        proj = transform @ pts
+        img_col = proj[0, :] / proj[2, :]
+        img_row = proj[1, :] / proj[2, :]
+
+        he_path = Path(paths.get("he_image", ""))
+        he_w, he_h = 0, 0
+        if he_path.exists():
+            with tifffile.TiffFile(str(he_path)) as tf:
+                page = tf.pages[0]
+                he_h, he_w = int(page.imagelength), int(page.imagewidth)
+
+        return {
+            "min_x": float(np.round(img_col.min(), 1)),
+            "max_x": float(np.round(img_col.max(), 1)),
+            "min_y": float(np.round(img_row.min(), 1)),
+            "max_y": float(np.round(img_row.max(), 1)),
+            "total_bins": int(len(df_tissue)),
+            "he_width": he_w,
+            "he_height": he_h,
+        }
+    except Exception as e:
+        logger.warning(f"無法計算 RNA 晶片有效邊界：{e}")
+        return None
+
+
 def get_overview(config: dict) -> dict:
     """
     取得 H&E hires 縮圖的 base64 與座標轉換參數 (scalef)，
@@ -485,12 +549,15 @@ def get_overview(config: dict) -> dict:
     _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
     img_b64 = base64.b64encode(buf.tobytes()).decode()
 
+    rna_bounds = get_rna_capture_bounds(config)
+
     return {
         "image_b64": img_b64,
         "width_hires": w_px,
         "height_hires": h_px,
         "scalef": scalef,
-        "microns_per_pixel": mpp
+        "microns_per_pixel": mpp,
+        "rna_bounds": rna_bounds,
     }
 
 
@@ -548,10 +615,18 @@ class RoiExtractor:
             sub.write_h5ad(str(out_path))
             logger.info(f"  已儲存：{out_path} ({sub.n_obs:,} bins)")
             if sub.n_obs == 0:
-                # 框在組織外／座標系搞錯時會產生空 h5ad，要等到 Stage 2 才爆炸
-                logger.warning(
-                    f"  ⚠️ ROI '{roi['name']}' 的 {bin_size}um 沒有命中任何 bin —— "
-                    f"請確認框選範圍落在組織上，且座標為 fullres pixel"
+                # 框在組織外／座標系搞錯時會產生空 h5ad，提前報出精確診斷
+                bounds = get_rna_capture_bounds(self.config)
+                x0, y0, w, h = roi_to_fullres_px(roi)
+                x1, y1 = x0 + w, y0 + h
+                bounds_str = (
+                    f"[X: {bounds['min_x']:.0f}~{bounds['max_x']:.0f}, Y: {bounds['min_y']:.0f}~{bounds['max_y']:.0f}]"
+                    if bounds else "未知"
+                )
+                logger.error(
+                    f"  ❌ 空間對位警告：ROI '{roi['name']}' [X: {x0}~{x1}, Y: {y0}~{y1}] 位於 Visium HD 晶片定序區域之外！\n"
+                    f"  晶片有效定序範圍：{bounds_str}。\n"
+                    f"  此區域在 H&E 上有染色組織，但無 Visium HD 定序探針，將導致下游 Stage 2 & 3 分析全部為空細胞 (total_counts=0)。"
                 )
 
     def _extract_he_crop(self, roi: dict) -> None:
@@ -573,3 +648,4 @@ class RoiExtractor:
         out_path = out_dir / "he_crop.tif"
         tifffile.imwrite(str(out_path), crop)
         logger.info(f"  已儲存 H&E crop：{out_path} shape={crop.shape}")
+

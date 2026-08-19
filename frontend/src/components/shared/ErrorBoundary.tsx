@@ -1,4 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { useLanguageStore } from '../../stores/languageStore'
+import { translations } from '../../i18n/translations'
 
 interface Props {
   children: ReactNode
@@ -35,14 +37,18 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (this.state.error) {
+      const lang = useLanguageStore.getState().lang
+      const title = translations['error.boundary.title']?.[lang] ?? '✗ An error occurred while rendering this page'
+      const subtitle = translations['error.boundary.subtitle']?.[lang] ?? 'Other pages are still working normally. Switch pages to leave this screen. See browser console for details.'
+
       return (
         <div className="m-4 rounded-xl border border-red-800 bg-red-900/20 p-4 text-sm text-red-300 space-y-2">
           <p className="font-semibold text-red-200">
-            ✗ 這個頁面在繪製時發生錯誤{this.props.label ? `（${this.props.label}）` : ''}
+            {title}{this.props.label ? ` (${this.props.label})` : ''}
           </p>
           <p className="font-mono text-xs whitespace-pre-wrap break-all">{this.state.error}</p>
           <p className="text-xs text-red-400/80">
-            其他頁面仍可正常使用；切換頁面即可離開此畫面。詳細堆疊請見瀏覽器 console。
+            {subtitle}
           </p>
         </div>
       )
@@ -50,3 +56,4 @@ export default class ErrorBoundary extends Component<Props, State> {
     return this.props.children
   }
 }
+

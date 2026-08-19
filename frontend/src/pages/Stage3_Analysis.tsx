@@ -282,7 +282,7 @@ export default function Stage4_Analysis() {
   // B 類讀取降級：圖表／清單載入失敗時說出來，不擋人（見前端錯誤處理修復計畫 F1）
   const [loadWarn, setLoadWarn] = useState('')
   const onLoadFail = (what: string) => (e: unknown) =>
-    setLoadWarn(`${what}載入失敗（${errText(e)}）—— 畫面上該區塊為空並不代表沒有結果`)
+    setLoadWarn(t('stage3.warn.load_failed', { what, err: errText(e) }))
   const [markerCsvError, setMarkerCsvError] = useState('')
   const [logScales, setLogScales] = useState<Record<string, boolean>>({})
 
@@ -323,15 +323,16 @@ export default function Stage4_Analysis() {
         n_neighbors: cl.n_neighbors ?? p.n_neighbors,
         min_dist: cl.min_dist ?? p.min_dist,
       }))
-    }).catch(onLoadFail('分析預設參數'))
+    }).catch(onLoadFail(t('stage3.sec.params')))
   }, [])
 
   // ── 載入 CellTypist 模型清單 ──
   useEffect(() => {
     getCelltypistModels().then(r => {
       if (r.data?.data) setCelltypistModels(r.data.data)
-    }).catch(onLoadFail('CellTypist 模型清單'))
+    }).catch(onLoadFail(t('stage3.sec.models')))
   }, [])
+
 
   // ── TanStack Query: 四步驟 status 輪詢 ──
   const { data: qcSt, refetch: refetchQcSt } = useQuery({
@@ -361,7 +362,7 @@ export default function Stage4_Analysis() {
   // ── 各步驟完成後自動拉取圖表（包含頁面初次載入 / 後端重啟後恢復） ──
   useEffect(() => {
     if (qcSt?.status === 'done') {
-      getQCImages().then(r => { if (r.data.data) setQcImages(r.data.data) }).catch(onLoadFail('QC 圖表'))
+      getQCImages().then(r => { if (r.data.data) setQcImages(r.data.data) }).catch(onLoadFail(t('stage3.sec.qc_charts')))
       getRoiOverlays().then(r => { if (r.data?.data) setRoiOverlays(r.data.data) }).catch(onLoadFail('ROI overlay'))
       updateStage('analysis', { status: 'done', progress: 1, message: t('stage3.status.qc_done') })
     } else if (qcSt?.status === 'error') {
@@ -377,7 +378,7 @@ export default function Stage4_Analysis() {
           const keys = Object.keys(r.data.data).filter(k => k !== 'grid')
           if (keys.length) setSelectedRes(keys[0])
         }
-      }).catch(onLoadFail('UMAP 圖表'))
+      }).catch(onLoadFail(t('stage3.sec.umap_charts')))
       updateStage('analysis', { status: 'done', progress: 1, message: t('stage3.status.umap_done') })
     } else if (umapSt?.status === 'error') {
       updateStage('analysis', { status: 'error', progress: 0, message: umapSt.message ?? t('stage3.status.umap_failed') })
@@ -386,7 +387,7 @@ export default function Stage4_Analysis() {
 
   useEffect(() => {
     if (heatSt?.status === 'done') {
-      getHeatmapImage().then(r => { if (r.data.data) setHeatmapImages(r.data.data) }).catch(onLoadFail('熱圖'))
+      getHeatmapImage().then(r => { if (r.data.data) setHeatmapImages(r.data.data) }).catch(onLoadFail(t('stage3.sec.heatmap')))
       updateStage('analysis', { status: 'done', progress: 1, message: t('stage3.status.analysis_done') })
     }
   }, [heatSt?.status])
@@ -439,7 +440,7 @@ export default function Stage4_Analysis() {
         setClusterLabels(init)
         if (Object.values(existing_labels).some(v => v)) setLabelApplied(true)
       }
-    }).catch(onLoadFail('cluster 資訊'))
+    }).catch(onLoadFail(t('stage3.sec.cluster_info')))
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableResolutions.join(',')])
 
@@ -465,14 +466,15 @@ export default function Stage4_Analysis() {
       if (res.data?.status === 'ok') {
         setHistData(res.data.data)
       } else {
-        setHistError(res.data?.message ?? '載入失敗')
+        setHistError(res.data?.message ?? t('common.load_failed'))
       }
     } catch (e: unknown) {
-      setHistError(e instanceof Error ? e.message : '載入失敗')
+      setHistError(e instanceof Error ? e.message : t('common.load_failed'))
     } finally {
       setHistLoading(false)
     }
   }
+
 
   const handleApplyMad = () => {
     if (!histData) return
@@ -493,9 +495,7 @@ export default function Stage4_Analysis() {
   const handleRunQC = async () => {
     // 若下游已有 UMAP/標註結果，提示使用者重跑會使其失效
     if (umapSt?.status === 'done' || heatSt?.status === 'done' || labelApplied) {
-      const ok = window.confirm(
-        '⚠️ 已有 UMAP / 熱圖 / 標註結果。\n\n重跑 QC 將使下游結果失效，需重新執行 UMAP → 熱圖 → 標註。\n\n確定繼續？'
-      )
+      const ok = window.confirm(t('stage3.warn.rerun_qc'))
       if (!ok) return
     }
     setQcImages({})
@@ -505,7 +505,7 @@ export default function Stage4_Analysis() {
     setClusterLabels({})
     setClusterMeta({})
     setLabelApplied(false)
-    updateStage('analysis', { status: 'running', progress: 0, message: 'QC 前處理中...' })
+    updateStage('analysis', { status: 'running', progress: 0, message: t('stage3.msg.qc_running') })
     const mergeFlag = analysisMode === 'merge' && hasMultipleRois
     try {
       await runQC({
@@ -515,7 +515,7 @@ export default function Stage4_Analysis() {
         input_source: inputSource,
       })
     } catch (e: unknown) {
-      updateStage('analysis', { status: 'error', progress: 0, message: `QC 啟動失敗：${errText(e)}` })
+      updateStage('analysis', { status: 'error', progress: 0, message: t('stage3.msg.qc_failed', { err: errText(e) }) })
       return
     }
     void refetchQcSt()
@@ -526,12 +526,12 @@ export default function Stage4_Analysis() {
     if (!resolutions.length) return
     setUmapImages({})
     setHeatmapImages({})
-    updateStage('analysis', { status: 'running', progress: 0, message: 'UMAP 計算中...' })
+    updateStage('analysis', { status: 'running', progress: 0, message: t('stage3.msg.umap_running') })
     const mergeFlag = analysisMode === 'merge' && hasMultipleRois
     try {
       await runUMAPExplore({ ...umapParams, resolutions, merge_rois: mergeFlag })
     } catch (e: unknown) {
-      updateStage('analysis', { status: 'error', progress: 0, message: `UMAP 啟動失敗：${errText(e)}` })
+      updateStage('analysis', { status: 'error', progress: 0, message: t('stage3.msg.umap_failed', { err: errText(e) }) })
       return
     }
     void refetchUmapSt()
@@ -540,11 +540,11 @@ export default function Stage4_Analysis() {
   const handleRunHeatmap = async () => {
     if (!selectedRes) return
     setHeatmapImages({})
-    updateStage('analysis', { status: 'running', progress: 0, message: '熱圖產生中...' })
+    updateStage('analysis', { status: 'running', progress: 0, message: t('stage3.msg.heatmap_running') })
     try {
       await runHeatmap({ resolution: parseFloat(selectedRes), n_top_genes: nTopGenes, n_heatmap_genes: nHeatmapGenes })
     } catch (e: unknown) {
-      updateStage('analysis', { status: 'error', progress: 0, message: `熱圖啟動失敗：${errText(e)}` })
+      updateStage('analysis', { status: 'error', progress: 0, message: t('stage3.msg.heatmap_failed', { err: errText(e) }) })
       return
     }
     void refetchHeatSt()
@@ -566,11 +566,12 @@ export default function Stage4_Analysis() {
         tier3_conf_threshold: tier3ConfThreshold,
       })
     } catch (e: unknown) {
-      updateStage('analysis', { status: 'error', progress: 0, message: `CellTypist 啟動失敗：${errText(e)}` })
+      updateStage('analysis', { status: 'error', progress: 0, message: t('stage3.msg.celltypist_failed', { err: errText(e) }) })
       return
     }
     void refetchAnnotSt()
   }
+
 
   const handleApplyLabels = async () => {
     if (!annotateRes || !Object.keys(clusterLabels).length) return
@@ -580,10 +581,10 @@ export default function Stage4_Analysis() {
       if (r.data?.status === 'ok') {
         setLabelApplied(true)
       } else {
-        setApplyLabelError(r.data?.message ?? '套用失敗')
+        setApplyLabelError(r.data?.message ?? t('common.apply_failed'))
       }
     } catch (e: unknown) {
-      setApplyLabelError(e instanceof Error ? e.message : '套用失敗')
+      setApplyLabelError(e instanceof Error ? e.message : t('common.apply_failed'))
     }
   }
 
@@ -602,9 +603,10 @@ export default function Stage4_Analysis() {
         if (Object.values(existing_labels).some((v: unknown) => v)) setLabelApplied(true)
       }
     }).catch((e: unknown) => {
-      setApplyLabelError(`載入 cluster 資訊失敗：${e instanceof Error ? e.message : String(e)}`)
+      setApplyLabelError(t('stage3.err.load_cluster_failed', { err: e instanceof Error ? e.message : String(e) }))
     })
   }
+
 
   const qcDone   = qcSt?.status   === 'done'
   const umapDone = umapSt?.status === 'done'
@@ -628,7 +630,7 @@ export default function Stage4_Analysis() {
           />
           <StatusBadge
             status={qcSt?.status ?? 'idle'}
-            message={qcSt?.message ?? '尚未執行'}
+            message={qcSt?.message ?? t('common.not_run')}
           />
         </div>
 
@@ -654,12 +656,13 @@ export default function Stage4_Analysis() {
                 >
                   {availableRois.map(r => (
                     <option key={r.name} value={r.name} disabled={!r.available}>
-                      {r.name}{r.available ? '' : ' (尚未執行)'}
+                      {r.name}{r.available ? '' : ` (${t('common.not_run')})`}
                     </option>
                   ))}
                 </select>
               )}
             </label>
+
             <label className={`flex items-center gap-3 ${hasMultipleRois ? 'cursor-pointer' : 'opacity-40 cursor-not-allowed'}`}>
               <input
                 type="radio"
@@ -819,7 +822,7 @@ export default function Stage4_Analysis() {
           <NumberField label={t('stage3.qc.max_pct_mito')} value={qcParams.max_pct_mito}
             onChange={v => setQcParams(p => ({ ...p, max_pct_mito: v }))} step={0.5} min={0} />
           <NumberField label={t('stage3.qc.min_complexity')} value={qcParams.min_complexity}
-            onChange={v => setQcParams(p => ({ ...p, min_complexity: v }))} step={0.01} min={0} hint="Spatial 建議 0（關閉）；scRNA-seq 建議 0.8" />
+            onChange={v => setQcParams(p => ({ ...p, min_complexity: v }))} step={0.01} min={0} hint={t('stage3.qc.complexity_hint')} />
           <NumberField label={t('stage3.qc.n_top_genes')} value={qcParams.n_top_genes}
             onChange={v => setQcParams(p => ({ ...p, n_top_genes: v }))} min={100} />
           <NumberField label={t('stage3.qc.n_pcs')} value={qcParams.n_pcs}
@@ -875,7 +878,7 @@ export default function Stage4_Analysis() {
           <div className="flex items-center gap-4">
             <StatusBadge
               status={umapSt?.status ?? 'idle'}
-              message={umapSt?.message ?? '尚未執行'}
+              message={umapSt?.message ?? t('common.not_run')}
             />
             <RunButton
               label={t('stage3.umap.run')}
@@ -903,7 +906,7 @@ export default function Stage4_Analysis() {
               type="text"
               className="w-full bg-surface-highlight border border-gray-600 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-brand-primary"
               value={resolutionInput}
-              placeholder="例：0.3, 0.5, 0.8, 1.2"
+              placeholder={t('stage3.umap.res_placeholder')}
               onChange={e => setResolutionInput(e.target.value)}
             />
           </div>
@@ -933,8 +936,9 @@ export default function Stage4_Analysis() {
           <div className="flex items-center gap-4">
             <StatusBadge
               status={heatSt?.status ?? 'idle'}
-              message={heatSt?.message ?? '尚未執行'}
+              message={heatSt?.message ?? t('common.not_run')}
             />
+
             <RunButton
               label={t('stage3.heatmap.run')}
               onClick={handleRunHeatmap}
@@ -1209,11 +1213,11 @@ export default function Stage4_Analysis() {
                     : ''
 
                   const tooltipLines = [
-                    meta?.tier3_label ? `Tier3 精細亞型: ${meta.tier3_label} (conf=${(meta.tier3_conf ?? 0).toFixed(2)})` : '',
-                    meta?.immune_label ? `Tier1 免疫: ${meta.immune_label} (${(meta.immune_conf ?? 0).toFixed(2)})` : '',
-                    meta?.crc_label ? `Tier1 組織: ${meta.crc_label} (${(meta.crc_conf ?? 0).toFixed(2)})` : '',
-                    state ? `Tier2 功能狀態: ${state} (score=${stateScore.toFixed(3)})` : '',
-                    uncertain ? '⚠ 信心不足，建議手動確認' : '',
+                    meta?.tier3_label ? `${t('stage3.tier3_label')}: ${meta.tier3_label} (conf=${(meta.tier3_conf ?? 0).toFixed(2)})` : '',
+                    meta?.immune_label ? `${t('stage3.tier1_immune')}: ${meta.immune_label} (${(meta.immune_conf ?? 0).toFixed(2)})` : '',
+                    meta?.crc_label ? `${t('stage3.tier1_tissue')}: ${meta.crc_label} (${(meta.crc_conf ?? 0).toFixed(2)})` : '',
+                    state ? `${t('stage3.tier2_state')}: ${state} (score=${stateScore.toFixed(3)})` : '',
+                    uncertain ? t('stage3.uncertain_warning') : '',
                   ].filter(Boolean).join('\n')
 
                   return (
@@ -1230,7 +1234,7 @@ export default function Stage4_Analysis() {
                       <input
                         type="text"
                         value={label}
-                        placeholder="輸入細胞類型..."
+                        placeholder={t('stage3.cluster.type_placeholder')}
                         className={`flex-1 bg-surface-highlight border rounded px-2 py-0.5 text-xs text-gray-200 focus:outline-none focus:border-brand-primary ${
                           uncertain ? 'border-orange-700' : 'border-gray-600'
                         }`}
@@ -1238,7 +1242,7 @@ export default function Stage4_Analysis() {
                       />
                       {/* 功能狀態 badge */}
                       {state && (
-                        <span className="text-xs px-1 py-0.5 rounded bg-purple-900/60 text-purple-300 shrink-0 font-mono" title={`基因評分: ${stateScore.toFixed(3)}`}>
+                        <span className="text-xs px-1 py-0.5 rounded bg-purple-900/60 text-purple-300 shrink-0 font-mono" title={`${t('stage3.gene_score')}: ${stateScore.toFixed(3)}`}>
                           {state.replace('_', ' ')}
                         </span>
                       )}
@@ -1250,9 +1254,10 @@ export default function Stage4_Analysis() {
                       )}
                       {/* uncertain 警告圖示 */}
                       {uncertain && (
-                        <span className="text-orange-400 shrink-0 text-xs" title="信心不足，建議手動確認">⚠</span>
+                        <span className="text-orange-400 shrink-0 text-xs" title={t('stage3.uncertain_warning')}>⚠</span>
                       )}
                     </div>
+
                   )
                 })}
             </div>

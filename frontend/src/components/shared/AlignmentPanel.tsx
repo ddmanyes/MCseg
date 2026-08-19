@@ -49,7 +49,7 @@ export default function AlignmentPanel() {
       .then(r => {
         const p = r.data?.data?.path ?? null
         setCurrentJsonPath(p)
-        if (p) setJsonPath(p)
+        setJsonPath(p ?? '')
       })
       .catch(() => {})   // B 類讀取降級：讀不到只是欄位空白，不擋人
   }, [])
@@ -70,6 +70,24 @@ export default function AlignmentPanel() {
       setJsonBusy(false)
     }
   }
+
+  const handleClearJson = async () => {
+    setJsonBusy(true)
+    setJsonError('')
+    setJsonResult('')
+    try {
+      const r = await setAlignmentJson('')
+      if (r.data.status !== 'ok') { setJsonError(r.data.message ?? 'Error'); return }
+      setCurrentJsonPath(null)
+      setJsonPath('')
+      setJsonResult(t('align.json_clear'))
+    } catch (e: any) {
+      setJsonError(e.response?.data?.detail ?? e.message ?? 'Unknown error')
+    } finally {
+      setJsonBusy(false)
+    }
+  }
+
 
   const run = async (kind: 'estimate' | 'qc' | 'apply', enable = false) => {
     setBusy(kind)
@@ -123,7 +141,17 @@ export default function AlignmentPanel() {
           >
             {jsonBusy ? t('align.json_applying') : t('align.json_apply')}
           </button>
+          {(currentJsonPath || jsonPath) && (
+            <button
+              className={btn}
+              disabled={jsonBusy}
+              onClick={() => void handleClearJson()}
+            >
+              {t('align.json_clear')}
+            </button>
+          )}
         </div>
+
         {jsonError && <p className="text-xs text-red-400">{jsonError}</p>}
         {jsonResult && <p className="text-xs text-green-400">{jsonResult}</p>}
       </div>

@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { usePipelineStore } from '../../stores/pipelineStore'
+import { useT } from '../../i18n'
 
 const STEPS = [
   { path: '/data',        label: 'Setup',   stage: 'data',         dep: null },
@@ -15,6 +16,7 @@ export default function PipelineStepper() {
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const stages = usePipelineStore((s) => s.stages)
+  const t = useT()
 
   // 判斷是否鎖定：若有依賴且依賴未完成則鎖定
   const isLocked = (dep: string | null) => {
@@ -32,6 +34,9 @@ export default function PipelineStepper() {
         const error   = status === 'error'
         const running = status === 'running'
 
+        const depStep = STEPS.find(s => s.stage === step.dep)
+        const depLabel = depStep ? depStep.label : t('stepper.prev_step')
+
         return (
           <div key={step.path} className="flex items-center flex-shrink-0">
             {/* 連接線（第一個不顯示） */}
@@ -46,7 +51,7 @@ export default function PipelineStepper() {
             <button
               onClick={() => !locked && navigate(step.path)}
               disabled={locked}
-              title={locked ? `請先完成 ${STEPS.find(s => s.stage === step.dep)?.label ?? '前一步驟'}` : step.label}
+              title={locked ? `${t('stepper.complete_first')} ${depLabel}` : step.label}
               className={clsx(
                 'flex flex-col items-center gap-0.5 px-2 py-1 rounded transition-colors select-none',
                 {
@@ -55,6 +60,7 @@ export default function PipelineStepper() {
                 }
               )}
             >
+
               {/* 圓圈圖示 */}
               <div className={clsx(
                 'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-colors',

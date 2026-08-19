@@ -73,6 +73,41 @@ async def apply_paths(req: ApplyRequest):
             state_update["global"] = config["global"]
             logger.info(f"已更新 pixel_size_um = {pixel_size_um}")
 
+        # 自動探測新樣本的對位 JSON；若無或切換樣本則自動清空（避免殘留前一個樣本的舊設定）
+        new_data_root = data_root_in_request or paths.get("data_root")
+        new_alignment_json: Optional[str] = None
+        root_p: Optional[Path] = None
+        if new_data_root:
+            root_p = Path(os.path.expanduser(new_data_root)).resolve()
+            if root_p.exists():
+                for pat in ("*fiducials-image-registration*.json", "*image-registration*.json", "*alignment*.json"):
+                    candidates = [
+                        p for p in root_p.glob(f"**/{pat}")
+                        if not p.name.startswith(".") and p.is_file()
+                    ]
+                    if candidates:
+                        new_alignment_json = str(candidates[0])
+                        break
+
+        current_alignment_json = (config.get("alignment") or {}).get("extra_alignment_json")
+        should_reset_alignment = False
+        if data_root_in_request and previous_data_root and data_root_in_request != previous_data_root:
+            should_reset_alignment = True
+        elif current_alignment_json:
+            curr_p = Path(current_alignment_json)
+            if not curr_p.exists():
+                should_reset_alignment = True
+            elif root_p and str(root_p) not in str(curr_p.resolve()):
+                should_reset_alignment = True
+
+        if should_reset_alignment:
+            config.setdefault("alignment", {})["extra_alignment_json"] = new_alignment_json
+            state_update["alignment"] = config["alignment"]
+            if new_alignment_json:
+                logger.info(f"自動為新樣本匹配對位 JSON：{new_alignment_json}")
+            else:
+                logger.info("新樣本無獨立對位 JSON，自動重置留空")
+
         # 先存 config，再建立目錄
         save_state(state_update)
 

@@ -1,4 +1,5 @@
 import RegionSelector, { type BoxOverlay } from '../shared/RegionSelector'
+import type { RnaBounds } from '../../api/client'
 
 /**
  * Stage 0 的 ROI 畫框器。
@@ -10,13 +11,15 @@ import RegionSelector, { type BoxOverlay } from '../shared/RegionSelector'
 interface Props {
   onSelect: (roi: Omit<BoxOverlay, 'name'>) => void
   existingRois?: BoxOverlay[]
+  captureBounds?: RnaBounds | null
 }
 
-export default function RoiSelector({ onSelect, existingRois = [] }: Props) {
+export default function RoiSelector({ onSelect, existingRois = [], captureBounds }: Props) {
   return (
     <RegionSelector
       mode="bbox"
       overlays={existingRois}
+      captureBounds={captureBounds}
       onChange={sel => {
         if (sel?.type !== 'bbox') return
         onSelect({ x: sel.x, y: sel.y, width_px: sel.width_px, height_px: sel.height_px })
@@ -24,3 +27,4 @@ export default function RoiSelector({ onSelect, existingRois = [] }: Props) {
     />
   )
 }
+

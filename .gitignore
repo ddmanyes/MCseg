@@ -33,3 +33,12 @@ logs/
 
 # Xenium export data (large binary files — not for version control)
 docs/sample/xenium_export/
+
+# Test output directories
+tests/output_live_test/
+
+# Temporary debug images at root
+*.jpg
+*.png
+!frontend/**/*.png
+!docs/**/*.png

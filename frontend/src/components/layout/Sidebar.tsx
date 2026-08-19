@@ -1,15 +1,16 @@
 import { NavLink } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { usePipelineStore } from '../../stores/pipelineStore'
+import { useT } from '../../i18n'
 import type { StageStatus } from '../../types/pipeline'
 
 const STAGES = [
-  { path: '/data',         label: '📂',      sub: '資料設定',    stage: 'data',         dep: null },
-  { path: '/roi',          label: 'Stage 0', sub: 'ROI 裁切',    stage: 'roi',          dep: null },
-  { path: '/segmentation', label: 'Stage 1', sub: '細胞分割',    stage: 'segmentation', dep: 'roi' },
-  { path: '/count',        label: 'Stage 2', sub: 'RNA 計數',    stage: 'count',        dep: 'segmentation' },
-  { path: '/analysis',     label: 'Stage 3', sub: '下游分析',    stage: 'analysis',     dep: 'count' },
-  { path: '/export',       label: 'Stage 4', sub: 'Browser 匯出',stage: 'export',       dep: 'analysis' },
+  { path: '/data',         label: '📂',      tKey: 'sidebar.data',     stage: 'data',         dep: null },
+  { path: '/roi',          label: 'Stage 0', tKey: 'sidebar.roi',      stage: 'roi',          dep: null },
+  { path: '/segmentation', label: 'Stage 1', tKey: 'sidebar.seg',      stage: 'segmentation', dep: 'roi' },
+  { path: '/count',        label: 'Stage 2', tKey: 'sidebar.count',    stage: 'count',        dep: 'segmentation' },
+  { path: '/analysis',     label: 'Stage 3', tKey: 'sidebar.analysis', stage: 'analysis',     dep: 'count' },
+  { path: '/export',       label: 'Stage 4', tKey: 'sidebar.export',   stage: 'export',       dep: 'analysis' },
 ]
 
 function StatusDot({ status }: { status: StageStatus }) {
@@ -25,6 +26,7 @@ function StatusDot({ status }: { status: StageStatus }) {
 
 export default function Sidebar() {
   const stages = usePipelineStore((s) => s.stages)
+  const t = useT()
 
   const isLocked = (dep: string | null) => {
     if (!dep) return false
@@ -38,9 +40,10 @@ export default function Sidebar() {
         <p className="text-xs text-gray-400">MCseg v2</p>
       </div>
       <nav className="flex-1 space-y-1 px-2">
-        {STAGES.map(({ path, label, sub, stage, dep }) => {
+        {STAGES.map(({ path, label, tKey, stage, dep }) => {
           const locked = isLocked(dep)
-          const depLabel = dep ? STAGES.find(s => s.stage === dep)?.sub : null
+          const depItem = dep ? STAGES.find(s => s.stage === dep) : null
+          const depLabel = depItem ? t(depItem.tKey) : ''
 
           if (locked) {
             return (
@@ -48,12 +51,12 @@ export default function Sidebar() {
                 key={path}
                 className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm
                            opacity-40 cursor-not-allowed select-none"
-                title={`請先完成「${depLabel}」`}
+                title={t('sidebar.complete_dep', { dep: depLabel })}
               >
                 <StatusDot status={stages[stage]?.status ?? 'idle'} />
                 <div className="flex-1">
                   <div className="font-mono text-xs text-gray-500">{label}</div>
-                  <div className="leading-tight text-gray-400">{sub}</div>
+                  <div className="leading-tight text-gray-400">{t(tKey)}</div>
                 </div>
                 <span className="text-[10px] text-gray-600">🔒</span>
               </div>
@@ -65,16 +68,19 @@ export default function Sidebar() {
               key={path}
               to={path}
               className={({ isActive }) =>
-                clsx('flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors', {
-                  'bg-primary/20 text-primary font-medium': isActive,
-                  'text-gray-400 hover:bg-surface-border hover:text-gray-200': !isActive,
-                })
+                clsx(
+                  'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors',
+                  {
+                    'bg-primary/10 text-primary font-medium border border-primary/20': isActive,
+                    'text-gray-300 hover:bg-surface-border hover:text-white': !isActive,
+                  }
+                )
               }
             >
               <StatusDot status={stages[stage]?.status ?? 'idle'} />
-              <div>
+              <div className="flex-1">
                 <div className="font-mono text-xs text-gray-500">{label}</div>
-                <div className="leading-tight">{sub}</div>
+                <div className="leading-tight">{t(tKey)}</div>
               </div>
             </NavLink>
           )

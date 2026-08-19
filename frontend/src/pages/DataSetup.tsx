@@ -70,8 +70,9 @@ function FolderBrowser({
                 setError(r.data.message)
             }
         } catch (e: unknown) {
-            setError(e instanceof Error ? e.message : '連線失敗')
+            setError(e instanceof Error ? e.message : t('data.error.connection'))
         } finally {
+
             setLoading(false)
         }
     }, [])
@@ -252,12 +253,12 @@ export default function DataSetup() {
             if (r.data.status === 'ok') setPathStatus(r.data.data)
             setStatusWarn('')
         }).catch((e: unknown) => {
-            setStatusWarn(`無法讀取目前資料路徑設定（${errText(e)}）—— 下方勾選狀態不代表實際設定`)
+            setStatusWarn(t('data.warn.read_paths_failed', { err: errText(e) }))
         })
         getOutputDir().then((r: { data: { status: string; data: { output_dir: string; resolved: string } } }) => {
             if (r.data.status === 'ok') setOutputDir(r.data.data.resolved)
         }).catch((e: unknown) => {
-            setStatusWarn(`無法讀取輸出目錄設定（${errText(e)}）`)
+            setStatusWarn(t('data.warn.read_output_failed', { err: errText(e) }))
         })
     }, [applied])
 
@@ -275,7 +276,7 @@ export default function DataSetup() {
                 if (r.data.data.pixel_size_um != null)
                     setPixelSizeOverride(String(r.data.data.pixel_size_um))
             } else {
-                setScanError(r.data.message ?? '掃描失敗')
+                setScanError(r.data.message ?? t('data.error.scan_failed'))
             }
         } catch (e: unknown) {
             setScanError(
@@ -320,7 +321,7 @@ export default function DataSetup() {
             }
             setStaleRoisWarning('')
         } catch (e: unknown) {
-            setStatusWarn(`清空 ROI 失敗（${errText(e)}），請到 Stage 0 頁面手動刪除`)
+            setStatusWarn(t('data.warn.clear_rois_failed', { err: errText(e) }))
         } finally {
             setClearingRois(false)
         }
@@ -347,10 +348,10 @@ export default function DataSetup() {
                 setSavedOutput(true)
                 setTimeout(() => setSavedOutput(false), 3000)
             } else {
-                setOutputError(r.data.message ?? '儲存失敗')
+                setOutputError(r.data.message ?? t('data.error.save_failed'))
             }
         } catch (e: unknown) {
-            setOutputError(e instanceof Error ? e.message : '無法連線至後端')
+            setOutputError(e instanceof Error ? e.message : t('data.error.connection'))
         } finally {
             setSavingOutput(false)
         }
@@ -428,8 +429,9 @@ export default function DataSetup() {
                     <button
                         onClick={() => setShowBrowser(true)}
                         className="px-3 py-2 bg-surface border border-surface-border rounded-lg text-sm text-gray-300 hover:bg-surface-border hover:text-gray-100 transition-colors flex items-center gap-1.5 flex-shrink-0"
-                        title="瀏覽資料夾"
+                        title={t('data.scan.browse_folders')}
                     >
+
                         <FolderOpen className="w-4 h-4" />
                         {t('data.scan.browse')}
                     </button>
@@ -509,7 +511,7 @@ export default function DataSetup() {
                 <div className="bg-surface-card rounded-xl border border-surface-border p-5 space-y-4">
                     <div className="flex items-center justify-between">
                         <h3 className="font-semibold text-gray-200">
-                            掃描結果 — 找到 {foundCount}/4 項
+                            {t('data.scan.found_summary', { found: foundCount })}
                         </h3>
                         {foundCount > 0 && (
                             <button
@@ -550,6 +552,7 @@ export default function DataSetup() {
                         </div>
                     )}
 
+                    {/* 發現的檔案清單 */}
                     <div className="space-y-2">
                         {(['he_image', 'binned_002', 'binned_008'] as const).map(key => {
                             const item = scanResult[key]
@@ -577,14 +580,15 @@ export default function DataSetup() {
                         })}
                     </div>
 
+
                     {/* Pixel size */}
                     <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface/50 border border-surface-border">
                         <div className="min-w-0 flex-1">
                             <p className="text-sm text-gray-300">Pixel Size (µm/px)</p>
                             <p className="text-xs text-gray-500">
                                 {scanResult.pixel_size_um != null
-                                    ? `自 scalefactors_json.json 偵測`
-                                    : '未偵測到，使用預設值'}
+                                    ? t('data.scan.scalefactors_detected')
+                                    : t('data.scan.scalefactors_not_detected')}
                             </p>
                         </div>
                         <input
@@ -609,7 +613,7 @@ export default function DataSetup() {
                     {/* 備選檔案 */}
                     {scanResult.extra_files.length > 0 && (
                         <div className="pt-2">
-                            <p className="text-xs text-gray-500 mb-1">其他發現的檔案：</p>
+                            <p className="text-xs text-gray-500 mb-1">{t('data.results.extra_files')}</p>
                             {scanResult.extra_files.map((f, i) => (
                                 <p key={i} className="text-xs text-gray-600 font-mono truncate">{f.label}: {f.path}</p>
                             ))}

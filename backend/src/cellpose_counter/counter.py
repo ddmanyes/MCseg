@@ -102,6 +102,12 @@ def count_rna_per_cell(
     logger.info(f"載入 bins AnnData：{adata_path}")
     adata = sc.read_h5ad(str(adata_path))
     logger.info(f"  bins n_obs={adata.n_obs}, n_vars={adata.n_vars}")
+    if adata.n_obs == 0:
+        raise ValueError(
+            f"adata_002um.h5ad 包含 0 個 bin，無法進行空間細胞歸屬 (CellAttribution)。\n"
+            f"可能原因：該 ROI 框選在 Visium HD 晶片定序範圍 (CaptureAreaBoundingBox) 之外。\n"
+            f"請至 Stage 0 檢查綠色晶片捕獲區並重新框選 ROI。"
+        )
 
     logger.info(f"載入 Cellpose 遮罩：{mask_path}")
     seg_mask = np.load(str(mask_path))
@@ -139,7 +145,7 @@ def count_rna_per_cell(
     n_valid = valid.sum()
     n_out = len(adata) - n_valid
     logger.info(f"  有效 bins：{n_valid}（ROI 內），{n_out} 個超出 ROI 範圍（忽略）")
-    if n_out > 0 and n_out / len(adata) > 0.3:
+    if len(adata) > 0 and n_out > 0 and n_out / len(adata) > 0.3:
         min_col = int(roi_col.min())
         min_row = int(roi_row.min())
         logger.warning(
@@ -157,12 +163,19 @@ def count_rna_per_cell(
     # 只保留被分配到細胞（cell_id > 0）的 bins
     in_cell_mask = bin_cell_ids > 0
     n_assigned = in_cell_mask.sum()
-    logger.info(f"  分配至細胞的 bins：{n_assigned}（{n_assigned/len(adata)*100:.1f}%）")
+    pct_assigned = (n_assigned / len(adata) * 100) if len(adata) > 0 else 0.0
+    logger.info(f"  分配至細胞的 bins：{n_assigned}（{pct_assigned:.1f}%）")
 
     # ── 5. 取得所有唯一細胞 ID（按 mask 中出現順序排序）─────────────────
     unique_cells = np.unique(seg_mask[seg_mask > 0])
     n_cells = len(unique_cells)
     logger.info(f"  Cellpose 細胞數：{n_cells}")
+    if n_cells == 0:
+        raise ValueError(
+            f"Cellpose 遮罩中未偵測到任何細胞（mask 全部為 0）。\n"
+            f"請檢查 Stage 1 分割參數或確認 H&E 影像品質。"
+        )
+
 
     # 向量化 LUT：O(max_id) 建立，O(n_assigned) 查詢，比 Python dict O(n) 快 10-100x
     lut = np.zeros(int(unique_cells.max()) + 1, dtype=np.int32)

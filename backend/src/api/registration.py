@@ -35,7 +35,7 @@ class ApplyParams(BaseModel):
 
 
 class SetAlignmentJsonParams(BaseModel):
-    path: str
+    path: Optional[str] = None
 
 
 def _resolve_inputs(config: dict) -> tuple[Path, Path, tuple[int, int]] | None:
@@ -223,26 +223,30 @@ async def apply_alignment(params: Optional[ApplyParams] = None):
 
 @router.get("/alignment_json")
 async def get_alignment_json():
-    """回傳目前設定的 `alignment.extra_alignment_json` 路徑（未設定時為 null）。"""
+    """回傳目前設定的 `alignment.extra_alignment_json` 路徑（未設定或檔案無效時為 null）。"""
     config = load_config()
     path = (config.get("alignment") or {}).get("extra_alignment_json")
+    if path:
+        p = Path(path)
+        data_root = (config.get("paths") or {}).get("data_root")
+        # 檔案不存在，或與當前 data_root 目錄完全脫節時自動清除留空
+        if not p.exists() or (data_root and str(Path(data_root).resolve()) not in str(p.resolve())):
+            logger.info(f"對位 JSON 已無效或不屬於當前樣本（{path}），自動清除留空")
+            save_state({"alignment": {"extra_alignment_json": None}})
+            path = None
     return {"status": "ok", "data": {"path": path}}
 
 
 @router.post("/set_alignment_json")
 async def set_alignment_json(params: SetAlignmentJsonParams):
     """
-    指定 Loupe 對高解析圖重新對位後產生的 JSON（`alignment.extra_alignment_json`）。
-
-    用途：這批樣本沒有 CytAssist 註冊檔（或只有低解析版本）時，使用者可能會
-    另外輸出一張更清晰的圖、用 Loupe Browser 重新對位產生新 JSON——這裡讓
-    使用者指定該檔案，取代原本只能手動編輯 `state.json` 的做法。
-
-    驗證流程：檔案存在 → `load_alignment` 能解析格式 → 試算一次
-    `resolve_bin_to_image_transform`（沿用目前 config + 這個新路徑）。三者都
-    通過才寫入 `state.json`，避免半殘設定讓 Stage 0 ROI 裁切／Stage 2 計數
-    在使用者不知情下悄悄退回近似縮放 fallback。
+    指定或清除 Loupe 對高解析圖重新對位後產生的 JSON（`alignment.extra_alignment_json`）。
+    傳入空字串或 null 則自動清空設定（留空）。
     """
+    if not params.path or not params.path.strip():
+        save_state({"alignment": {"extra_alignment_json": None}})
+        return {"status": "ok", "message": "已清除對位 JSON 設定", "data": {"path": None}}
+
     path = Path(params.path).expanduser()
     if not path.exists():
         return {"status": "error", "message": f"找不到檔案：{path}"}
@@ -272,8 +276,6 @@ async def set_alignment_json(params: SetAlignmentJsonParams):
         return {"status": "error", "message": f"對位 JSON 驗證發生未預期錯誤：{e}（詳見 log）"}
 
     if "對位 JSON" not in source:
-        # 試算成功但實際落回近似縮放 fallback（例如 mpp 對不上、或跟 H_old 是
-        # 同一張圖）—— 仍寫入設定並如實告知，不擋使用者，但不能假裝生效了。
         logger.warning(f"指定的對位 JSON 未被實際採用（{source}）")
 
     save_state({"alignment": {"extra_alignment_json": str(path)}})
@@ -283,3 +285,4 @@ async def set_alignment_json(params: SetAlignmentJsonParams):
         "data": {"transform_source": source, "equivalent_scale": round(matrix_scale(transform), 5)},
         "message": f"已寫入 state.json，目前變換來源：{source}",
     }
+
