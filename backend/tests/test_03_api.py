@@ -23,6 +23,9 @@ class TestHealthEndpoints:
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "ok"
+        # 桌面殼（Tauri）靠這個欄位分辨 port 8001 上回應的是不是我們自己的
+        # 後端，而不是別的軟體剛好用了同一個 port——回歸測試釘住不能被拿掉。
+        assert data["service"] == "mcseg"
 
     async def test_config(self, client):
         r = await client.get("/api/config")
