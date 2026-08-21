@@ -975,7 +975,7 @@ MSseg/
 
 ## P7 — QC 直方圖統計邏輯搬遷
 
-- [ ] **P7-1** 🔴 紅燈：`qc_summary` 模組尚不存在
+- [x] **P7-1** 🔴 紅燈：`qc_summary` 模組尚不存在
   - 預期行為：新增 `backend/tests/test_17_qc_summary.py`，`from backend.src.analysis.qc_summary import compute_qc_histogram, QcMetricHistogram`，寫 5 個測試案例：
     1. 常態分布陣列 → `mad_min < p50 < mad_max`，`bin_edges` 長度為 `n_bins+1`。
     2. 右偏分布（如 `np.random.lognormal`）→ `mad_max` 明顯大於線性空間直接算的 `median + 3*MAD`（驗證 log1p 空間轉換確實生效，而非線性 MAD）。
@@ -986,19 +986,19 @@ MSseg/
   - 相關檔案：`backend/tests/test_17_qc_summary.py`
   - commit：`test(analysis): 紅燈 — qc_summary 模組尚不存在`
 
-- [ ] **P7-2** 🟢 綠燈：建立 qc_summary 模組
+- [x] **P7-2** 🟢 綠燈：建立 qc_summary 模組
   - 預期行為：新增 `backend/src/analysis/qc_summary.py`，定義 `@dataclass class QcMetricHistogram`（欄位：`label: str, unit: str, bin_edges: list[float], counts: list[int], mad_min: float, mad_max: float, p5: float, p50: float, p95: float, p99: float, mean: float`，方法 `to_dict(self) -> dict` 用 `dataclasses.asdict(self)`），以及 `compute_qc_histogram(arr, label: str, unit: str = "", n_bins: int = 60) -> QcMetricHistogram | None`，把 `api/analysis.py::_hist_metric` 現有邏輯原封不動搬過來（含 `arr = arr[np.isfinite(arr) & (arr >= 0)]` 過濾、`arr.max() == 0` 早退回 `None`、`len(arr) == 0` 早退回 `None`、log1p 空間 MAD 計算）。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_17_qc_summary.py -q` 全綠。
   - 相關檔案：`backend/src/analysis/qc_summary.py`
   - commit：`feat(analysis): 新增 qc_summary（QC 直方圖 + MAD 範圍建議）`
 
-- [ ] **P7-3** 🔴 紅燈：API 尚未改接
+- [x] **P7-3** 🔴 紅燈：API 尚未改接
   - 預期行為：在 `backend/tests/test_06_qc_metrics.py` 新增 `test_api_histogram_delegates_to_qc_summary`，讀 `api/analysis.py` 原始碼，斷言 `get_raw_histogram` 函式範圍內含 `"compute_qc_histogram"` 字串。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_06_qc_metrics.py -k delegates_to_qc_summary -q` → 斷言失敗（`get_raw_histogram` 目前呼叫的是 `_hist_metric`），確認先紅燈。
   - 相關檔案：`backend/tests/test_06_qc_metrics.py`
   - commit：`test(analysis): 紅燈 — get_raw_histogram 尚未改接 qc_summary`
 
-- [ ] **P7-4** 🟢 綠燈：API 改接 qc_summary，刪除 `_hist_metric`
+- [x] **P7-4** 🟢 綠燈：API 改接 qc_summary，刪除 `_hist_metric`
   - 預期行為：修改 `backend/src/api/analysis.py`：頂部 import `from backend.src.analysis.qc_summary import compute_qc_histogram`；`get_raw_histogram` 內把每一處 `metrics["total_counts"] = _hist_metric(...)` 改成：
     ```python
     result = compute_qc_histogram(obs["total_counts"].values, "Transcripts Per Cell")
@@ -1009,21 +1009,22 @@ MSseg/
   - 相關檔案：`backend/src/api/analysis.py`
   - commit：`fix(analysis): get_raw_histogram 改用 qc_summary，刪除內嵌統計邏輯`
 
-- [ ] **P7-5** 補強釘子測試
+- [x] **P7-5** 補強釘子測試
   - 預期行為：擴充 P7-3 新增的測試，在同一個 `histogram_src` 切片上再加斷言：`"log_mad" not in histogram_src` 且 `"np.percentile" not in histogram_src`。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_06_qc_metrics.py -q` 全綠。
   - 相關檔案：`backend/tests/test_06_qc_metrics.py`
   - commit：`test(analysis): 釘住 api/analysis.py 不得再出現直方圖統計數學`
 
-- [ ] **P7-6** JSON 契約回歸測試
+- [x] **P7-6** JSON 契約回歸測試
   - 預期行為：在 `test_06_qc_metrics.py` 新增一個端到端測試：用一個 `total_counts` 全為 0 的合成 h5ad 呼叫 `get_raw_histogram`（走 FastAPI TestClient 或直接 `await` 呼叫皆可，比照檔案內既有寫法），斷言回傳 JSON 的 `data.metrics` 字典**仍含 `total_counts` 這個 key**、值為 `{}`（不是被省略）。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_06_qc_metrics.py -q` 全綠。
   - 相關檔案：`backend/tests/test_06_qc_metrics.py`
   - commit：`test(analysis): 釘住退化指標的 JSON key 不得被省略`
 
-- [ ] **P7-7** ♻️ 重構收尾
+- [x] **P7-7** ♻️ 重構收尾 ✅ 2026-08-21
   - 預期行為：`find . -name '._*' -delete`；確認前端 `Stage3_Analysis.tsx`/`QcHistogram.tsx` 完全未改動。
-  - 驗證：`.venv/bin/python -m pytest backend/tests/ -q` 全綠；`cd frontend && npm run build` 通過（保險，理論上無關聯）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/ -q -k "not TestRealSlideCoverage"` 全綠。
+  - **結果**：343 passed, 4 deselected（同 P6-6，排除外接硬碟真實資料測試）。前端未改動，`npm run build` 保險驗證略過（P8 收尾時會一併確認一次）。
   - 相關檔案：無新改動
   - commit：`docs(plan): P7 完成`
 
