@@ -578,29 +578,32 @@ class TestFullSegCropValidation:
 
 
 class TestResolveCropWindow:
-    """裁切座標 → 實際切片邊界（-1/None 展開為影像邊界）"""
+    """裁切座標 → 實際切片邊界（-1/None 展開為影像邊界）
+
+    架構深化 P8：`resolve_crop_window` 下沉到 `fullslide.pipeline`，簽章從
+    `FullSegParams`（pydantic）改成 4 個 plain scalar，CLI 也能直接呼叫，
+    不需要讓領域層反向依賴 API 層的請求型別。
+    """
 
     def test_none_expands_to_full_image(self):
-        from backend.src.api.segmentation import FullSegParams, resolve_crop_window
+        from backend.src.fullslide.pipeline import resolve_crop_window
 
-        x0, y0, x1, y1 = resolve_crop_window(FullSegParams(), w_img=500, h_img=400)
+        x0, y0, x1, y1 = resolve_crop_window(None, None, None, None, w_img=500, h_img=400)
 
         assert (x0, y0, x1, y1) == (0, 0, 500, 400)
 
     def test_minus_one_expands_to_full_image(self):
-        from backend.src.api.segmentation import FullSegParams, resolve_crop_window
+        from backend.src.fullslide.pipeline import resolve_crop_window
 
-        params = FullSegParams(crop_x0=10, crop_x1=-1, crop_y0=20, crop_y1=-1)
-        x0, y0, x1, y1 = resolve_crop_window(params, w_img=500, h_img=400)
+        x0, y0, x1, y1 = resolve_crop_window(10, 20, -1, -1, w_img=500, h_img=400)
 
         assert (x0, y0, x1, y1) == (10, 20, 500, 400)
 
     def test_window_is_clamped_to_image_bounds(self):
         """超出影像邊界的請求須被夾住，而非產生越界切片。"""
-        from backend.src.api.segmentation import FullSegParams, resolve_crop_window
+        from backend.src.fullslide.pipeline import resolve_crop_window
 
-        params = FullSegParams(crop_x0=0, crop_x1=9999, crop_y0=0, crop_y1=9999)
-        x0, y0, x1, y1 = resolve_crop_window(params, w_img=500, h_img=400)
+        x0, y0, x1, y1 = resolve_crop_window(0, 0, 9999, 9999, w_img=500, h_img=400)
 
         assert (x1, y1) == (500, 400)
 

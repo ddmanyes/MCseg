@@ -849,6 +849,8 @@ class FullSegResult:
     n_cells: int
     image_width: int
     image_height: int
+    crop_x0: int
+    crop_y0: int
     is_full_image: bool
 
 
@@ -967,5 +969,7 @@ def run_full_slide_segmentation(
         n_cells=n_cells,
         image_width=w_img,
         image_height=h_img,
+        crop_x0=rx0,
+        crop_y0=ry0,
         is_full_image=is_full_image,
     )
