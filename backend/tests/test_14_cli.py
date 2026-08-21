@@ -205,6 +205,37 @@ class TestCliSmoke:
         assert seen == {"tile_size": 256, "overlap": 64}
 
 
+class TestCliExportXenium:
+    """`step_export_xenium` 產生的多邊形必須與 Web UI（`export/geometry.py`）同一套過濾規則"""
+
+    def test_filters_small_noise_polygons(self, tmp_path, monkeypatch):
+        """單像素雜訊細胞（面積 < 20px）不得出現在 Xenium 匯出的多邊形裡。"""
+        from backend.src.cli.segment import step_export_xenium
+        from backend.src.export import xenium_exporter
+
+        class _FakeExporter:
+            def __init__(self, **kwargs):
+                pass
+
+            def export(self, cells_h5ad_path, xen_dir):
+                Path(xen_dir).mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(xenium_exporter, "XeniumExporter", _FakeExporter)
+
+        mask = np.zeros((40, 40), dtype=np.int32)
+        mask[5:15, 5:15] = 1       # 大細胞：100 px
+        mask[30:32, 30:32] = 2     # 雜訊：4 px < min_area_px=20
+
+        cells_h5ad_path = tmp_path / "cells.h5ad"
+        cells_h5ad_path.write_bytes(b"")  # 內容不重要，export() 已被假掉
+
+        step_export_xenium(mask, cells_h5ad_path, tmp_path, pixel_size_um=0.5, he_image_path=None)
+
+        geo = json.loads((tmp_path / "cells_polygons.geojson").read_text(encoding="utf-8"))
+        assert len(geo["features"]) == 1
+        assert geo["features"][0]["properties"]["cell_id"] == 1
+
+
 class TestCliTissuePresets:
     """CLI 的組織參數必須與 Web UI 同源（`config/profiles/`）
 
