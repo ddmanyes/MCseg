@@ -312,44 +312,27 @@ def step_export_xenium(
     """[6/6] 將整片遮罩 + cells.h5ad 匯出為 Xenium Explorer bundle。"""
     import json
 
-    import numpy as np
-    from skimage import measure
-
     xen_dir = out_dir / "xenium_explorer"
     if (xen_dir / "experiment.xenium").exists():
         log.info(f"[SKIP] Xenium bundle 已存在: {xen_dir.name}")
         return xen_dir
 
     # 1. 細胞多邊形 GeoJSON（局部 µm，原點 = 裁切左上角；格式同 GUI 匯出）
+    # 與 Web UI 共用同一套 regionprops/find_contours 邏輯與 min_area_px 雜訊過濾
+    # （backend/src/export/geometry.py），mask 已在記憶體中故直接吃陣列版本，
+    # 不重新從硬碟 np.load 一次。
     geojson_path = out_dir / "cells_polygons.geojson"
     if geojson_path.exists():
         log.info(f"[SKIP] 載入已存在的多邊形: {geojson_path.name}")
     else:
         n_cells = int(mask.max())
         log.info(f"[6/6] 產生細胞多邊形 GeoJSON（{n_cells:,} cells，整片可能較久）…")
-        features = []
-        for prop in measure.regionprops(mask):
-            cid = prop.label
-            r0, c0, r1, c1 = prop.bbox
-            cell_crop = (mask[r0:r1, c0:c1] == cid).astype(np.uint8)
-            contours = measure.find_contours(np.pad(cell_crop, 1, mode="constant"), 0.5)
-            if not contours:
-                continue
-            contour = max(contours, key=len)
-            xy_um = np.column_stack([
-                (contour[:, 1] - 1 + c0) * pixel_size_um,   # col → x
-                (contour[:, 0] - 1 + r0) * pixel_size_um,   # row → y
-            ])
-            if not np.allclose(xy_um[0], xy_um[-1]):
-                xy_um = np.vstack([xy_um, xy_um[0]])
-            features.append({
-                "type": "Feature",
-                "geometry": {"type": "Polygon", "coordinates": [xy_um.tolist()]},
-                "properties": {"full_id": str(int(cid)), "cell_id": int(cid)},
-            })
+        from backend.src.export.geometry import _mask_array_to_geojson
+
+        feature_collection = _mask_array_to_geojson(mask, pixel_size_um, min_area_px=20)
         with open(geojson_path, "w", encoding="utf-8") as f:
-            json.dump({"type": "FeatureCollection", "features": features}, f)
-        log.info(f"  多邊形數: {len(features):,} → {geojson_path.name}")
+            json.dump(feature_collection, f)
+        log.info(f"  多邊形數: {len(feature_collection['features']):,} → {geojson_path.name}")
 
     # 2. 組裝 Xenium Explorer bundle（多邊形 µm 座標與 cells.h5ad obs['cell_id'] 對齊）
     log.info("  匯出 Xenium Explorer bundle…")
