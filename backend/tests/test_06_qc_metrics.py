@@ -88,3 +88,5 @@ class TestComputeQCMetrics:
         histogram_src = body[start:end]
 
         assert "compute_qc_histogram" in histogram_src
+        assert "log_mad" not in histogram_src
+        assert "np.percentile" not in histogram_src
