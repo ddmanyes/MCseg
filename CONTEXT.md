@@ -56,6 +56,10 @@ _Avoid_: Matrix aggregation, bin counter
 Quality control (QC) filtering, UMAP dimensionality reduction, Leiden clustering, and CellTypist cell-type annotation.
 _Avoid_: Scanpy runner, clustering
 
+**QcRangeSuggestion**:
+A recommended min/max filtering bound for a single QC metric (e.g. total_counts, pct_counts_mt), derived from that metric's median and MAD in log1p space. Pre-fills the Stage3 QC threshold UI; the user may still override it manually.
+_Avoid_: Histogram stats, outlier bounds, threshold recommendation
+
 **TierClassification**:
 Hierarchical cell-type labeling structure: Tier 1 (Broad tissue type), Tier 2 (Specific cell lineage), Tier 3 (Functional state/subtype).
 _Avoid_: Cluster name, cell label
