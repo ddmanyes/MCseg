@@ -236,6 +236,17 @@ class TestCliExportXenium:
         assert geo["features"][0]["properties"]["cell_id"] == 1
 
 
+class TestCliLayerIsThin:
+    """回歸：GeoJSON 生成邏輯只能有一份（`export/geometry.py`）"""
+
+    def test_no_geojson_generation_logic_duplicated(self):
+        src = (Path(__file__).resolve().parents[1] / "src" / "cli" / "segment.py").read_text(
+            encoding="utf-8"
+        )
+        for gone in ("find_contours", "measure.regionprops"):
+            assert gone not in src, f"{gone} 不應再出現在 cli/segment.py（改呼叫 export.geometry）"
+
+
 class TestCliTissuePresets:
     """CLI 的組織參數必須與 Web UI 同源（`config/profiles/`）
 

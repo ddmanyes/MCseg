@@ -318,7 +318,7 @@ def step_export_xenium(
         return xen_dir
 
     # 1. 細胞多邊形 GeoJSON（局部 µm，原點 = 裁切左上角；格式同 GUI 匯出）
-    # 與 Web UI 共用同一套 regionprops/find_contours 邏輯與 min_area_px 雜訊過濾
+    # 與 Web UI 共用同一套多邊形產生邏輯與 min_area_px 雜訊過濾
     # （backend/src/export/geometry.py），mask 已在記憶體中故直接吃陣列版本，
     # 不重新從硬碟 np.load 一次。
     geojson_path = out_dir / "cells_polygons.geojson"
