@@ -842,6 +842,46 @@ def resolve_crop_window(
     return x0, y0, x1, y1
 
 
+def check_full_seg_mask_memory(width: int, height: int, max_load_gb: float) -> None:
+    """檢查全片分割輸出遮罩（int32，寫檔前需完整存在於記憶體一次）是否超限。
+
+    共用給 API 全片路徑（`run_full_slide_segmentation`）與 CLI 全片路徑
+    （`cli.segment.step_segment`）——兩邊窗格大小的來源不同（前者用串流讀取
+    的裁切窗格，後者用已載入的 `img.shape`），但同一份 int32 遮罩的記憶體
+    上限判斷邏輯只該有一份。超限時 raise `MemoryError`，不得默默 OOM。
+    """
+    mask_gb = height * width * 4 / 1024 ** 3
+    if mask_gb > max_load_gb:
+        raise MemoryError(
+            f"窗格 {width}×{height}px 的分割遮罩約 {mask_gb:.1f} GB（int32），"
+            f"超過安全上限（max_load_gb = {max_load_gb:g} GB）。"
+            f"請縮小裁切範圍，或調高該設定值。"
+        )
+
+
+def apply_full_seg_safety_clamp(
+    seg_cfg: dict,
+    *,
+    force_disable_cpsam: bool = True,
+    use_cpsam: Optional[bool] = None,
+) -> dict:
+    """套用 MPS `batch_size ≤ 2` 安全鉗制與 cpsam 停用決策，回傳一份新 cfg。
+
+    batch_size 鉗制對所有呼叫端**無條件**生效（見 `docs/adr/0005`）。
+    `force_disable_cpsam=True`（Web UI 全片路徑的預設，因為全圖模式 cpsam 極耗
+    記憶體）時無視 `use_cpsam` 一律關閉；CLI 呼叫端應傳 `force_disable_cpsam=
+    False`，讓使用者透過 `--cpsam` 旗標的既有行為保留（CLI 裁切窗格由使用者
+    自行控制大小，不像 Web UI 全片按鈕預設面對整張未知大小的切片）。
+    """
+    seg_cfg_safe = dict(seg_cfg)
+    seg_cfg_safe["batch_size"] = min(int(seg_cfg_safe.get("batch_size", 2)), 2)
+    if force_disable_cpsam:
+        seg_cfg_safe["use_cpsam"] = False
+    elif use_cpsam is not None:
+        seg_cfg_safe["use_cpsam"] = use_cpsam
+    return seg_cfg_safe
+
+
 @dataclass
 class FullSegResult:
     """一次全片分割的產出。"""
@@ -906,13 +946,7 @@ def run_full_slide_segmentation(
 
     # 影像本身已改為串流讀取，不再受 RAM 限制；剩下的硬限制是**輸出遮罩**
     # （int32，4 bytes/px）—— 它在寫檔前必須完整存在於記憶體一次。
-    mask_gb = crop_h * crop_w * 4 / 1024 ** 3
-    if mask_gb > max_load_gb:
-        raise MemoryError(
-            f"窗格 {crop_w}×{crop_h}px 的分割遮罩約 {mask_gb:.1f} GB（int32），"
-            f"超過安全上限（full_seg.max_load_gb = {max_load_gb:g} GB）。"
-            f"請縮小裁切範圍，或調高該設定值。"
-        )
+    check_full_seg_mask_memory(crop_w, crop_h, max_load_gb)
 
     is_full_image = (rx0, ry0, rx1, ry1) == (0, 0, w_img, h_img)
     scope_label = "全圖" if is_full_image else f"窗格 ({rx0},{ry0})"
@@ -921,14 +955,11 @@ def run_full_slide_segmentation(
     # MPS 安全設定：tile_size=1024, batch_size≤2（無條件套用，docs/adr/0005）
     tile_size = int(full_cfg.get("tile_size", 1024))
     overlap = int(full_cfg.get("overlap", 128))
-    seg_cfg_safe = dict(seg_cfg)
-    seg_cfg_safe["batch_size"] = min(int(seg_cfg_safe.get("batch_size", 2)), 2)
-    # cpsam 在全圖模式極耗記憶體，預設強制停用；設 full_seg.force_disable_cpsam=false
-    # 後可由請求的 use_cpsam 決定（未指定則沿用 mcseg_v2 設定）
-    if full_cfg.get("force_disable_cpsam", True):
-        seg_cfg_safe["use_cpsam"] = False
-    elif use_cpsam is not None:
-        seg_cfg_safe["use_cpsam"] = use_cpsam
+    seg_cfg_safe = apply_full_seg_safety_clamp(
+        seg_cfg,
+        force_disable_cpsam=full_cfg.get("force_disable_cpsam", True),
+        use_cpsam=use_cpsam,
+    )
 
     final_mask = run_tiled_mcseg_v2(
         cfg=seg_cfg_safe,

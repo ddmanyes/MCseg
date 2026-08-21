@@ -43,6 +43,56 @@ def _base_config(tmp_path, btf_path, **full_seg_overrides):
     }
 
 
+class TestCheckFullSegMaskMemory:
+    """`check_full_seg_mask_memory`：OOM 防護的獨立單元測試（CLI 與 API 共用）"""
+
+    def test_within_limit_does_not_raise(self):
+        from backend.src.fullslide.pipeline import check_full_seg_mask_memory
+
+        check_full_seg_mask_memory(width=1000, height=1000, max_load_gb=6.0)  # 不應拋錯
+
+    def test_over_limit_raises_memory_error_with_size_info(self):
+        from backend.src.fullslide.pipeline import check_full_seg_mask_memory
+
+        with pytest.raises(MemoryError, match=r"1000×1000px"):
+            check_full_seg_mask_memory(width=1000, height=1000, max_load_gb=1e-6)
+
+
+class TestApplyFullSegSafetyClamp:
+    """`apply_full_seg_safety_clamp`：batch_size 鉗制與 cpsam 決策的獨立單元測試"""
+
+    def test_batch_size_always_clamped(self):
+        from backend.src.fullslide.pipeline import apply_full_seg_safety_clamp
+
+        result = apply_full_seg_safety_clamp({"batch_size": 8}, force_disable_cpsam=False)
+        assert result["batch_size"] == 2
+
+    def test_force_disable_cpsam_true_ignores_requested_use_cpsam(self):
+        from backend.src.fullslide.pipeline import apply_full_seg_safety_clamp
+
+        result = apply_full_seg_safety_clamp(
+            {"batch_size": 1}, force_disable_cpsam=True, use_cpsam=True
+        )
+        assert result["use_cpsam"] is False
+
+    def test_force_disable_cpsam_false_preserves_original_when_use_cpsam_unset(self):
+        """CLI 呼叫端傳 force_disable_cpsam=False 且不傳 use_cpsam 時，原 cfg 的
+        use_cpsam（來自 CLI --cpsam 旗標）必須原樣保留，不被覆寫。"""
+        from backend.src.fullslide.pipeline import apply_full_seg_safety_clamp
+
+        result = apply_full_seg_safety_clamp(
+            {"batch_size": 1, "use_cpsam": True}, force_disable_cpsam=False
+        )
+        assert result["use_cpsam"] is True
+
+    def test_does_not_mutate_input_dict(self):
+        from backend.src.fullslide.pipeline import apply_full_seg_safety_clamp
+
+        original = {"batch_size": 8, "use_cpsam": True}
+        apply_full_seg_safety_clamp(original, force_disable_cpsam=True)
+        assert original == {"batch_size": 8, "use_cpsam": True}
+
+
 class TestOomGuard:
     def test_oversized_mask_raises_memory_error(self, tmp_path, monkeypatch):
         """遮罩超過 max_load_gb 必須明確報錯，而非默默 OOM"""
