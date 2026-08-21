@@ -868,3 +868,249 @@ find . -name '._*' -delete
 .venv/bin/python -m pytest backend/tests/ -q     # 全綠
 cd frontend && npm run build                      # 通過
 ```
+
+---
+---
+
+# 附錄：架構深化計畫（P6–P8）
+
+> 建立日期：2026-08-21
+> 前置：`/improve-architecture` 探索 + `sp-brainstorming` 拷問已完成、使用者已批准。
+> 完整候選分析見架構檢視報告：`/private/tmp/claude-501/-Volumes-SSD-plan-a/9a7475ae-da2e-42e9-b1c4-0528036119da/scratchpad/architecture-review-20260821-095420.md`
+> 領域模型副作用已當場完成：`CONTEXT.md` 新增 `QcRangeSuggestion` 詞條；`docs/adr/0005-mps-batch-size-clamp-applies-to-cli.md` 已記錄。
+> 測試指令沿用本文件慣例：`.venv/bin/python -m pytest`（**禁用** `uv run pytest`）。新測試檔編號從 **test_17** 起（`test_01`–`test_16` 已佔用，見 `backend/tests/`）。
+> 三個候選彼此獨立、無相依，可任意順序執行，也可只做其中一個。
+
+## 目標摘要
+
+| # | 目標 | 現況 | 完成後 |
+|---|------|------|--------|
+| P6 | CLI GeoJSON 生成邏輯去重複 | `cli/segment.py::step_export_xenium` 手刻一份 regionprops/find_contours，已與 `export/geometry.py::mask_to_geojson` 分歧（漏 `min_area_px` 過濾） | 兩處共用同一顆純函式，CLI 自動獲得雜訊過濾 |
+| P7 | QC 直方圖統計邏輯搬遷 | `api/analysis.py::_hist_metric`（MAD/percentile 數學）藏在 route handler，零測試覆蓋 | 邏輯搬進 `analysis/qc_summary.py`，可獨立單元測試；對外 JSON 契約不變 |
+| P8 | 全片分割編排邏輯下沉 | `api/segmentation.py::_run_full_segmentation` 內含 OOM 防護/MPS 鉗制/tile_reader 組裝，CLI 全片路徑因此完全沒有這些安全網 | 邏輯搬進 `fullslide/pipeline.py::run_full_slide_segmentation`，API 與 CLI 共用同一套安全防護 |
+
+### 現況事實（動工前已查證，作為計畫依據）
+
+- **P6**：`export/geometry.py::mask_to_geojson(mask_path, pixel_size_um, min_area_px=20)` 內部 `np.load` 後跑 regionprops→pad→find_contours→建 Polygon。`export/jobs.py::_combine_roi_polygons` 已正確重用它（有 `test_08_export_jobs.py::TestApiLayerIsThin` 釘住 API 層不得重刻）。`cli/segment.py::step_export_xenium`（約 :331–351）目前手刻同一段邏輯但**沒有** `min_area_px` 過濾，是唯一還沒接上共用函式的呼叫端。
+- **P7**：`analysis/preprocessing.py::compute_qc_metrics` 是「QC 指標怎麼算」的唯一入口，已被 `test_06_qc_metrics.py::test_api_histogram_uses_shared_entry` 釘住重用。但 `_hist_metric`（`api/analysis.py:189-219`，log1p 空間 median/MAD 推導 `mad_min`/`mad_max` + 5 個百分位數 + 直方圖分箱）沒有對應保護，也沒有單元測試。
+- **P7**：前端 `Stage3_Analysis.tsx:805` 用 `histData.metrics.total_counts && (...)`（truthy 檢查）決定是否渲染 `<QcHistogram>`，`:805` 上一行 `Object.keys(histData.metrics).length >= 4` 決定格線欄數。退化情況（空陣列/全 0）今天回傳 `{}`（truthy，key 仍存在）——**JSON 契約必須維持現狀**，`None` 只能是 Python 內部型別，組回應時仍要塞 `{}`。
+- **P8**：`FullSegParams`（`api/segmentation.py:86-96`，pydantic）的 `crop_x0/x1/y0/y1` + `-1` 開放上界哨兵，與 CLI `main()`（`cli/segment.py:490-497`）的 `--crop-y0/--crop-y1/--btf-col0/--btf-col1` + `-1` 哨兵語意一致。`_upper_is_open`/`_SENTINEL_FULL`/`resolve_crop_window`（`api/segmentation.py:99-145`）目前用 `FullSegParams`（pydantic）當參數型別——若原封不動搬進 `fullslide/pipeline.py`，會讓一個領域模組反向依賴 API 層的 pydantic 型別，方向錯了。**這三個函式也要一起搬**，簽章改成 4 個 plain `Optional[int]`（不吃 pydantic 物件），這樣 CLI 也能直接呼叫，順便消滅 `cli/segment.py::main()` 裡第三份手刻的「`-1` 代表取到影像邊界」邏輯（目前 API 一份、CLI 一份、`validate_crop` 內部邏輯又是第三份的變體）。這是原本 grilling 時沒有明講、但為了不製造新的「領域層依賴 API 層」問題而必須一起做的範圍微調，之後跑 `git diff` 時會看到這三個函式也被搬動，特此說明。
+- **P8**：`test_10_fullslide.py::TestRunFullStreaming`（:1369-1429）目前直接呼叫 `seg._run_full_segmentation`（私有函式）做端到端驗證，涵蓋「串流分割成功」與「遮罩超限報 `MemoryError`」兩種情境。**這兩條測試維持呼叫 `_run_full_segmentation` 不變**——它們驗證的是「API 層 + 領域函式」整體行為，重構後應該原封不動全綠，可當作外層回歸網。MPS `batch_size` 鉗制目前**完全沒有測試**（已 grep 確認），P8 要新增。
+
+## 文件架構圖
+
+```text
+MSseg/
+├── docs/adr/0005-mps-batch-size-clamp-applies-to-cli.md   ← 已建立（brainstorming 階段）
+├── CONTEXT.md                                              ← 已修改（QcRangeSuggestion，brainstorming 階段）
+├── backend/
+│   ├── src/
+│   │   ├── export/
+│   │   │   └── geometry.py            ← 修改：新增 _mask_array_to_geojson，mask_to_geojson 改委派
+│   │   ├── analysis/
+│   │   │   ├── qc_summary.py          ← 新增：QcMetricHistogram + compute_qc_histogram
+│   │   │   └── preprocessing.py       ← 不動
+│   │   ├── fullslide/
+│   │   │   └── pipeline.py            ← 修改：新增 run_full_slide_segmentation +
+│   │   │                                  搬入 _upper_is_open/resolve_crop_window/_SENTINEL_FULL
+│   │   ├── api/
+│   │   │   ├── analysis.py            ← 修改：get_raw_histogram 改呼叫 qc_summary，刪 _hist_metric
+│   │   │   └── segmentation.py        ← 修改：_run_full_segmentation 縮薄；
+│   │   │                                  crop 相關函式改 import fullslide.pipeline
+│   │   └── cli/
+│   │       └── segment.py             ← 修改：step_export_xenium 改呼叫 geometry；
+│   │                                      step_segment 改呼叫 run_full_slide_segmentation；
+│   │                                      main() 的 crop 邊界解析改呼叫 resolve_crop_window
+│   └── tests/
+│       ├── test_06_qc_metrics.py      ← 修改：擴充釘子測試
+│       ├── test_07_export_inputs.py   ← 修改：新增 _mask_array_to_geojson 測試
+│       ├── test_10_fullslide.py       ← 修改：新增釘子測試；既有 TestRunFullStreaming 不變
+│       ├── test_14_cli.py             ← 修改：新增 TestCliLayerIsThin + CLI 全片 meta 測試
+│       ├── test_17_qc_summary.py      ← 新增
+│       └── test_18_fullslide_segmentation_job.py  ← 新增
+```
+
+---
+
+## P6 — CLI GeoJSON 生成邏輯去重複
+
+- [x] **P6-1** 🔴 紅燈：`_mask_array_to_geojson` 尚不存在
+  - 預期行為：在 `backend/tests/test_07_export_inputs.py` 新增 `TestMaskArrayToGeojson`，直接 `from backend.src.export.geometry import _mask_array_to_geojson`，對一個手造的小 mask（2 顆細胞，1 顆面積 30px、1 顆面積 5px）呼叫 `_mask_array_to_geojson(mask, pixel_size_um=0.5, min_area_px=20)`，斷言回傳 `FeatureCollection` 只含 1 個 feature（面積 30 那顆），且座標與現有 `mask_to_geojson` 對同一 mask 存成 `.npy` 後呼叫的結果逐點相等。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_07_export_inputs.py -k MaskArrayToGeojson -q` → `ImportError`（函式不存在），確認測試本身语法正確、且會如預期失敗。
+  - 相關檔案：`backend/tests/test_07_export_inputs.py`
+  - commit：`test(export): 紅燈 — _mask_array_to_geojson 尚不存在`
+
+- [x] **P6-2** 🟢 綠燈：抽出純陣列版函式
+  - 預期行為：在 `backend/src/export/geometry.py` 新增 `_mask_array_to_geojson(mask: np.ndarray, pixel_size_um: float, min_area_px: int = 20) -> dict`，把 `mask_to_geojson` 目前 `np.load` 之後的全部邏輯（regionprops 迴圈、pad、find_contours、offset 還原、建 Feature、log 行數）搬進去。`mask_to_geojson(mask_path, pixel_size_um, min_area_px=20)` 改為 `seg_mask = np.load(str(mask_path)); return _mask_array_to_geojson(seg_mask, pixel_size_um, min_area_px)`，對外簽章與行為完全不變。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_07_export_inputs.py -q` 全綠（含 P6-1 新測試與既有 `mask_to_geojson` 測試）；`.venv/bin/python -m pytest backend/tests/test_08_export_jobs.py -q` 全綠（確認 `jobs.py` 呼叫路徑未受影響）。
+  - 相關檔案：`backend/src/export/geometry.py`
+  - commit：`refactor(export): 抽出 _mask_array_to_geojson 純陣列版本`
+
+- [x] **P6-3** 🔴 紅燈：CLI 版本尚未接上共用函式（會漏濾雜訊多邊形）
+  - 預期行為：在 `backend/tests/test_14_cli.py` 新增測試，建一個 3×3 的合成 `mask`（1 顆大細胞 + 1 顆單像素雜訊細胞），直接呼叫 `cli.segment.step_export_xenium(mask, cells_h5ad_path, out_dir, pixel_size_um=0.5, he_image_path=None)`（用 `monkeypatch` 假掉 `XeniumExporter.export` 避免真的組 bundle），讀出中間產物 `cells_polygons.geojson`，斷言只有 1 個 feature（雜訊細胞被濾掉）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_14_cli.py -k export_xenium -q` → 斷言失敗（目前會有 2 個 feature，因為 CLI 版本沒有 `min_area_px` 過濾），確認測試抓到了真實分歧。
+  - 相關檔案：`backend/tests/test_14_cli.py`
+  - commit：`test(cli): 紅燈 — step_export_xenium 未濾除雜訊多邊形`
+
+- [x] **P6-4** 🟢 綠燈：CLI 改接共用函式
+  - 預期行為：修改 `backend/src/cli/segment.py::step_export_xenium`，刪除手刻的 `for prop in measure.regionprops(mask): ...` 區塊，改為 `from backend.src.export.geometry import _mask_array_to_geojson` 後 `features_geo = _mask_array_to_geojson(mask, pixel_size_um, min_area_px=20)`，寫檔邏輯（`json.dump`）與 log 行維持原樣，`n_cells` 改用 `len(features_geo["features"])` 或維持 `int(mask.max())`（維持原本 log 語意：mask.max() 是「分割出的細胞總數」，不是「多邊形數」，兩者本來就該分開報，保留原樣即可，不需改動）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_14_cli.py -k export_xenium -q` 轉綠。
+  - 相關檔案：`backend/src/cli/segment.py`
+  - commit：`fix(cli): step_export_xenium 改用共用 _mask_array_to_geojson`
+
+- [x] **P6-5** 補回歸釘子測試
+  - 預期行為：在 `backend/tests/test_14_cli.py` 新增 `class TestCliLayerIsThin`，讀 `cli/segment.py` 原始碼字串，斷言不含 `find_contours`、`measure.regionprops`（比照 `test_08_export_jobs.py::TestApiLayerIsThin` 手法）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_14_cli.py -k CliLayerIsThin -q` 通過。
+  - 相關檔案：`backend/tests/test_14_cli.py`
+  - commit：`test(cli): 釘住 step_export_xenium 不得再手刻 geojson 邏輯`
+
+- [x] **P6-6** ♻️ 重構收尾 ✅ 2026-08-21
+  - 預期行為：通讀 `geometry.py`/`cli/segment.py` 改動處，確認 docstring、log 訊息與新的兩層結構一致；`find . -name '._*' -delete`。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/ -q -k "not TestRealSlideCoverage"` 全綠。
+  - **結果**：335 passed, 4 deselected（`TestRealSlideCoverage` 需外接硬碟 `/Volumes/KINGSTON` 上的 4GB 真實遮罩，與本次改動無關，執行期間該硬碟讀取極慢，改用 `-k` 排除）。全套驗證途中額外發現並清掉兩條與 P6 無關的孤兒測試（`TestExportMcseg::test_export_cli_both_format` 測一個已被 `3649e58` 刪除的腳本、`TestQcMetrics::test_qc_metrics_columns` 測一個已被同一 commit 改名的函式）——使用者確認後一併刪除，commit `8ac24d3`。
+  - 相關檔案：無新改動（純檢查）+ `backend/tests/test_skill_scripts.py`（孤兒測試清理，另立 commit）
+  - commit：`docs(plan): P6 完成`
+
+---
+
+## P7 — QC 直方圖統計邏輯搬遷
+
+- [ ] **P7-1** 🔴 紅燈：`qc_summary` 模組尚不存在
+  - 預期行為：新增 `backend/tests/test_17_qc_summary.py`，`from backend.src.analysis.qc_summary import compute_qc_histogram, QcMetricHistogram`，寫 5 個測試案例：
+    1. 常態分布陣列 → `mad_min < p50 < mad_max`，`bin_edges` 長度為 `n_bins+1`。
+    2. 右偏分布（如 `np.random.lognormal`）→ `mad_max` 明顯大於線性空間直接算的 `median + 3*MAD`（驗證 log1p 空間轉換確實生效，而非線性 MAD）。
+    3. 全 0 陣列 → 回傳 `None`。
+    4. 空陣列 → 回傳 `None`。
+    5. 單一值陣列（如 `[5.0]*10`）→ `mad_min == mad_max == 5.0`（或該邊界情況下的合理值，MAD=0 時 `expm1(log_median ± 0)`）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_17_qc_summary.py -q` → `ImportError`，確認先紅燈。
+  - 相關檔案：`backend/tests/test_17_qc_summary.py`
+  - commit：`test(analysis): 紅燈 — qc_summary 模組尚不存在`
+
+- [ ] **P7-2** 🟢 綠燈：建立 qc_summary 模組
+  - 預期行為：新增 `backend/src/analysis/qc_summary.py`，定義 `@dataclass class QcMetricHistogram`（欄位：`label: str, unit: str, bin_edges: list[float], counts: list[int], mad_min: float, mad_max: float, p5: float, p50: float, p95: float, p99: float, mean: float`，方法 `to_dict(self) -> dict` 用 `dataclasses.asdict(self)`），以及 `compute_qc_histogram(arr, label: str, unit: str = "", n_bins: int = 60) -> QcMetricHistogram | None`，把 `api/analysis.py::_hist_metric` 現有邏輯原封不動搬過來（含 `arr = arr[np.isfinite(arr) & (arr >= 0)]` 過濾、`arr.max() == 0` 早退回 `None`、`len(arr) == 0` 早退回 `None`、log1p 空間 MAD 計算）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_17_qc_summary.py -q` 全綠。
+  - 相關檔案：`backend/src/analysis/qc_summary.py`
+  - commit：`feat(analysis): 新增 qc_summary（QC 直方圖 + MAD 範圍建議）`
+
+- [ ] **P7-3** 🔴 紅燈：API 尚未改接
+  - 預期行為：在 `backend/tests/test_06_qc_metrics.py` 新增 `test_api_histogram_delegates_to_qc_summary`，讀 `api/analysis.py` 原始碼，斷言 `get_raw_histogram` 函式範圍內含 `"compute_qc_histogram"` 字串。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_06_qc_metrics.py -k delegates_to_qc_summary -q` → 斷言失敗（`get_raw_histogram` 目前呼叫的是 `_hist_metric`），確認先紅燈。
+  - 相關檔案：`backend/tests/test_06_qc_metrics.py`
+  - commit：`test(analysis): 紅燈 — get_raw_histogram 尚未改接 qc_summary`
+
+- [ ] **P7-4** 🟢 綠燈：API 改接 qc_summary，刪除 `_hist_metric`
+  - 預期行為：修改 `backend/src/api/analysis.py`：頂部 import `from backend.src.analysis.qc_summary import compute_qc_histogram`；`get_raw_histogram` 內把每一處 `metrics["total_counts"] = _hist_metric(...)` 改成：
+    ```python
+    result = compute_qc_histogram(obs["total_counts"].values, "Transcripts Per Cell")
+    metrics["total_counts"] = result.to_dict() if result else {}
+    ```
+    （其餘 4 個指標同樣改法）；刪除 `_hist_metric` 函式定義（:189-219）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_06_qc_metrics.py -q` 全綠（含既有 `test_api_histogram_uses_shared_entry` 與 P7-3 新測試）。
+  - 相關檔案：`backend/src/api/analysis.py`
+  - commit：`fix(analysis): get_raw_histogram 改用 qc_summary，刪除內嵌統計邏輯`
+
+- [ ] **P7-5** 補強釘子測試
+  - 預期行為：擴充 P7-3 新增的測試，在同一個 `histogram_src` 切片上再加斷言：`"log_mad" not in histogram_src` 且 `"np.percentile" not in histogram_src`。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_06_qc_metrics.py -q` 全綠。
+  - 相關檔案：`backend/tests/test_06_qc_metrics.py`
+  - commit：`test(analysis): 釘住 api/analysis.py 不得再出現直方圖統計數學`
+
+- [ ] **P7-6** JSON 契約回歸測試
+  - 預期行為：在 `test_06_qc_metrics.py` 新增一個端到端測試：用一個 `total_counts` 全為 0 的合成 h5ad 呼叫 `get_raw_histogram`（走 FastAPI TestClient 或直接 `await` 呼叫皆可，比照檔案內既有寫法），斷言回傳 JSON 的 `data.metrics` 字典**仍含 `total_counts` 這個 key**、值為 `{}`（不是被省略）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_06_qc_metrics.py -q` 全綠。
+  - 相關檔案：`backend/tests/test_06_qc_metrics.py`
+  - commit：`test(analysis): 釘住退化指標的 JSON key 不得被省略`
+
+- [ ] **P7-7** ♻️ 重構收尾
+  - 預期行為：`find . -name '._*' -delete`；確認前端 `Stage3_Analysis.tsx`/`QcHistogram.tsx` 完全未改動。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/ -q` 全綠；`cd frontend && npm run build` 通過（保險，理論上無關聯）。
+  - 相關檔案：無新改動
+  - commit：`docs(plan): P7 完成`
+
+---
+
+## P8 — 全片分割編排邏輯下沉
+
+**P8-0 設計備忘（動工前先讀）**：`run_full_slide_segmentation` 簽章比照 `export/jobs.py::run_xenium_export` 的既有慣例（`config: dict` + 明確標量覆寫 + `progress` callback），**不吃 pydantic 的 `FullSegParams`**——避免 `fullslide/pipeline.py`（領域層）反向 import `api/segmentation.py`（API 層）的型別。最終簽章：
+
+```python
+def run_full_slide_segmentation(
+    config: dict,
+    crop_x0: int | None = None,
+    crop_y0: int | None = None,
+    crop_x1: int | None = None,
+    crop_y1: int | None = None,
+    use_cpsam: bool | None = None,
+    progress: Callable[[float, str], None] | None = None,
+) -> FullSegResult:  # dataclass: mask_path, n_cells, image_width, image_height
+```
+
+`_upper_is_open`、`_SENTINEL_FULL`、`resolve_crop_window`（現在吃 `FullSegParams`）一併搬到 `fullslide/pipeline.py`，`resolve_crop_window` 簽章改成吃 4 個 plain `Optional[int]`。`api/segmentation.py` 呼叫時把 `FullSegParams` 拆成 4 個標量傳入；`validate_crop` 因為只做「與影像尺寸無關」的請求驗證（HTTP 400 用），是 API 層的請求驗證職責，**留在 `api/segmentation.py`，不搬**。
+
+- [ ] **P8-1** 🔴 紅燈：`run_full_slide_segmentation` 尚不存在
+  - 預期行為：新增 `backend/tests/test_18_fullslide_segmentation_job.py`，`from backend.src.fullslide.pipeline import run_full_slide_segmentation`。先寫 3 個會用到、但目前必然失敗的測試骨架（斷言暫時可以是 `assert False, "pending P8-2"` 或直接讓 import 失敗即可，不需要空測試體）：
+    1. `test_oom_guard_raises_memory_error`：合成小 BTF，`config["full_seg"]["max_load_gb"] = 1e-6`，斷言呼叫 `run_full_slide_segmentation` 拋出 `MemoryError` 且訊息含「請縮小」。
+    2. `test_mps_clamp_forces_batch_size_le_2`：`config["segmentation"]["mcseg_v2"]["batch_size"] = 8`，用 `monkeypatch` 攔截 `run_tiled_mcseg_v2` 記錄實際收到的 `cfg["batch_size"]`，斷言為 `2`。
+    3. `test_force_disable_cpsam_three_branches`：分別測 `full_seg.force_disable_cpsam=True`（結果 `use_cpsam=False`，無視 `use_cpsam` 參數）、`False` + `use_cpsam=True`（結果 `True`）、`False` + `use_cpsam=None`（結果沿用 `mcseg_v2.use_cpsam`）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_18_fullslide_segmentation_job.py -q` → `ImportError`，確認先紅燈。
+  - 相關檔案：`backend/tests/test_18_fullslide_segmentation_job.py`
+  - commit：`test(fullslide): 紅燈 — run_full_slide_segmentation 尚不存在`
+
+- [ ] **P8-2** 🟢 綠燈：抽出共用函式
+  - 預期行為：在 `backend/src/fullslide/pipeline.py` 新增 `run_full_slide_segmentation`（簽章見 P8-0）與 `FullSegResult` dataclass，把 `api/segmentation.py::_run_full_segmentation`（:292-412）裡「開影像 → 算 crop window → mask_gb 防護 → tile_reader 組裝 → MPS 鉗制 → `run_tiled_mcseg_v2` → 存檔 → `write_full_seg_meta`」整段邏輯搬進來，`_progress` 呼叫改吃傳入的 `progress` 參數（`None` 時用模組層級的 `_noop_progress`，同 `export/jobs.py` 寫法）。錯誤處理**不在此函式內 try/except**——維持 raise，交呼叫端接住（P8-0 已定案）。同時把 `_upper_is_open`/`_SENTINEL_FULL`/`resolve_crop_window` 搬過來，簽章改吃 4 個 plain `Optional[int]`。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_18_fullslide_segmentation_job.py -q` 三個測試全綠。
+  - 相關檔案：`backend/src/fullslide/pipeline.py`
+  - commit：`feat(fullslide): 新增 run_full_slide_segmentation（下沉自 api/segmentation.py）`
+
+- [ ] **P8-3** 🟢 綠燈：API 層縮薄
+  - 預期行為：修改 `backend/src/api/segmentation.py`：`resolve_crop_window`/`_upper_is_open`/`_SENTINEL_FULL` 改為 `from backend.src.fullslide.pipeline import resolve_crop_window, ...`（若簽章變動需同步改 `validate_crop`/既有呼叫點的傳參）；`_run_full_segmentation` 縮成：解析 `config`/`params` → `await loop.run_in_executor(None, functools.partial(run_full_slide_segmentation, config, params.crop_x0, params.crop_y0, params.crop_x1, params.crop_y1, params.use_cpsam, progress=_progress))` → `try/except` 把結果轉 `_full_status`（`MemoryError` 特殊訊息處理，即「，請縮小」分割那段，原封不動保留在這裡，因為那是「怎麼轉成給使用者看的訊息」，屬於 API 層的展示職責）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_10_fullslide.py -k TestRunFullStreaming -q` 兩條既有測試**原封不動**全綠（外部行為不變的證明）。
+  - 相關檔案：`backend/src/api/segmentation.py`
+  - commit：`refactor(segmentation): _run_full_segmentation 縮薄為 executor 呼叫 + 狀態轉譯`
+
+- [ ] **P8-4** 補回歸釘子測試
+  - 預期行為：在 `backend/tests/test_10_fullslide.py` 新增 `class TestSegmentationApiLayerIsThin`，取出 `api/segmentation.py` 原始碼中 `async def _run_full_segmentation` 到下一個 `@router` 之間的區段，斷言不含 `mask_gb`、`tile_reader`、`seg_cfg_safe`（比照 `test_08_export_jobs.py::TestApiLayerIsThin` 手法）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_10_fullslide.py -k SegmentationApiLayerIsThin -q` 通過。
+  - 相關檔案：`backend/tests/test_10_fullslide.py`
+  - commit：`test(segmentation): 釘住 _run_full_segmentation 不得再手刻編排細節`
+
+- [ ] **P8-5** 🔴🟢 CLI 改接共用函式
+  - 預期行為：修改 `backend/src/cli/segment.py`：
+    - `main()` 裡計算 `crop_y1`/`btf_col1` 的兩行 `-1` 哨兵判斷，改呼叫 `fullslide.pipeline.resolve_crop_window`（或其拆出的邊界判斷部分——若 `resolve_crop_window` 依賴「已開啟的 slide reader 尺寸」而 CLI 此處只有 `image_shape` 元組，改用同模組匯出的 `_upper_is_open` 直接判斷即可，兩種都合理，以實作時能整潔銜接 `main()` 既有變數為準）。
+    - `step_segment` 改參數化，接受已解析好的 crop 邊界與 `use_cpsam`，內部改呼叫 `run_full_slide_segmentation` 取代直接呼叫 `run_tiled_mcseg_v2`，讓 CLI 全片路徑也吃到 `max_load_gb` 防護與 `batch_size` 鉗制。
+    - 先在 `backend/tests/test_14_cli.py` 補一條測試：合成 BTF 全片跑一次 CLI（沿用既有 `TestCliSmoke` 的 fixture 手法），斷言輸出目錄多了 `full_seg_meta.json`（此檔案 CLI 目前不會產生，這條測試先紅燈再讓 P8-5 的改動使其轉綠）。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_14_cli.py -q` 全綠（含既有 `TestCliSmoke` 全部案例，確認沒有破壞既有 CLI 行為）。
+  - 相關檔案：`backend/src/cli/segment.py`、`backend/tests/test_14_cli.py`
+  - commit：`fix(cli): step_segment 改用 run_full_slide_segmentation，補齊 OOM/MPS 安全防護`
+
+- [ ] **P8-6** ♻️ 重構收尾
+  - 預期行為：通讀 `fullslide/pipeline.py` 新增區段，確認 docstring 與模組頂部註解（"純同步、不依賴 FastAPI"）風格一致；`find . -name '._*' -delete`。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/ -q` 全綠；`cd frontend && npm run build` 通過。
+  - 相關檔案：無新改動
+  - commit：`docs(plan): P8 完成`
+
+---
+
+## 風險與已知取捨（P6–P8）
+
+| 風險 | 影響 | 緩解 |
+|------|------|------|
+| P8 搬移 `resolve_crop_window` 簽章（`FullSegParams` → 4 個 scalar）是原 grilling 範圍之外的必要擴張 | 若不搬，`fullslide/pipeline.py` 會反向依賴 `api/segmentation.py` 的 pydantic 型別，製造新的層次違規 | 已在 P8-0 明確記錄設計理由；`validate_crop`（純請求驗證）刻意不搬，維持 API 層職責 |
+| P8-5 CLI 的 `-1` 哨兵判斷與 `resolve_crop_window` 銜接方式，取決於 CLI 當下有沒有已開啟的 slide reader | 若強行套用可能要多開一次 reader，多一次 I/O | 實作時以「不引入新的檔案讀取」為優先，必要時只搬 `_upper_is_open` 這個純判斷函式而非整個 `resolve_crop_window` |
+| P7 的 JSON 契約回歸測試（P7-6）若之後前端改用 key-in 而非 truthy 檢查，這條測試會變得沒有意義 | 低——測試本身無害，只是保護一個未來可能失效的假設 | 若前端邏輯改變，屆時一併移除或改寫此測試，不需現在處理 |
+
+## 執行方式（P6–P8）
+
+每個任務完成後 `git commit`（訊息如各任務所列）。三個 P 可各自開分支或依序在同一分支完成：
+
+```bash
+git checkout -b refactor/api-layer-deepening
+```
+
+每個 P 結束時跑：
+
+```bash
+find . -name '._*' -delete
+.venv/bin/python -m pytest backend/tests/ -q     # 全綠
+cd frontend && npm run build                      # 通過
+```
