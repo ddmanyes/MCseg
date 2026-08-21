@@ -90,3 +90,39 @@ class TestComputeQCMetrics:
         assert "compute_qc_histogram" in histogram_src
         assert "log_mad" not in histogram_src
         assert "np.percentile" not in histogram_src
+
+    @pytest.mark.asyncio
+    async def test_degenerate_metric_key_not_omitted_from_json(self, tmp_path, monkeypatch):
+        """退化指標（全 0）的 JSON key 不得被省略——前端用 truthy 檢查 + key 數量判斷版面
+
+        （架構深化 P7-6：qc_summary.compute_qc_histogram 內部可以回傳 None，
+        但 API 組回應時必須轉回 {}，維持與改動前完全一致的 JSON 契約）
+        """
+        import anndata as ad
+        import pandas as pd
+
+        from backend.src.api import analysis as api
+
+        # 3 顆細胞、2 個基因，全部 0 counts → total_counts 全 0（退化情況）
+        X = np.zeros((3, 2))
+        var = pd.DataFrame(index=["GENE1", "GENE2"])
+        adata = ad.AnnData(X=X, var=var)
+
+        roi_dir = tmp_path / "roi" / "roi_1"
+        roi_dir.mkdir(parents=True)
+        adata.write_h5ad(str(roi_dir / "cellpose_cells.h5ad"))
+
+        config = {
+            "paths": {"output_dir": str(tmp_path)},
+            "rois": [{"name": "roi_1"}],
+        }
+        monkeypatch.setattr(api, "load_config", lambda: config)
+
+        result = await api.get_raw_histogram(roi_name="roi_1")
+
+        assert result["status"] == "ok"
+        assert "total_counts" in result["data"]["metrics"], (
+            "退化指標的 key 被省略了——前端 Object.keys(metrics).length 與 "
+            "truthy 檢查都依賴這個 key 仍然存在"
+        )
+        assert result["data"]["metrics"]["total_counts"] == {}
