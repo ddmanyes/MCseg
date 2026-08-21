@@ -8,33 +8,34 @@ from pathlib import Path
 logger = logging.getLogger("pipeline.export.geometry")
 
 
-def mask_to_geojson(
-    mask_path: Path,
+def _mask_array_to_geojson(
+    mask,
     pixel_size_um: float,
     min_area_px: int = 20,
 ) -> dict:
     """
-    將 segmentation_masks.npy 轉換為 GeoJSON FeatureCollection。
+    將已在記憶體中的 label mask 陣列轉換為 GeoJSON FeatureCollection。
 
     座標：ROI 局部 µm（原點 = ROI 左上角），與 cellpose_cells.h5ad obsm['spatial'] 一致。
     使用 regionprops 取 bounding box 後在小 patch 上做輪廓偵測，
     避免 O(n_cells × H×W) 的全圖掃描。
+
+    純陣列版本——呼叫端若已經把 mask 讀進記憶體（例如 CLI 全片流程），
+    直接傳陣列進來，避免 `mask_to_geojson` 那樣重新從硬碟 np.load 一次。
     """
     import numpy as np
     from skimage import measure
 
-    seg_mask = np.load(str(mask_path))
-
     features = []
     # regionprops 一次性計算 bounding box + area，避免逐細胞全圖掃描
-    for prop in measure.regionprops(seg_mask):
+    for prop in measure.regionprops(mask):
         if prop.area < min_area_px:
             continue
         cid = prop.label
         r0, c0, r1, c1 = prop.bbox
 
         # 在 bounding box patch 上找輪廓（比全圖快數個量級）
-        cell_crop = (seg_mask[r0:r1, c0:c1] == cid).astype(np.uint8)
+        cell_crop = (mask[r0:r1, c0:c1] == cid).astype(np.uint8)
         padded = np.pad(cell_crop, 1, mode="constant")
         contours = measure.find_contours(padded, 0.5)
         if not contours:
@@ -64,6 +65,23 @@ def mask_to_geojson(
 
     logger.info(f"  生成 {len(features)} 個 Cellpose 多邊形")
     return {"type": "FeatureCollection", "features": features}
+
+
+def mask_to_geojson(
+    mask_path: Path,
+    pixel_size_um: float,
+    min_area_px: int = 20,
+) -> dict:
+    """
+    將 segmentation_masks.npy 轉換為 GeoJSON FeatureCollection。
+
+    薄層：讀檔後委派給 `_mask_array_to_geojson`。呼叫端若 mask 已在記憶體中
+    （例如 CLI 全片流程），請直接呼叫 `_mask_array_to_geojson` 以省去這次讀檔。
+    """
+    import numpy as np
+
+    seg_mask = np.load(str(mask_path))
+    return _mask_array_to_geojson(seg_mask, pixel_size_um, min_area_px)
 
 
 def shift_geojson_coords(feat: dict, dx: float, dy: float) -> None:
