@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "啟用預設權限。main 視窗載入的是後端（http://127.0.0.1:8001）直接服務的頁面，不是 Tauri 內嵌的 tauri://localhost 資源——這是 remote 遠端來源，Tauri 的 IPC 橋接預設不會授權給遠端來源，必須用 remote.urls 明確允許，否則 Phase 3 要接的 dialog/notification plugin 呼叫會被擋下（且是靜默失敗，不會報錯）。",
+  "windows": [
+    "main"
+  ],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:8001"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "dialog:default",
+    "notification:default"
+  ]
+}

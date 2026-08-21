@@ -1,0 +1,7 @@
+# ExFAT 防護：build 產物（target/）挪到本機 APFS，避開 macOS 在 ExFAT 上
+# 為每個檔案自動建立的 ._* AppleDouble 影子檔（Cargo/Tauri build script
+# 掃到這些影子檔當成真正的內容檔解析會直接炸掉，例如
+# ._default.toml「stream did not contain valid UTF-8」）。
+# 與 CLAUDE.md 既有的 .venv → ~/.venvs/msseg symlink 是同一個防護模式。
+[build]
+target-dir = "/Users/lab_center/.cargo-targets/msseg-tauri"
