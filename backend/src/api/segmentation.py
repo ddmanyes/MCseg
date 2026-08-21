@@ -278,9 +278,9 @@ async def _run_full_segmentation(
 ) -> None:
     """薄層：executor 呼叫 `run_full_slide_segmentation` + 狀態轉譯。
 
-    編排邏輯（tile_reader 組裝、OOM 防護、MPS 鉗制、metadata 寫入）已下沉到
-    `fullslide.pipeline.run_full_slide_segmentation`（架構深化 P8），CLI 全片
-    路徑共用同一份實作與安全防護。
+    全片分割的編排邏輯（讀取視窗組裝、OOM 防護、MPS 鉗制、metadata 寫入）
+    已下沉到 `fullslide.pipeline.run_full_slide_segmentation`（架構深化 P8），
+    CLI 全片路徑共用同一份實作與安全防護。
     """
     global _full_status
     set_current_stage("segmentation")

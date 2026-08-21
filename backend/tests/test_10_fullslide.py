@@ -1431,6 +1431,31 @@ class TestRunFullStreaming:
         assert seg._full_status["status"] == "error"
 
 
+class TestSegmentationApiLayerIsThin:
+    """回歸：全片分割編排邏輯只能有一份（`fullslide.pipeline.run_full_slide_segmentation`）"""
+
+    def test_no_orchestration_left_in_run_full_segmentation(self):
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parents[1] / "src" / "api" / "segmentation.py").read_text(
+            encoding="utf-8"
+        )
+        start = src.index("async def _run_full_segmentation")
+        end = src.index("@router", start)
+        body = src[start:end]
+
+        for gone in ("mask_gb", "tile_reader", "seg_cfg_safe"):
+            assert gone not in body, f"{gone} 不應再出現在 _run_full_segmentation（改呼叫 run_full_slide_segmentation）"
+
+    def test_api_delegates_to_run_full_slide_segmentation(self):
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parents[1] / "src" / "api" / "segmentation.py").read_text(
+            encoding="utf-8"
+        )
+        assert "run_full_slide_segmentation" in src
+
+
 class TestMemmapLabelsOnDisk:
     """標籤圖確實落在磁碟（全片 21504×47104 int32 ≈ 4 GB，不可留在 RAM）"""
 
