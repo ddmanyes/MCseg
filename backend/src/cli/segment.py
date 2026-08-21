@@ -165,6 +165,7 @@ def step_segment(
     out_dir: Path,
     tile_size: int = 1024,
     overlap: int = 128,
+    max_load_gb: float = 16.0,
 ) -> np.ndarray:
     """MCseg v2 分割，輸出 mcseg_mask.npy。"""
     mask_path = out_dir / "mcseg_mask.npy"
@@ -174,10 +175,25 @@ def step_segment(
         log.info(f"  shape: {mask.shape}  cells: {int(mask.max()):,}")
         return mask
 
+    from backend.src.fullslide.pipeline import (
+        apply_full_seg_safety_clamp,
+        check_full_seg_mask_memory,
+    )
     from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
 
-    passes = 7 if cfg.get("use_cpsam") else 4
-    log.info(f"[2/4] MCseg v2 {passes}-pass 分割（GPU={cfg.get('use_gpu', True)}）")
+    h, w = img.shape[:2]
+    check_full_seg_mask_memory(w, h, max_load_gb)
+
+    # MPS batch_size≤2 安全鉗制與 API 全片路徑一致（docs/adr/0005：無條件套用）。
+    # force_disable_cpsam=False：CLI 裁切窗格由使用者自行控制大小，不像 Web UI
+    # 全片按鈕預設面對整張未知大小的切片，所以尊重既有的 --cpsam 旗標行為。
+    safe_cfg = apply_full_seg_safety_clamp(cfg, force_disable_cpsam=False)
+    if safe_cfg["batch_size"] != cfg.get("batch_size"):
+        log.info(f"  batch_size {cfg.get('batch_size')} → {safe_cfg['batch_size']}"
+                  "（MPS 安全鉗制，見 docs/adr/0005）")
+
+    passes = 7 if safe_cfg.get("use_cpsam") else 4
+    log.info(f"[2/4] MCseg v2 {passes}-pass 分割（GPU={safe_cfg.get('use_gpu', True)}）")
 
     def _progress(p: float, msg: str) -> None:
         bar = "█" * int(p * 30) + "░" * (30 - int(p * 30))
@@ -186,7 +202,7 @@ def step_segment(
     t0 = time.time()
     mask = run_tiled_mcseg_v2(
         img,
-        cfg,
+        safe_cfg,
         tile_size=tile_size,
         overlap=overlap,
         progress_callback=_progress,
@@ -399,6 +415,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Tile 大小（預設 1024）")
     seg.add_argument("--overlap",    type=int, default=128,  metavar="PX",
                      help="Tile 重疊寬度（預設 128）")
+    seg.add_argument("--max-load-gb", type=float, default=16.0, metavar="GB",
+                     help="輸出遮罩（int32）記憶體上限，超過則報錯而非默默 OOM（預設 16.0）")
     seg.add_argument("--dia-small",  type=float, metavar="PX",
                      help="小直徑 pass（覆寫 tissue preset）")
     seg.add_argument("--dia-mid",    type=float, metavar="PX",
@@ -476,17 +494,21 @@ def main(argv: list[str] | None = None) -> int:
         image_shape = img.shape[:2]
     else:
         import tifffile
+
+        from backend.src.fullslide.pipeline import _upper_is_open
+
         with tifffile.TiffFile(str(args.btf)) as tif:
             full_shape = tif.pages[0].shape
         image_shape = (int(full_shape[0]), int(full_shape[1]))
-        crop_y1  = image_shape[0] if args.crop_y1  == -1 else args.crop_y1
-        btf_col1 = image_shape[1] if args.btf_col1 == -1 else args.btf_col1
+        # -1 代表「取到影像邊界」，與 API 全片路徑（FullSegParams）同一套哨兵語意
+        crop_y1  = image_shape[0] if _upper_is_open(args.crop_y1)  else args.crop_y1
+        btf_col1 = image_shape[1] if _upper_is_open(args.btf_col1) else args.btf_col1
         crop_y0  = args.crop_y0
         btf_col0 = args.btf_col0
         img = step_crop_btf(args.btf, out_dir, crop_y0, crop_y1, btf_col0, btf_col1)
 
     # ── Step 2: 分割
-    mask = step_segment(img, cfg, out_dir, args.tile_size, args.overlap)
+    mask = step_segment(img, cfg, out_dir, args.tile_size, args.overlap, args.max_load_gb)
     del img
     gc.collect()
 

@@ -205,6 +205,83 @@ class TestCliSmoke:
         assert seen == {"tile_size": 256, "overlap": 64}
 
 
+class TestCliFullSegSafety:
+    """架構深化 P8：CLI 全片路徑接上與 API 共用的 OOM 防護與 MPS batch_size 鉗制"""
+
+    def test_max_load_gb_rejects_oversized_output(self, cli_sample, fake_cellpose):
+        """裁切窗格過大（超過 --max-load-gb）須明確報錯，而非默默 OOM。
+
+        `main()` 目前沒有頂層 try/except（與 P8 無關的既有行為，`MemoryError`
+        跟其他未捕捉例外一樣會直接冒出，不是回傳非 0 值），故這裡斷言例外本身。
+        """
+        import pytest
+
+        from backend.src.cli.segment import main
+
+        with pytest.raises(MemoryError, match="請縮小"):
+            main([
+                "--btf", str(cli_sample["btf"]),
+                "--out", str(cli_sample["out"]),
+                "--no-gpu", "--skip-celltypist",
+                "--tile-size", "256", "--overlap", "64",
+                "--max-load-gb", "1e-9",
+            ])
+
+        assert not (cli_sample["out"] / "mcseg_mask.npy").exists()
+
+    def test_batch_size_clamped_to_two(self, cli_sample, fake_cellpose, monkeypatch):
+        """`--batch-size` 高於 2 時須被鉗制到 2（docs/adr/0005：無條件套用）。"""
+        from backend.src.cli import segment as cli
+        from backend.src.segmentation import cellpose_runner
+
+        seen = {}
+        real = cellpose_runner.run_tiled_mcseg_v2
+
+        def spy(img=None, cfg=None, **kwargs):
+            seen["batch_size"] = (cfg or {}).get("batch_size")
+            return real(img, cfg, **kwargs)
+
+        monkeypatch.setattr(cellpose_runner, "run_tiled_mcseg_v2", spy)
+
+        cli.main([
+            "--btf", str(cli_sample["btf"]),
+            "--out", str(cli_sample["out"]),
+            "--no-gpu", "--skip-celltypist",
+            "--tile-size", "256", "--overlap", "64",
+            "--batch-size", "8",
+        ])
+
+        assert seen["batch_size"] == 2
+
+    def test_cpsam_flag_still_reaches_segmenter(self, cli_sample, fake_cellpose, monkeypatch):
+        """`--cpsam` 仍必須生效——CLI 傳 force_disable_cpsam=False，不受 Web UI
+
+        全片路徑「預設強制關閉 cpsam」的行為影響（兩者的裁切窗格風險不同，
+        見 `apply_full_seg_safety_clamp` docstring）。
+        """
+        from backend.src.cli import segment as cli
+        from backend.src.segmentation import cellpose_runner
+
+        seen = {}
+        real = cellpose_runner.run_tiled_mcseg_v2
+
+        def spy(img=None, cfg=None, **kwargs):
+            seen["use_cpsam"] = (cfg or {}).get("use_cpsam")
+            return real(img, cfg, **kwargs)
+
+        monkeypatch.setattr(cellpose_runner, "run_tiled_mcseg_v2", spy)
+
+        cli.main([
+            "--btf", str(cli_sample["btf"]),
+            "--out", str(cli_sample["out"]),
+            "--no-gpu", "--skip-celltypist",
+            "--tile-size", "256", "--overlap", "64",
+            "--cpsam",
+        ])
+
+        assert seen["use_cpsam"] is True
+
+
 class TestCliExportXenium:
     """`step_export_xenium` 產生的多邊形必須與 Web UI（`export/geometry.py`）同一套過濾規則"""
 
