@@ -1048,7 +1048,7 @@ def run_full_slide_segmentation(
 
 `_upper_is_open`、`_SENTINEL_FULL`、`resolve_crop_window`（現在吃 `FullSegParams`）一併搬到 `fullslide/pipeline.py`，`resolve_crop_window` 簽章改成吃 4 個 plain `Optional[int]`。`api/segmentation.py` 呼叫時把 `FullSegParams` 拆成 4 個標量傳入；`validate_crop` 因為只做「與影像尺寸無關」的請求驗證（HTTP 400 用），是 API 層的請求驗證職責，**留在 `api/segmentation.py`，不搬**。
 
-- [ ] **P8-1** 🔴 紅燈：`run_full_slide_segmentation` 尚不存在
+- [x] **P8-1** 🔴 紅燈：`run_full_slide_segmentation` 尚不存在
   - 預期行為：新增 `backend/tests/test_18_fullslide_segmentation_job.py`，`from backend.src.fullslide.pipeline import run_full_slide_segmentation`。先寫 3 個會用到、但目前必然失敗的測試骨架（斷言暫時可以是 `assert False, "pending P8-2"` 或直接讓 import 失敗即可，不需要空測試體）：
     1. `test_oom_guard_raises_memory_error`：合成小 BTF，`config["full_seg"]["max_load_gb"] = 1e-6`，斷言呼叫 `run_full_slide_segmentation` 拋出 `MemoryError` 且訊息含「請縮小」。
     2. `test_mps_clamp_forces_batch_size_le_2`：`config["segmentation"]["mcseg_v2"]["batch_size"] = 8`，用 `monkeypatch` 攔截 `run_tiled_mcseg_v2` 記錄實際收到的 `cfg["batch_size"]`，斷言為 `2`。
@@ -1057,36 +1057,36 @@ def run_full_slide_segmentation(
   - 相關檔案：`backend/tests/test_18_fullslide_segmentation_job.py`
   - commit：`test(fullslide): 紅燈 — run_full_slide_segmentation 尚不存在`
 
-- [ ] **P8-2** 🟢 綠燈：抽出共用函式
+- [x] **P8-2** 🟢 綠燈：抽出共用函式
   - 預期行為：在 `backend/src/fullslide/pipeline.py` 新增 `run_full_slide_segmentation`（簽章見 P8-0）與 `FullSegResult` dataclass，把 `api/segmentation.py::_run_full_segmentation`（:292-412）裡「開影像 → 算 crop window → mask_gb 防護 → tile_reader 組裝 → MPS 鉗制 → `run_tiled_mcseg_v2` → 存檔 → `write_full_seg_meta`」整段邏輯搬進來，`_progress` 呼叫改吃傳入的 `progress` 參數（`None` 時用模組層級的 `_noop_progress`，同 `export/jobs.py` 寫法）。錯誤處理**不在此函式內 try/except**——維持 raise，交呼叫端接住（P8-0 已定案）。同時把 `_upper_is_open`/`_SENTINEL_FULL`/`resolve_crop_window` 搬過來，簽章改吃 4 個 plain `Optional[int]`。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_18_fullslide_segmentation_job.py -q` 三個測試全綠。
   - 相關檔案：`backend/src/fullslide/pipeline.py`
   - commit：`feat(fullslide): 新增 run_full_slide_segmentation（下沉自 api/segmentation.py）`
 
-- [ ] **P8-3** 🟢 綠燈：API 層縮薄
+- [x] **P8-3** 🟢 綠燈：API 層縮薄
   - 預期行為：修改 `backend/src/api/segmentation.py`：`resolve_crop_window`/`_upper_is_open`/`_SENTINEL_FULL` 改為 `from backend.src.fullslide.pipeline import resolve_crop_window, ...`（若簽章變動需同步改 `validate_crop`/既有呼叫點的傳參）；`_run_full_segmentation` 縮成：解析 `config`/`params` → `await loop.run_in_executor(None, functools.partial(run_full_slide_segmentation, config, params.crop_x0, params.crop_y0, params.crop_x1, params.crop_y1, params.use_cpsam, progress=_progress))` → `try/except` 把結果轉 `_full_status`（`MemoryError` 特殊訊息處理，即「，請縮小」分割那段，原封不動保留在這裡，因為那是「怎麼轉成給使用者看的訊息」，屬於 API 層的展示職責）。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_10_fullslide.py -k TestRunFullStreaming -q` 兩條既有測試**原封不動**全綠（外部行為不變的證明）。
   - 相關檔案：`backend/src/api/segmentation.py`
   - commit：`refactor(segmentation): _run_full_segmentation 縮薄為 executor 呼叫 + 狀態轉譯`
 
-- [ ] **P8-4** 補回歸釘子測試
+- [x] **P8-4** 補回歸釘子測試
   - 預期行為：在 `backend/tests/test_10_fullslide.py` 新增 `class TestSegmentationApiLayerIsThin`，取出 `api/segmentation.py` 原始碼中 `async def _run_full_segmentation` 到下一個 `@router` 之間的區段，斷言不含 `mask_gb`、`tile_reader`、`seg_cfg_safe`（比照 `test_08_export_jobs.py::TestApiLayerIsThin` 手法）。
   - 驗證：`.venv/bin/python -m pytest backend/tests/test_10_fullslide.py -k SegmentationApiLayerIsThin -q` 通過。
   - 相關檔案：`backend/tests/test_10_fullslide.py`
   - commit：`test(segmentation): 釘住 _run_full_segmentation 不得再手刻編排細節`
 
-- [ ] **P8-5** 🔴🟢 CLI 改接共用函式
-  - 預期行為：修改 `backend/src/cli/segment.py`：
-    - `main()` 裡計算 `crop_y1`/`btf_col1` 的兩行 `-1` 哨兵判斷，改呼叫 `fullslide.pipeline.resolve_crop_window`（或其拆出的邊界判斷部分——若 `resolve_crop_window` 依賴「已開啟的 slide reader 尺寸」而 CLI 此處只有 `image_shape` 元組，改用同模組匯出的 `_upper_is_open` 直接判斷即可，兩種都合理，以實作時能整潔銜接 `main()` 既有變數為準）。
-    - `step_segment` 改參數化，接受已解析好的 crop 邊界與 `use_cpsam`，內部改呼叫 `run_full_slide_segmentation` 取代直接呼叫 `run_tiled_mcseg_v2`，讓 CLI 全片路徑也吃到 `max_load_gb` 防護與 `batch_size` 鉗制。
-    - 先在 `backend/tests/test_14_cli.py` 補一條測試：合成 BTF 全片跑一次 CLI（沿用既有 `TestCliSmoke` 的 fixture 手法），斷言輸出目錄多了 `full_seg_meta.json`（此檔案 CLI 目前不會產生，這條測試先紅燈再讓 P8-5 的改動使其轉綠）。
-  - 驗證：`.venv/bin/python -m pytest backend/tests/test_14_cli.py -q` 全綠（含既有 `TestCliSmoke` 全部案例，確認沒有破壞既有 CLI 行為）。
-  - 相關檔案：`backend/src/cli/segment.py`、`backend/tests/test_14_cli.py`
-  - commit：`fix(cli): step_segment 改用 run_full_slide_segmentation，補齊 OOM/MPS 安全防護`
+- [x] **P8-5** 🔴🟢 CLI 改接共用函式 ✅ 2026-08-21（實作偏離原計畫，見下方說明）
+  - **實作偏離**：動工後發現 `run_full_slide_segmentation` 假設「自己 `open_slide` + `tile_reader` 串流讀取」，但 CLI 的 `step_segment` 走的是完全不同形狀——`step_crop_btf` 已先把裁切窗格讀成記憶體中的 `img` 陣列（並快取成 `he_crop.tif` 供重跑 SKIP），`step_segment` 把整個 `img` 陣列丟給 `run_tiled_mcseg_v2` 的**陣列版路徑**，不是串流版路徑。強行接上 `run_full_slide_segmentation` 需要打掉 CLI 既有的裁切/快取流程或讓該函式多開一個「吃現成陣列」分支，範圍超出原計畫。與使用者確認後改為：**只抽出安全防護本身**（`check_full_seg_mask_memory`、`apply_full_seg_safety_clamp`，兩個新的獨立可測函式，見 commit `398b388`），CLI 的 `step_segment` 呼叫這兩個函式而非整個 `run_full_slide_segmentation`；`main()` 的 `-1` 哨兵判斷改呼叫 `_upper_is_open`（原計畫的次要目標，未變）。
+  - **新增 `--max-load-gb` 旗標**：CLI 原本無 OOM 上限；預設值與 Web UI 的 6 GB 不同，設為 **16 GB**（使用者決定：CLI 使用者通常在記憶體較充裕的本機跑）。
+  - **`force_disable_cpsam` 語意分歧**：CLI 傳 `force_disable_cpsam=False`，保留既有 `--cpsam` 旗標行為（CLI 裁切窗格由使用者自行控制大小，不像 Web UI 全片按鈕預設面對整張未知大小的切片）——batch_size 鉗制仍無條件套用（ADR-0005 原意不變）。
+  - **`full_seg_meta.json` 附帶效益取消**：因為 CLI 不再呼叫 `run_full_slide_segmentation`，原計畫預期的「CLI 順便產生 metadata sidecar」不成立，CLI 輸出不變。
+  - 驗證：`.venv/bin/python -m pytest backend/tests/test_14_cli.py -q` 全綠（20 passed，含既有 `TestCliSmoke` 全部案例 + 新增 `TestCliFullSegSafety` 三條）。
+  - 相關檔案：`backend/src/cli/segment.py`、`backend/tests/test_14_cli.py`、`backend/src/fullslide/pipeline.py`（新增 `check_full_seg_mask_memory`/`apply_full_seg_safety_clamp`）
+  - commit：`refactor(fullslide): 抽出 check_full_seg_mask_memory / apply_full_seg_safety_clamp`、`fix(cli): step_segment 改用共用 OOM/MPS 安全防護`
 
-- [ ] **P8-6** ♻️ 重構收尾
+- [x] **P8-6** ♻️ 重構收尾 ✅ 2026-08-21
   - 預期行為：通讀 `fullslide/pipeline.py` 新增區段，確認 docstring 與模組頂部註解（"純同步、不依賴 FastAPI"）風格一致；`find . -name '._*' -delete`。
-  - 驗證：`.venv/bin/python -m pytest backend/tests/ -q` 全綠；`cd frontend && npm run build` 通過。
+  - 驗證：使用者要求不要再跑全套（耗時久），改跑針對性測試：`.venv/bin/python -m pytest backend/tests/test_06_qc_metrics.py backend/tests/test_07_export_inputs.py backend/tests/test_08_export_jobs.py backend/tests/test_10_fullslide.py backend/tests/test_14_cli.py backend/tests/test_17_qc_summary.py backend/tests/test_18_fullslide_segmentation_job.py -q -k "not TestRealSlideCoverage"` → **162 passed**；`cd frontend && npm run build` → 通過（`tsc` 型別檢查 + vite build 皆無錯誤，前端本次未改動）。
   - 相關檔案：無新改動
   - commit：`docs(plan): P8 完成`
 
