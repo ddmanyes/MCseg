@@ -3,6 +3,7 @@ import { scanData, applyData, getDataStatus, browseDir, getOutputDir, listRois, 
 import { FolderSearch, Check, AlertTriangle, HardDrive, FileSearch, FolderOpen, ChevronRight, ArrowUp, File, X } from 'lucide-react'
 import { useT } from '../i18n'
 import { errText } from '../utils/errText'
+import { useFileDialog } from '../hooks/useFileDialog'
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -215,6 +216,7 @@ function FolderBrowser({
 
 export default function DataSetup() {
     const t = useT()
+    const { isNative, pickDirectory } = useFileDialog()
 
     const FILE_LABELS: Record<string, string> = {
         he_image: t('data.file.he_image'),
@@ -336,6 +338,22 @@ export default function DataSetup() {
         setShowOutputBrowser(false)
     }
 
+    // 桌面殼（Tauri）內優先跳原生 Finder / 檔案總管；純瀏覽器情境
+    // pickDirectory() 回傳 null，才退回既有的自建資料夾瀏覽器 Modal。
+    // 使用者在原生對話框按「取消」同樣回傳 null，但那不該又跳出自建
+    // Modal——用 isNative 分辨「不可用」與「使用者取消」這兩種情況。
+    const handleBrowseClick = async () => {
+        const path = await pickDirectory(dataRoot || undefined)
+        if (path) { setDataRoot(path); return }
+        if (!isNative) setShowBrowser(true)
+    }
+
+    const handleOutputBrowseClick = async () => {
+        const path = await pickDirectory(outputDir || undefined)
+        if (path) { setOutputDir(path); return }
+        if (!isNative) setShowOutputBrowser(true)
+    }
+
     const handleSaveOutput = async () => {
         if (!outputDir.trim()) return
         setSavingOutput(true)
@@ -426,7 +444,7 @@ export default function DataSetup() {
                 )}
                 <div className="flex gap-2">
                     <button
-                        onClick={() => setShowBrowser(true)}
+                        onClick={handleBrowseClick}
                         className="px-3 py-2 bg-surface border border-surface-border rounded-lg text-sm text-gray-300 hover:bg-surface-border hover:text-gray-100 transition-colors flex items-center gap-1.5 flex-shrink-0"
                         title="瀏覽資料夾"
                     >
@@ -474,7 +492,7 @@ export default function DataSetup() {
                 )}
                 <div className="flex gap-2">
                     <button
-                        onClick={() => setShowOutputBrowser(true)}
+                        onClick={handleOutputBrowseClick}
                         className="px-3 py-2 bg-surface border border-surface-border rounded-lg text-sm text-gray-300 hover:bg-surface-border hover:text-gray-100 transition-colors flex items-center gap-1.5 flex-shrink-0"
                     >
                         <FolderOpen className="w-4 h-4" />
