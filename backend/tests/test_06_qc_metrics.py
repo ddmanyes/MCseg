@@ -72,3 +72,19 @@ class TestComputeQCMetrics:
         assert "compute_qc_metrics" in histogram_src
         assert "sc.pp.calculate_qc_metrics" not in histogram_src
         assert "np.log10" not in histogram_src
+
+    def test_api_histogram_delegates_to_qc_summary(self):
+        """raw_histogram 的直方圖/MAD 建議範圍統計，必須委派給 analysis.qc_summary
+
+        （不得自己在 API route 裡重算 log1p 空間 MAD——那段數學屬於領域層，
+        搬到 qc_summary.py 後才能獨立單元測試，見架構深化 P7）
+        """
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1] / "src" / "api" / "analysis.py"
+        body = src.read_text(encoding="utf-8")
+        start = body.index("async def get_raw_histogram")
+        end = body.index("async def get_qc_status")
+        histogram_src = body[start:end]
+
+        assert "compute_qc_histogram" in histogram_src
