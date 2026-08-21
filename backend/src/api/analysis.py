@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Any, Optional
 
+from backend.src.analysis.qc_summary import compute_qc_histogram
 from backend.src.utils.config import load_config, save_state
 from backend.src.utils.logging import set_current_stage
 
@@ -186,39 +187,6 @@ def _find_raw_h5ad(roi_dir: Path, source: str = "cellpose") -> "Path | None":
     return None
 
 
-def _hist_metric(arr: "np.ndarray", label: str, unit: str = "", n_bins: int = 60) -> dict:
-    import numpy as np
-    arr = arr[np.isfinite(arr) & (arr >= 0)]
-    if len(arr) == 0:
-        return {}
-    # 若所有值都是 0，直接回傳空字典，避免 np.histogram 產生 [-0.5, 0.5] 的無效 bin_edges
-    if arr.max() == 0:
-        return {}
-    counts, bin_edges = np.histogram(arr, bins=n_bins)
-    median = float(np.median(arr))
-    # MAD 在 log1p 空間計算後轉回線性空間，適合 count data（高度右偏分布）
-    # 這裡移除 1.4826 比例因子，使用原始 MAD 以提供更直覺且緊湊的建議範圍
-    # 避免在 exp 轉回後上界被過度放大（Exponential Inflation）
-    log_arr = np.log1p(arr)
-    log_median = float(np.median(log_arr))
-    log_mad = float(np.median(np.abs(log_arr - log_median)))
-    mad_min = float(max(0.0, np.expm1(log_median - 3 * log_mad)))
-    mad_max = float(np.expm1(log_median + 3 * log_mad))
-    return {
-        "label": label,
-        "unit": unit,
-        "bin_edges": bin_edges.tolist(),
-        "counts": counts.tolist(),
-        "mad_min": round(mad_min, 2),
-        "mad_max": round(mad_max, 2),
-        "p5":  round(float(np.percentile(arr, 5)), 2),
-        "p50": round(median, 2),
-        "p95": round(float(np.percentile(arr, 95)), 2),
-        "p99": round(float(np.percentile(arr, 99)), 2),
-        "mean": round(float(arr.mean()), 2),
-    }
-
-
 @router.get("/raw_histogram")
 async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = False, source: str = "cellpose"):
     """讀取原始 h5ad，on-the-fly 計算 QC metrics，回傳直方圖 JSON 供前端 SVG 渲染。
@@ -261,20 +229,28 @@ async def get_raw_histogram(roi_name: Optional[str] = None, merge_rois: bool = F
         qc_params = config.get("analysis", {}).get("preprocessing", {}).get("cellular", {})
         adata = compute_qc_metrics(adata, qc_params)
 
+        # 退化情況（空陣列/全 0）compute_qc_histogram 回傳 None；JSON 對外形狀
+        # 維持現狀，仍組出 {} 塞進該 metric key（前端用 Object.keys(...).length
+        # 判斷版面欄數，也用 truthy 檢查決定渲染，不可省略 key）。
         metrics: dict[str, dict] = {}
         obs = adata.obs
         if "total_counts" in obs:
-            metrics["total_counts"] = _hist_metric(obs["total_counts"].values, "Transcripts Per Cell")
+            result = compute_qc_histogram(obs["total_counts"].values, "Transcripts Per Cell")
+            metrics["total_counts"] = result.to_dict() if result else {}
         if "n_genes_by_counts" in obs:
-            metrics["n_genes_by_counts"] = _hist_metric(obs["n_genes_by_counts"].values, "Genes Per Cell")
+            result = compute_qc_histogram(obs["n_genes_by_counts"].values, "Genes Per Cell")
+            metrics["n_genes_by_counts"] = result.to_dict() if result else {}
         if "pct_counts_mt" in obs:
-            metrics["pct_counts_mt"] = _hist_metric(obs["pct_counts_mt"].values, "Mitochondrial %", unit="%")
-        
+            result = compute_qc_histogram(obs["pct_counts_mt"].values, "Mitochondrial %", unit="%")
+            metrics["pct_counts_mt"] = result.to_dict() if result else {}
+
         if "complexity" in obs:
-            metrics["complexity"] = _hist_metric(obs["complexity"].values, "Complexity Score")
+            result = compute_qc_histogram(obs["complexity"].values, "Complexity Score")
+            metrics["complexity"] = result.to_dict() if result else {}
 
         if "cell_area_um2" in obs:
-            metrics["cell_area"] = _hist_metric(obs["cell_area_um2"].values, "Cell Size", "µm²")
+            result = compute_qc_histogram(obs["cell_area_um2"].values, "Cell Size", "µm²")
+            metrics["cell_area"] = result.to_dict() if result else {}
 
         return {"status": "ok", "data": {"n_cells": int(adata.n_obs), "metrics": metrics}}
 

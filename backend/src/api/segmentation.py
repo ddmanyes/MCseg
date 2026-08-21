@@ -12,7 +12,12 @@ import numpy as np
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel, Field
 
-from backend.src.utils.config import load_config, load_state, resolve_path, save_state
+from backend.src.fullslide.pipeline import (
+    _SENTINEL_FULL,
+    _upper_is_open,
+    run_full_slide_segmentation,
+)
+from backend.src.utils.config import load_config, load_state, resolve_path, save_state_key
 from backend.src.utils.logging import set_current_stage
 
 router = APIRouter()
@@ -97,16 +102,6 @@ class FullSegParams(BaseModel):
     use_cpsam: Optional[bool] = None
 
 
-# 上界（crop_x1/crop_y1）專用哨兵：代表「取到影像邊界」，與 CLI 的
-# `--crop-y1 -1` / `--btf-col1 -1` 語意一致。下界不接受 -1（視為負值錯誤）。
-_SENTINEL_FULL = -1
-
-
-def _upper_is_open(v: Optional[int]) -> bool:
-    """上界是否為開放（None 或 -1 → 取影像邊界）。"""
-    return v is None or v == _SENTINEL_FULL
-
-
 def validate_crop(p: FullSegParams) -> Optional[str]:
     """驗證裁切座標；合法回傳 None，否則回傳錯誤訊息。
 
@@ -129,17 +124,6 @@ def validate_crop(p: FullSegParams) -> Optional[str]:
         if p.crop_y1 <= y0:
             return f"crop_y1 必須大於 crop_y0（收到 {y0} → {p.crop_y1}）"
     return None
-
-
-def resolve_crop_window(
-    p: FullSegParams, w_img: int, h_img: int
-) -> tuple[int, int, int, int]:
-    """把裁切參數展開為實際切片邊界 `(x0, y0, x1, y1)`，並夾制於影像範圍內。"""
-    x0 = min(int(p.crop_x0 or 0), w_img)
-    y0 = min(int(p.crop_y0 or 0), h_img)
-    x1 = w_img if _upper_is_open(p.crop_x1) else min(int(p.crop_x1), w_img)
-    y1 = h_img if _upper_is_open(p.crop_y1) else min(int(p.crop_y1), h_img)
-    return x0, y0, x1, y1
 
 
 def _maybe_set(d: dict, key: str, val) -> None:
@@ -253,7 +237,7 @@ async def run_segmentation(
         config = load_config()
         config = _apply_overrides(config, params)
         overrides = params.roi_overrides or {}
-        save_state({"roi_seg_overrides": overrides})
+        save_state_key("roi_seg_overrides", overrides)
         config["_roi_overrides"] = overrides
         config["_target_roi"] = params.target_roi
         _task_status["status"] = "running"
@@ -292,6 +276,12 @@ async def run_full_segmentation(
 async def _run_full_segmentation(
     config: dict, params: FullSegParams | None = None
 ) -> None:
+    """薄層：executor 呼叫 `run_full_slide_segmentation` + 狀態轉譯。
+
+    全片分割的編排邏輯（讀取視窗組裝、OOM 防護、MPS 鉗制、metadata 寫入）
+    已下沉到 `fullslide.pipeline.run_full_slide_segmentation`（架構深化 P8），
+    CLI 全片路徑共用同一份實作與安全防護。
+    """
     global _full_status
     set_current_stage("segmentation")
     _full_status = {"status": "running", "progress": 0.0, "message": "讀取全圖影像..."}
@@ -299,108 +289,30 @@ async def _run_full_segmentation(
     def _progress(p: float, msg: str) -> None:
         _full_status.update({"progress": p, "message": msg})
 
+    params = params or FullSegParams()
+
     try:
-        import gc
-        import numpy as np
-        from backend.src.fullslide.pipeline import resolve_pixel_size, write_full_seg_meta
-        from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
-        from backend.src.utils.slide_reader import open_slide
-
-        paths      = config.get("paths", {})
-        output_dir = resolve_path(paths["output_dir"])
-        btf_path   = paths.get("he_image", "")
-        seg_cfg    = config.get("segmentation", {}).get("mcseg_v2", {})
-        full_cfg   = config.get("full_seg", {})
-        max_load_gb = float(full_cfg.get("max_load_gb", 6.0))
-
-        if not btf_path or not Path(btf_path).exists():
-            raise FileNotFoundError(f"找不到 BTF/TIFF：{btf_path}  請在 config paths.he_image 指定")
-
-        params = params or FullSegParams()
-
-        _progress(0.02, "開啟影像（串流讀取）...")
-        # SlideReader 統一 BTF/TIFF 與 NDPI/SVS；read_region 只解壓被請求的 tile，
-        # 整張影像不進 RAM —— 這是全片（>6 GB）跑得動的前提。
-        reader = open_slide(btf_path)
-        w_img, h_img = reader.dimensions
-
-        crop_x0, crop_y0, crop_x1, crop_y1 = resolve_crop_window(params, w_img, h_img)
-        crop_w, crop_h = crop_x1 - crop_x0, crop_y1 - crop_y0
-
-        def tile_reader(x, y, w, h, _r=reader, _ox=crop_x0, _oy=crop_y0):
-            """裁切窗格內的相對座標 → 影像絕對座標。"""
-            tile = _r.read_region(_ox + x, _oy + y, w, h)
-            return tile[..., :3] if tile.ndim == 3 and tile.shape[-1] > 3 else tile
-
-        # 影像本身已改為串流讀取，不再受 RAM 限制；剩下的硬限制是**輸出遮罩**
-        # （int32，4 bytes/px）—— 它在寫檔前必須完整存在於記憶體一次。
-        mask_gb = crop_h * crop_w * 4 / 1024 ** 3
-        if mask_gb > max_load_gb:
-            raise MemoryError(
-                f"窗格 {crop_w}×{crop_h}px 的分割遮罩約 {mask_gb:.1f} GB（int32），"
-                f"超過安全上限（full_seg.max_load_gb = {max_load_gb:g} GB）。"
-                f"請縮小裁切範圍，或調高該設定值。"
-            )
-
-        _is_full = (crop_x0, crop_y0, crop_x1, crop_y1) == (0, 0, w_img, h_img)
-        _scope = "全圖" if _is_full else f"窗格 ({crop_x0},{crop_y0})"
-        _progress(0.05, f"{_scope} 尺寸 {crop_w}×{crop_h}px，開始 tiled 串流分割...")
-
-        # MPS 安全設定：tile_size=1024, batch_size≤2
-        tile_size = int(full_cfg.get("tile_size", 1024))
-        overlap   = int(full_cfg.get("overlap", 128))
-        seg_cfg_safe = dict(seg_cfg)
-        seg_cfg_safe["batch_size"] = min(int(seg_cfg_safe.get("batch_size", 2)), 2)
-        # cpsam 在全圖模式極耗記憶體，預設強制停用；設 full_seg.force_disable_cpsam=false
-        # 後可由請求的 use_cpsam 決定（未指定則沿用 mcseg_v2 設定）
-        if full_cfg.get("force_disable_cpsam", True):
-            seg_cfg_safe["use_cpsam"] = False
-        elif params.use_cpsam is not None:
-            seg_cfg_safe["use_cpsam"] = params.use_cpsam
+        import functools
 
         loop = asyncio.get_running_loop()
-        import functools
-        final_mask = await loop.run_in_executor(
+        result = await loop.run_in_executor(
             None,
             functools.partial(
-                run_tiled_mcseg_v2,
-                cfg=seg_cfg_safe,
-                tile_size=tile_size,
-                overlap=overlap,
-                progress_callback=_progress,
-                tile_reader=tile_reader,
-                full_shape=(crop_h, crop_w),
-                # 標籤圖落在 memmap 並記錄進度：中斷後可自上次完成的 tile 列續跑
-                work_dir=output_dir,
+                run_full_slide_segmentation,
+                config,
+                crop_x0=params.crop_x0, crop_y0=params.crop_y0,
+                crop_x1=params.crop_x1, crop_y1=params.crop_y1,
+                use_cpsam=params.use_cpsam,
+                progress=_progress,
             ),
         )
-        gc.collect()
 
-        out_path = output_dir / "full_image_segmentation_masks.npy"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        np.save(str(out_path), final_mask)
-        n_cells = int(len(np.unique(final_mask)) - 1)
-
-        # metadata sidecar：下游（Stage 2 全圖計數）需靠它把遮罩局部座標
-        # 還原回原始影像 fullres 座標系
-        write_full_seg_meta(
-            output_dir,
-            image_width=w_img,
-            image_height=h_img,
-            crop_x0=crop_x0,
-            crop_y0=crop_y0,
-            width=int(final_mask.shape[1]),
-            height=int(final_mask.shape[0]),
-            n_cells=n_cells,
-            pixel_size_um=resolve_pixel_size(config),
-            passes=7 if seg_cfg_safe.get("use_cpsam") else 4,
-        )
-
+        scope = "全圖" if result.is_full_image else f"窗格 ({result.crop_x0},{result.crop_y0})"
         _full_status = {
             "status": "done", "progress": 1.0,
-            "message": f"{_scope}分割完成：{n_cells:,} 個細胞  →  {out_path.name}",
-            "n_cells": n_cells,
-            "output": str(out_path),
+            "message": f"{scope}分割完成：{result.n_cells:,} 個細胞  →  {result.mask_path.name}",
+            "n_cells": result.n_cells,
+            "output": str(result.mask_path),
         }
     except Exception as e:
         logger.error(f"全圖分割失敗：{e}", exc_info=True)
@@ -436,7 +348,7 @@ async def put_roi_overrides(body: dict):
         if invalid_fields:
             return {"status": "error", "message": f"ROI '{roi_name}' 包含未知欄位：{invalid_fields}"}
 
-    save_state({"roi_seg_overrides": body})
+    save_state_key("roi_seg_overrides", body)
     return {"status": "ok"}
 
 

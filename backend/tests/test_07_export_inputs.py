@@ -51,6 +51,28 @@ class TestMaskToGeoJSON:
         assert ring[0] == pytest.approx(ring[-1])
 
 
+class TestMaskArrayToGeojson:
+    """純陣列版本（CLI 用，記憶體裡已有 mask 時不重新讀檔）：行為必須與路徑版一致"""
+
+    def test_matches_mask_to_geojson_for_same_array(self, toy_mask):
+        """對同一份 mask，陣列版與路徑版（np.load 後）結果逐點相同"""
+        from backend.src.export.geometry import _mask_array_to_geojson, mask_to_geojson
+
+        mask = np.load(str(toy_mask))
+        via_path = mask_to_geojson(toy_mask, pixel_size_um=0.5)
+        via_array = _mask_array_to_geojson(mask, pixel_size_um=0.5)
+        assert via_array == via_path
+
+    def test_filters_small_cells(self, toy_mask):
+        """面積小於 min_area_px 的細胞被剔除（2x2=4 px < 20），與路徑版同一套規則"""
+        from backend.src.export.geometry import _mask_array_to_geojson
+
+        mask = np.load(str(toy_mask))
+        geo = _mask_array_to_geojson(mask, pixel_size_um=0.5, min_area_px=20)
+        assert len(geo["features"]) == 1
+        assert geo["features"][0]["properties"]["cell_id"] == 1
+
+
 class TestShiftGeoJSONCoords:
     """全域偏移（合併模式的 Loupe 匯出用）"""
 

@@ -6,7 +6,7 @@
 使 `cli/segment.py`（指令列全片流程）與 `api/cellpose_count.py`（GUI 全圖計數）
 共用同一份實作，避免邏輯分歧（CLAUDE.md §11 DRY）。
 
-函式一律為純函式（不寫 log、不做快取），快取與進度回報留給呼叫端：
+大多數函式為純函式（不寫 log、不做快取），快取與進度回報留給呼叫端：
 
 | 函式 | 職責 |
 |------|------|
@@ -14,12 +14,18 @@
 | `aggregate_cells`   | 依對應表把 bins 聚合成 cells×genes 原始 counts |
 | `add_centroids`     | 補細胞重心（裁切局部 px、全片 fullres px、µm） |
 | `resolve_pixel_size`| 取樣本實際 µm/px（scalefactors 優先於預設常數） |
+
+`run_full_slide_segmentation` 是例外——它是「開影像 → 裁切 → 分割 → 存檔 →
+寫 metadata」這整套全片分割編排的唯一擁有者（架構深化 P8，下沉自
+`api/segmentation.py`），純同步、不依賴 asyncio/FastAPI，進度透過注入的
+callback 回報，呼叫端（API 背景任務、CLI）自行決定要不要丟進 thread/executor。
 """
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Optional
 
 import numpy as np
 
@@ -804,3 +810,197 @@ def resolve_pixel_size(config: dict) -> float:
             except (ValueError, OSError, TypeError):
                 pass   # 損壞不可中斷流程，回退預設常數
     return float(VISIUM_UM_PX)
+
+
+# ─── 全片分割編排（架構深化 P8，下沉自 api/segmentation.py）──────────────────
+
+# 上界（crop_x1/crop_y1）專用哨兵：代表「取到影像邊界」，與 CLI 的
+# `--crop-y1 -1` / `--btf-col1 -1` 語意一致。下界不接受 -1（視為負值錯誤，
+# 由 API 層的 `validate_crop` 檢查——那是請求驗證職責，留在 API 層）。
+_SENTINEL_FULL = -1
+
+
+def _upper_is_open(v: Optional[int]) -> bool:
+    """上界是否為開放（None 或 -1 → 取影像邊界）。"""
+    return v is None or v == _SENTINEL_FULL
+
+
+def resolve_crop_window(
+    crop_x0: Optional[int], crop_y0: Optional[int],
+    crop_x1: Optional[int], crop_y1: Optional[int],
+    w_img: int, h_img: int,
+) -> tuple[int, int, int, int]:
+    """把裁切參數展開為實際切片邊界 `(x0, y0, x1, y1)`，並夾制於影像範圍內。
+
+    吃 4 個 plain scalar（不是 pydantic 物件）——CLI 與 API 都能直接呼叫，
+    不需要讓這個領域函式反向依賴 API 層的請求型別。
+    """
+    x0 = min(int(crop_x0 or 0), w_img)
+    y0 = min(int(crop_y0 or 0), h_img)
+    x1 = w_img if _upper_is_open(crop_x1) else min(int(crop_x1), w_img)
+    y1 = h_img if _upper_is_open(crop_y1) else min(int(crop_y1), h_img)
+    return x0, y0, x1, y1
+
+
+def check_full_seg_mask_memory(width: int, height: int, max_load_gb: float) -> None:
+    """檢查全片分割輸出遮罩（int32，寫檔前需完整存在於記憶體一次）是否超限。
+
+    共用給 API 全片路徑（`run_full_slide_segmentation`）與 CLI 全片路徑
+    （`cli.segment.step_segment`）——兩邊窗格大小的來源不同（前者用串流讀取
+    的裁切窗格，後者用已載入的 `img.shape`），但同一份 int32 遮罩的記憶體
+    上限判斷邏輯只該有一份。超限時 raise `MemoryError`，不得默默 OOM。
+    """
+    mask_gb = height * width * 4 / 1024 ** 3
+    if mask_gb > max_load_gb:
+        raise MemoryError(
+            f"窗格 {width}×{height}px 的分割遮罩約 {mask_gb:.1f} GB（int32），"
+            f"超過安全上限（max_load_gb = {max_load_gb:g} GB）。"
+            f"請縮小裁切範圍，或調高該設定值。"
+        )
+
+
+def apply_full_seg_safety_clamp(
+    seg_cfg: dict,
+    *,
+    force_disable_cpsam: bool = True,
+    use_cpsam: Optional[bool] = None,
+) -> dict:
+    """套用 MPS `batch_size ≤ 2` 安全鉗制與 cpsam 停用決策，回傳一份新 cfg。
+
+    batch_size 鉗制對所有呼叫端**無條件**生效（見 `docs/adr/0005`）。
+    `force_disable_cpsam=True`（Web UI 全片路徑的預設，因為全圖模式 cpsam 極耗
+    記憶體）時無視 `use_cpsam` 一律關閉；CLI 呼叫端應傳 `force_disable_cpsam=
+    False`，讓使用者透過 `--cpsam` 旗標的既有行為保留（CLI 裁切窗格由使用者
+    自行控制大小，不像 Web UI 全片按鈕預設面對整張未知大小的切片）。
+    """
+    seg_cfg_safe = dict(seg_cfg)
+    seg_cfg_safe["batch_size"] = min(int(seg_cfg_safe.get("batch_size", 2)), 2)
+    if force_disable_cpsam:
+        seg_cfg_safe["use_cpsam"] = False
+    elif use_cpsam is not None:
+        seg_cfg_safe["use_cpsam"] = use_cpsam
+    return seg_cfg_safe
+
+
+@dataclass
+class FullSegResult:
+    """一次全片分割的產出。"""
+    mask_path: Path
+    n_cells: int
+    image_width: int
+    image_height: int
+    crop_x0: int
+    crop_y0: int
+    is_full_image: bool
+
+
+def run_full_slide_segmentation(
+    config: dict,
+    crop_x0: Optional[int] = None,
+    crop_y0: Optional[int] = None,
+    crop_x1: Optional[int] = None,
+    crop_y1: Optional[int] = None,
+    use_cpsam: Optional[bool] = None,
+    progress: Optional[Callable[[float, str], None]] = None,
+) -> FullSegResult:
+    """全片 MCseg v2 分割：開影像 → 裁切窗格 → OOM 防護 → tiled 串流分割 → 存檔 + metadata。
+
+    純同步、不依賴 asyncio/FastAPI；呼叫端（API 背景任務、CLI）自行決定要不要
+    丟進 thread/executor。遇錯直接 raise（`FileNotFoundError`/`MemoryError`），
+    由呼叫端接住並轉成各自的錯誤表示法（API 轉 `_full_status`，CLI 轉 exit code）。
+
+    MPS `batch_size ≤ 2` 安全鉗制對 API 與 CLI **無條件**生效，即使明確請求更高
+    的 batch_size 也會被降到 2（見 `docs/adr/0005-mps-batch-size-clamp-applies-to-cli.md`）。
+    """
+    import gc
+
+    from backend.src.segmentation.cellpose_runner import run_tiled_mcseg_v2
+    from backend.src.utils.config import resolve_path
+    from backend.src.utils.slide_reader import open_slide
+
+    report = progress or (lambda p, msg: None)
+
+    paths = config.get("paths", {})
+    output_dir = resolve_path(paths["output_dir"])
+    btf_path = paths.get("he_image", "")
+    seg_cfg = config.get("segmentation", {}).get("mcseg_v2", {})
+    full_cfg = config.get("full_seg", {})
+    max_load_gb = float(full_cfg.get("max_load_gb", 6.0))
+
+    if not btf_path or not Path(btf_path).exists():
+        raise FileNotFoundError(f"找不到 BTF/TIFF：{btf_path}  請在 config paths.he_image 指定")
+
+    report(0.02, "開啟影像（串流讀取）...")
+    # SlideReader 統一 BTF/TIFF 與 NDPI/SVS；read_region 只解壓被請求的 tile，
+    # 整張影像不進 RAM —— 這是全片（>6 GB）跑得動的前提。
+    reader = open_slide(btf_path)
+    w_img, h_img = reader.dimensions
+
+    rx0, ry0, rx1, ry1 = resolve_crop_window(crop_x0, crop_y0, crop_x1, crop_y1, w_img, h_img)
+    crop_w, crop_h = rx1 - rx0, ry1 - ry0
+
+    def tile_reader(x, y, w, h, _r=reader, _ox=rx0, _oy=ry0):
+        """裁切窗格內的相對座標 → 影像絕對座標。"""
+        tile = _r.read_region(_ox + x, _oy + y, w, h)
+        return tile[..., :3] if tile.ndim == 3 and tile.shape[-1] > 3 else tile
+
+    # 影像本身已改為串流讀取，不再受 RAM 限制；剩下的硬限制是**輸出遮罩**
+    # （int32，4 bytes/px）—— 它在寫檔前必須完整存在於記憶體一次。
+    check_full_seg_mask_memory(crop_w, crop_h, max_load_gb)
+
+    is_full_image = (rx0, ry0, rx1, ry1) == (0, 0, w_img, h_img)
+    scope_label = "全圖" if is_full_image else f"窗格 ({rx0},{ry0})"
+    report(0.05, f"{scope_label} 尺寸 {crop_w}×{crop_h}px，開始 tiled 串流分割...")
+
+    # MPS 安全設定：tile_size=1024, batch_size≤2（無條件套用，docs/adr/0005）
+    tile_size = int(full_cfg.get("tile_size", 1024))
+    overlap = int(full_cfg.get("overlap", 128))
+    seg_cfg_safe = apply_full_seg_safety_clamp(
+        seg_cfg,
+        force_disable_cpsam=full_cfg.get("force_disable_cpsam", True),
+        use_cpsam=use_cpsam,
+    )
+
+    final_mask = run_tiled_mcseg_v2(
+        cfg=seg_cfg_safe,
+        tile_size=tile_size,
+        overlap=overlap,
+        progress_callback=report,
+        tile_reader=tile_reader,
+        full_shape=(crop_h, crop_w),
+        # 標籤圖落在 memmap 並記錄進度：中斷後可自上次完成的 tile 列續跑
+        work_dir=output_dir,
+    )
+    gc.collect()
+
+    out_path = output_dir / "full_image_segmentation_masks.npy"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    np.save(str(out_path), final_mask)
+    n_cells = int(len(np.unique(final_mask)) - 1)
+
+    # metadata sidecar：下游（Stage 2 全圖計數）需靠它把遮罩局部座標
+    # 還原回原始影像 fullres 座標系
+    write_full_seg_meta(
+        output_dir,
+        image_width=w_img,
+        image_height=h_img,
+        crop_x0=rx0,
+        crop_y0=ry0,
+        width=int(final_mask.shape[1]),
+        height=int(final_mask.shape[0]),
+        n_cells=n_cells,
+        pixel_size_um=resolve_pixel_size(config),
+        passes=7 if seg_cfg_safe.get("use_cpsam") else 4,
+    )
+
+    report(1.0, f"{scope_label}分割完成：{n_cells:,} 個細胞  →  {out_path.name}")
+
+    return FullSegResult(
+        mask_path=out_path,
+        n_cells=n_cells,
+        image_width=w_img,
+        image_height=h_img,
+        crop_x0=rx0,
+        crop_y0=ry0,
+        is_full_image=is_full_image,
+    )
