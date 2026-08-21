@@ -7,10 +7,14 @@
     "dev": "vite --port 3000",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.21",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-notification": "^2.3.3",
     "@types/openseadragon": "^5.0.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
@@ -26,6 +30,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
