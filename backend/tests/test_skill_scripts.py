@@ -185,38 +185,12 @@ class TestSegQuality:
 
 
 # ─── A3: qc_metrics ──────────────────────────────────────────────────────────
-
-class TestQcMetrics:
-    def test_qc_metrics_columns(self, tmp_project, fake_masks, fake_adata):
-        """qc_metrics 應輸出含正確欄位的 CSV，NED 介於 0–1"""
-        from scripts.qc_metrics import compute_metrics
-
-        adata, adata_path = fake_adata
-
-        rois_json = tmp_project / "results" / "qc_rois.json"
-        rois_json.write_text(json.dumps({
-            "rois": [
-                {"name": "qc_roi_1", "x": 0, "y": 0, "width_px": 100, "height_px": 100, "pixel_size_um": 0.2737},
-                {"name": "qc_roi_2", "x": 0, "y": 0, "width_px": 100, "height_px": 100, "pixel_size_um": 0.2737},
-            ],
-            "threshold_used": 0.6, "timestamp": "2026-01-01T00:00:00",
-        }), encoding="utf-8")
-
-        out_csv = tmp_project / "results" / "qc_metrics.csv"
-        df = compute_metrics(
-            rois_json=rois_json,
-            binned_dir=adata_path.parent,
-            qc_dir=tmp_project / "results" / "qc",
-            out_csv=out_csv,
-            tissue_profile="crc",
-        )
-
-        assert out_csv.exists(), "qc_metrics.csv 不存在"
-        required_cols = {"roi", "method", "n_cells", "ftc", "ned", "coexp_rate"}
-        assert required_cols.issubset(df.columns), f"缺少欄位：{required_cols - set(df.columns)}"
-        assert df["ned"].between(0, 1).all(), "NED 超出 [0,1] 範圍"
-        assert set(df["method"].unique()) == {"nuc", "mcseg"}
-
+#
+# `TestQcMetrics::test_qc_metrics_columns` 已刪除（架構深化 P6-6 收尾時清理）：
+# `3649e58` 把 `scripts/qc_metrics.py` 的舊 `compute_metrics(rois_json=...)` 介面
+# 整個改寫成新的 `compute_metrics_from_geojson()`（geojson 導向），但沒有同步
+# 更新這條測試，留下一個測不存在函式的孤兒測試。新介面目前沒有對應測試覆蓋，
+# 不在本次架構深化範圍內，未來若要動 `qc_metrics.py` 建議先補上。
 
 # ─── A4: write_handoff ───────────────────────────────────────────────────────
 
@@ -348,45 +322,9 @@ class TestRunAnalysis:
 
 
 # ─── B4: export_mcseg ────────────────────────────────────────────────────────
-
-class TestExportMcseg:
-    def test_export_cli_both_format(self, tmp_project, fake_adata):
-        """export_mcseg.py --format both 應同時產出 h5ad 與 xenium/ 目錄"""
-        import subprocess
-
-        adata, adata_path = fake_adata
-
-        # 建立假遮罩
-        mask = np.zeros((100, 100), dtype=np.int32)
-        mask[10:30, 10:30] = 1
-        mask[50:70, 50:70] = 2
-        masks_dir = tmp_project / "results" / "masks"
-        masks_dir.mkdir(parents=True, exist_ok=True)
-        np.save(masks_dir / "qc_roi_1_mcseg.npy", mask)
-
-        # 建立帶有 UMAP 的 adata
-        adata.obsm["X_umap"] = np.random.rand(adata.n_obs, 2)
-        adata.obsm["spatial"] = np.column_stack([
-            adata.obs["pxl_col_in_fullres"].values,
-            adata.obs["pxl_row_in_fullres"].values,
-        ])
-        adata.obs["leiden"] = "0"
-        adata.obs["cell_type"] = "Unknown"
-        clustered_path = tmp_project / "results" / "analysis" / "cellpose_cells_final.h5ad"
-        adata.write(clustered_path)
-
-        result = subprocess.run(
-            ["uv", "run", "python", str(ROOT / "scripts" / "export_mcseg.py"),
-             "--input", str(clustered_path),
-             "--masks-dir", str(masks_dir),
-             "--output", str(tmp_project / "results" / "export"),
-             "--format", "both",
-             "--pixel-size", "0.2737"],
-            capture_output=True, text=True, cwd=str(ROOT)
-        )
-        assert result.returncode == 0, f"export_mcseg.py 失敗：\n{result.stderr}"
-
-        h5ad_out = tmp_project / "results" / "export" / "msseg_final.h5ad"
-        xenium_out = tmp_project / "results" / "export" / "xenium"
-        assert h5ad_out.exists(), "msseg_final.h5ad 不存在"
-        assert xenium_out.exists(), "xenium/ 目錄不存在"
+#
+# `TestExportMcseg::test_export_cli_both_format` 已刪除（架構深化 P6-6 收尾時清理）：
+# `3649e58` 刪除了整個 `scripts/export_mcseg.py`（連同 `skills/scripts/` 那份鏡像），
+# 但沒有同步移除這條測試，留下一個測不存在檔案的孤兒測試。匯出功能看起來已被
+# 同一次 commit 新增的 `generate_segmentation_overlays.py` / `render_registered_
+# cytassist_overlays.py` 取代，不在本次架構深化範圍內。
