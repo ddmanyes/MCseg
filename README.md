@@ -17,7 +17,7 @@ Its core segmentation engine, **MCseg**, was developed through the **AutoResearc
 
 ## Contents
 
-[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [CLI (No-UI)](#cli-no-ui-whole-slide-pipeline) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Output Structure](#output-structure) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
+[Quick Start](#quick-start) · [Desktop Installation](#desktop-installation-recommended) · [Pipeline Overview](#pipeline-overview) · [CLI (No-UI)](#cli-no-ui-whole-slide-pipeline) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Output Structure](#output-structure) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
 
 ---
 
@@ -35,7 +35,28 @@ Its core segmentation engine, **MCseg**, was developed through the **AutoResearc
 | **Node.js** | v18                              | v20 LTS                         | For frontend (Vite + React); CLI mode does not require Node.js                                                   |
 | **GPU**     | — (CPU fallback)                | NVIDIA CUDA 12.x or Apple MPS   | GPU reduces segmentation time: ~30 min (4-pass) / ~55 min (7-pass) on CPU → ~5–10 / ~15–25 min with CUDA/MPS  |
 
-### Prerequisites
+### Desktop Installation (Recommended)
+
+The desktop installers include the MCseg frontend, backend, and the `uv` environment manager. Regular users **do not need** to install Python, Node.js, Rust, or `uv`. The first launch still downloads approximately 8 GB of Python/PyTorch/Cellpose dependencies, so keep the computer online and reserve at least 15 GB of free disk space.
+
+#### Windows 10/11 (x64)
+
+1. Obtain `mcseg_0.2.0_x64-setup.exe` and double-click it. MCseg installs for the current Windows user and does not require administrator privileges.
+2. An unsigned build may trigger “Windows protected your PC.” After verifying that the file came from the MCseg project maintainer, click **More info → Run anyway**.
+3. Launch **MCseg** from the Start menu. On first launch, the setup wizard checks the system, creates an isolated environment, and starts the analysis engine. It opens the main interface automatically when setup finishes. Do not close MCseg during initialization.
+4. Later launches reuse the installed environment instead of downloading every package again.
+
+#### macOS 12+ (Apple Silicon)
+
+1. Open the `.dmg` and drag **MCseg** into Applications.
+2. For an unnotarized build, Control-click (or right-click) MCseg in Finder, select **Open**, then confirm **Open**. This is only needed on first launch.
+3. The first launch also creates the Python environment automatically; keep the Mac online and reserve at least 15 GB of free disk space.
+
+### Install from Source (Developers / CLI)
+
+The prerequisites below apply only to development, CLI use, or running without a desktop installer.
+
+#### Prerequisites
 
 **macOS (Homebrew recommended):**
 
@@ -64,7 +85,7 @@ winget install OpenJS.NodeJS.LTS
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### Installation
+#### Installation
 
 **macOS / Linux:**
 
@@ -427,7 +448,7 @@ After a complete run, your output directory will contain:
 
 ## Usage Guide
 
-After launching (`bash start.sh`), open **[http://localhost:3000](http://localhost:3000)** and follow the steps below.
+For the desktop build, launch **MCseg** from the Start menu or Applications. When running from source, execute `bash start.sh` (`start.ps1` on Windows), then open **[http://localhost:3000](http://localhost:3000)**. Once the main interface is ready, follow the steps below.
 
 > *Timings below are approximate, measured on **Apple M2 CPU, 16 GB RAM**, ROI ~1500 × 1200 px. GPU (Apple MPS or NVIDIA CUDA) reduces Stage 1 to ~2–3 min/ROI.*
 
@@ -619,6 +640,26 @@ uv sync --extra dev            # installs pytest-asyncio + httpx (required for A
 uv run pytest backend/tests/ -v
 ```
 
+### Building Desktop Installers
+
+On Windows 10/11 x64, use PowerShell:
+
+```powershell
+cd frontend
+npm install
+npm run tauri:build:windows
+```
+
+If the sidecar is missing, the script downloads and verifies the pinned Windows `uv.exe`, builds the NSIS installer, and copies it to `release/mcseg_<version>_x64-setup.exe`. Building requires Node.js, the Rust MSVC toolchain, and Microsoft C++ Build Tools; these are **builder-only** requirements and are not required on the computer installing MCseg.
+
+The existing macOS build command is:
+
+```bash
+cd frontend
+npm install
+npm run tauri:build
+```
+
 > **ExFAT / external drive (macOS):** `uv run` rebuilds the env and can clobber the `.venv`
 > symlink. Clean resource-fork junk first, then run pytest against the venv directly:
 >
@@ -633,6 +674,9 @@ uv run pytest backend/tests/ -v
 
 | Issue                                       | Cause                           | Solution                                                                                                                                           |
 | ------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows SmartScreen blocks the installer    | The installer is not code-signed | After verifying the file came from the MCseg maintainer, click **More info → Run anyway**                                                       |
+| First-launch setup appears stuck             | Offline connection, low disk space, or packages are still downloading | Stay online and reserve at least 15 GB; expand the setup log, fix the reported problem, then click **Retry**                         |
+| Desktop app reports port 8001 is occupied    | Another service is using the MCseg backend port | Close the program using port 8001 and click **Retry**; MCseg deliberately does not terminate an unrelated process automatically                     |
 | `uv: command not found` after install     | Shell profile not reloaded      | Run `source ~/.zshrc` (zsh) or `source ~/.bashrc` (bash), or restart terminal                                                                  |
 | Backend fails to start (`address in use`) | Previous process still running  | `start.sh` auto-kills ports 8001/3000; or run `lsof -ti:8001,3000 \| xargs kill -9` manually                                                    |
 | `uv sync` fails on ExFAT drive            | Resource-fork file corruption   | `start.sh` handles this automatically; if running manually: `rm -rf .venv && mkdir -p ~/.venvs/msseg && ln -s ~/.venvs/msseg .venv && uv sync` |

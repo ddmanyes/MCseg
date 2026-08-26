@@ -17,7 +17,7 @@
 
 ## 目錄
 
-[快速開始](#快速開始) · [流程概覽](#流程概覽) · [CLI（無介面模式）](#cli無介面全切片流程) · [介面導覽](#介面導覽) · [範例結果](#範例結果) · [輸出結構](#輸出結構) · [使用指南](#使用指南) · [演算法](#mcseg-演算法) · [設定](#設定) · [疑難排解](#疑難排解) · [引用](#引用) · [授權](#授權)
+[快速開始](#快速開始) · [桌面版安裝](#桌面版安裝推薦) · [流程概覽](#流程概覽) · [CLI（無介面模式）](#cli無介面全切片流程) · [介面導覽](#介面導覽) · [範例結果](#範例結果) · [輸出結構](#輸出結構) · [使用指南](#使用指南) · [演算法](#mcseg-演算法) · [設定](#設定) · [疑難排解](#疑難排解) · [引用](#引用) · [授權](#授權)
 
 ---
 
@@ -35,7 +35,28 @@
 | **Node.js**   | v18                                   | v20 LTS                               | 前端用（Vite + React）；CLI 模式不需要 Node.js                                                              |
 | **GPU**       | —（CPU 回退）                        | NVIDIA CUDA 12.x 或 Apple MPS         | GPU 可大幅縮短分割時間：CPU 約 30 分鐘（4-pass）/ 55 分鐘（7-pass）→ CUDA/MPS 約 5–10 / 15–25 分鐘        |
 
-### 前置需求
+### 桌面版安裝（推薦）
+
+桌面安裝檔已內含 MCseg 前後端與 `uv` 環境管理器；一般使用者**不需要**另外安裝 Python、Node.js、Rust 或 `uv`。第一次啟動仍需連線下載約 8 GB 的 Python／PyTorch／Cellpose 相依套件，請預留至少 15 GB 空間並保持網路連線。
+
+#### Windows 10/11（x64）
+
+1. 取得 `mcseg_0.2.0_x64-setup.exe`，雙擊執行；安裝於目前 Windows 使用者，不需要系統管理員權限。
+2. 若未簽章版本出現 SmartScreen「Windows 已保護您的電腦」，請確認檔案確實來自 MCseg 專案維護者，再點選 **其他資訊 → 仍要執行**。
+3. 從開始功能表開啟 **MCseg**。首次啟動精靈會依序檢查系統、建立隔離環境並啟動分析引擎；完成後自動進入主介面。下載時間視網路速度而定，請勿在初始化途中關閉程式。
+4. 後續啟動會重用已建立的環境，不會重新下載全部套件。
+
+#### macOS 12+（Apple Silicon）
+
+1. 開啟 `.dmg`，將 **MCseg** 拖入 Applications。
+2. 未公證版本第一次開啟時，請在 Finder 對 MCseg 按右鍵（或 Control＋點擊）→ **打開** → 再按 **打開**；之後可正常雙擊啟動。
+3. 首次啟動同樣會自動建立 Python 環境，請保持網路連線並預留至少 15 GB 空間。
+
+### 從原始碼安裝（開發者／CLI）
+
+以下前置需求只適用於開發、CLI 或未使用桌面安裝檔的情況。
+
+#### 前置需求
 
 **macOS（建議使用 Homebrew）：**
 
@@ -64,7 +85,7 @@ winget install OpenJS.NodeJS.LTS
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### 安裝
+#### 安裝
 
 **macOS / Linux：**
 
@@ -426,7 +447,7 @@ MCseg 輸出可直接載入的 Xenium Explorer 套件（`experiment.xenium` + za
 
 ## 使用指南
 
-啟動後（`bash start.sh`），開啟 **[http://localhost:3000](http://localhost:3000)** 並按照以下步驟操作。
+桌面版請從開始功能表或 Applications 開啟 **MCseg**；從原始碼啟動則執行 `bash start.sh`（Windows 為 `start.ps1`），再開啟 **[http://localhost:3000](http://localhost:3000)**。進入主介面後按照以下步驟操作。
 
 > *以下時間為估計值，以 **Apple M2 CPU、16 GB RAM**、ROI 約 1500 × 1200 px 為測量基準。GPU（Apple MPS 或 NVIDIA CUDA）可將 Stage 1 縮短至 ~2–3 分鐘/ROI。*
 
@@ -615,6 +636,26 @@ uv sync --extra dev            # 安裝 pytest-asyncio + httpx（API 測試所�
 uv run pytest backend/tests/ -v
 ```
 
+### 建置桌面安裝檔
+
+Windows 10/11 x64 使用 PowerShell：
+
+```powershell
+cd frontend
+npm install
+npm run tauri:build:windows
+```
+
+腳本會在缺少 sidecar 時下載並驗證固定版本的 Windows `uv.exe`、產生 NSIS 安裝器，最後複製到 `release/mcseg_<version>_x64-setup.exe`。建置需要 Node.js、Rust MSVC 工具鏈與 Microsoft C++ Build Tools；這些只是**建置端**需求，安裝 MCseg 的使用者不需要安裝。
+
+macOS 的既有建置方式：
+
+```bash
+cd frontend
+npm install
+npm run tauri:build
+```
+
 > **ExFAT／外接硬碟（macOS）：** `uv run` 會重建環境並可能覆蓋 `.venv` symlink。
 > 請先清除 resource-fork 雜訊，再直接用 venv 跑 pytest：
 >
@@ -629,6 +670,9 @@ uv run pytest backend/tests/ -v
 
 | 問題                                        | 原因                            | 解決方法                                                                                                                                        |
 | ------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows SmartScreen 阻擋安裝檔             | 安裝檔尚未進行程式碼簽章        | 確認檔案來自 MCseg 維護者後，點選 **其他資訊 → 仍要執行**                                                                                     |
+| 桌面版首次啟動停在環境初始化                | 網路中斷、磁碟不足或套件下載中  | 保持網路連線並預留至少 15 GB；展開初始化日誌查看錯誤，修正後按 **重試**                                                                         |
+| 桌面版顯示 Port 8001 被其他程式占用         | 其他服務使用 MCseg 後端埠       | 關閉占用 8001 的程式後，在初始化畫面按 **重試**；MCseg 為避免誤殺其他工作不會自動終止該程式                                                    |
 | 安裝後 `uv: command not found`            | Shell 設定檔未重新載入          | 執行 `source ~/.zshrc`（zsh）或 `source ~/.bashrc`（bash），或重新啟動終端機                                                                 |
 | 後端啟動失敗（`address in use`）          | 先前的程序仍在執行              | `start.sh` 自動終止 8001/3000 埠；或手動執行 `lsof -ti:8001,3000 \| xargs kill -9`                                                          |
 | ExFAT 磁碟上 `uv sync` 失敗               | Resource-fork 檔案損壞          | `start.sh` 自動處理；手動執行：`rm -rf .venv && mkdir -p ~/.venvs/msseg && ln -s ~/.venvs/msseg .venv && uv sync`                           |

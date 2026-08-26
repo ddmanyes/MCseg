@@ -1,12 +1,14 @@
 //! Phase 4：視窗生命週期、系統列、結束前的運算中防呆確認。
 //!
-//! 設計依據（拍板決定，見 docs/brainstorming/tauri_desktop_packaging.md）：
-//! - 長任務背景執行 UX = 縮到系統列繼續跑（不是與 GUI 完全解耦的
-//!   job-queue 模式）。所以視窗的「關閉」按鈕一律只是隱藏視窗，後端
-//!   行程不受影響；只有系統列選單的「結束 MCseg」才是真的退出。
+//! 設計依據（2026-08-21 修訂，原始拍板見 docs/brainstorming/tauri_desktop_packaging.md）：
+//! - **原設計**是縮到系統列繼續跑，只有系統列選單的「結束 MCseg」才是真的
+//!   退出。**現行為**改成視窗關閉（點 X／Cmd+Q）與系統列「結束 MCseg」
+//!   走同一條路徑——兩者都會真的終止後端行程並結束整個 App，不再有
+//!   「關視窗＝縮到背景、後端繼續跑」這個模式。
 //! - 「結束」前必須確認目前有沒有工作在跑（呼叫 Phase 4 新增的
 //!   `GET /api/system/busy` 彙總端點），運算中才跳確認對話框，避免
-//!   使用者手滑結束掉正在跑的長任務（可能長達數十小時）。
+//!   使用者手滑結束掉正在跑的長任務（可能長達數十小時）。這個防呆
+//!   在改動後**兩個入口都保留**（視窗關閉／系統列結束）。
 
 use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -90,8 +92,9 @@ fn handle_quit_request(app: AppHandle) {
 }
 
 /// 建立系統列圖示與選單（顯示視窗 / 結束）。視窗關閉事件也在這裡一併
-/// 註冊：關閉按鈕一律「縮到系統列」（隱藏視窗，行程不受影響），不會
-/// 觸發上面的結束確認流程——那是系統列選單「結束」專屬的路徑。
+/// 註冊：關閉按鈕現在會走跟系統列選單「結束 MCseg」完全相同的
+/// `handle_quit_request` 流程——先問後端忙不忙，忙碌中跳確認對話框，
+/// 確認（或本來就不忙）才真的終止後端＋結束整個 App。
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     app.manage(Arc::new(AppState::default()));
 
@@ -123,12 +126,11 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         let app_for_close = app.clone();
         window.on_window_event(move |event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // 一律縮到系統列，不直接關閉——長任務可能還在背景跑。
-                // 真正的結束只走系統列選單的「結束 MCseg」。
+                // 先攔下預設的關閉行為，改走跟系統列「結束 MCseg」一致的
+                // handle_quit_request：忙碌中跳確認對話框，確認後才真的
+                // 終止後端＋結束 App；使用者按「取消」的話視窗維持開啟。
                 api.prevent_close();
-                if let Some(w) = app_for_close.get_webview_window("main") {
-                    let _ = w.hide();
-                }
+                handle_quit_request(app_for_close.clone());
             }
         });
     }

@@ -1,12 +1,12 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "mcseg",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.mcseg.app",
   "build": {
     "frontendDist": "boot-ui",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run tauri:prepare"
   },
   "app": {
     "withGlobalTauri": true,
@@ -40,11 +40,7 @@
       "binaries/uv"
     ],
     "resources": {
-      "../../backend": "app/backend",
-      "../../config": "app/config",
-      "../../pyproject.toml": "app/pyproject.toml",
-      "../../uv.lock": "app/uv.lock",
-      "../dist": "app/frontend/dist"
+      "build-resources/app": "app"
     },
     "android": {
       "debugApplicationIdSuffix": ".debug"
