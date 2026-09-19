@@ -7,11 +7,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](pyproject.toml)
 
-**MCseg（Multiple Cellpose Segmentation）** 是在本機執行的免寫程式分析平台，將 **Visium HD 的 H&E 影像與 2 µm 空間表現量網格（bins）轉成細胞層級的空間轉錄體資料**。平台以同一個網頁介面串接感興趣區域（ROI）選取、細胞分割、轉錄本歸屬、品質控制、分群、細胞型別註解、空間視覺化與結果匯出；也提供 CLI 進行全切片批次處理。
+**MCseg（Multiple Cellpose Segmentation）** 是在本機執行的免寫程式分析平台，將 **Visium HD 的 H&E 影像與 2 µm 空間表現量網格（bins）轉成細胞層級的空間轉錄體資料**。平台以同一個網頁介面串接感興趣區域（ROI）選取、細胞分割、轉錄本歸屬、品質控制、分群、細胞型別註解、空間視覺化與結果匯出；也提供 CLI 進行全切片批次處理。使用者可檢視分割結果，依組織特性調整參數。方法設計、效能評估與適用限制請參閱[相關研究文章](#引用)。
 
 AI 代理協助方法開發階段的候選流程搜尋。**日常分析在本機執行開發後保留的流程，不需要重新執行 AI 代理搜尋、使用外部語言模型 API，或提供 Xenium 參考資料。** 首次安裝與模型下載需要網路。
 
-[桌面安裝](#桌面安裝windows-與-macos) · [快速開始](#快速開始) · [工作流程](#工作流程) · [研究結果](#研究結果) · [命令列](#命令列操作) · [操作指南（英文）](docs/usage.md) · [重現性](#重現性) · [引用](#引用)
+[桌面安裝](#桌面安裝windows-與-macos) · [快速開始](#快速開始) · [工作流程](#工作流程) · [命令列](#命令列操作) · [操作指南（英文）](docs/usage.md) · [重現性](#重現性) · [引用](#引用)
 
 ## 工作流程
 
@@ -57,10 +57,10 @@ AI 代理協助方法開發階段的候選流程搜尋。**日常分析在本機
 
 | 平台 | 桌面安裝包 | 處理器架構 |
 | --- | --- | --- |
-| Windows 10/11 | [0.2.0 舊版安裝檔](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_x64-setup.exe)；清理後的 0.2.1 尚待建置 | Intel／AMD x64 |
+| Windows 10/11 | [下載 Windows 安裝檔（v0.2.0）](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_x64-setup.exe) | Intel／AMD x64 |
 | macOS 12+ | [mcseg_0.2.1_aarch64.dmg（預發行版）](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) | Apple Silicon（M 系列） |
 
-**發行狀態：**[桌面版 0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1) 提供清理後的 macOS 安裝包、[SHA-256 校驗檔](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.sha256)與[建置來源紀錄](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.build.json)。此安裝包已通過建置、內容檢查、ad-hoc 簽章完整性及靜態憑證掃描；尚未驗證乾淨機器上的首次安裝與完整分析流程。Windows 0.2.1 尚未建置。舊版 Windows 0.2.0 仍含開發用輸入路徑預設值，使用前請改選自己的資料。舊版 macOS 0.2.0 曾包含開發分析狀態，已由此候選版本取代。
+**發行狀態：**[桌面版 0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1) 提供清理後的 macOS 安裝包、[SHA-256 校驗檔](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.sha256)與[建置來源紀錄](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.build.json)。此安裝包已通過建置、內容檢查、ad-hoc 簽章完整性及靜態憑證掃描；尚未驗證乾淨機器上的首次安裝與完整分析流程。Windows 目前提供 v0.2.0。首次使用請重新選取自己的資料與輸出路徑，取代安裝包內的開發用預設值；新版 Windows 安裝包尚待發布。舊版 macOS 0.2.0 曾包含開發分析狀態，已由此候選版本取代。
 
 桌面版與原始碼／Python 套件（`0.8.0`）使用不同版本編號。GitHub 的「Source code」壓縮檔不是桌面安裝包。此處的 macOS 安裝包僅適用於 Apple Silicon，未提供 Intel Mac 安裝檔。
 
@@ -144,46 +144,6 @@ uv run msseg-segment --help
 
 詳見[完整選項與 PowerShell 範例](docs/usage.md#cli-no-ui-whole-slide-pipeline)。
 
-## 研究結果
-
-### 與 Space Ranger 相比，有哪些差異？
-
-文章在 **15 個大腸直腸癌 ROI** 中，比較 MCseg 與 **Space Ranger v4 的細胞分割及轉錄本歸屬結果**。MCseg 的互斥細胞譜系標記共表現較少，相鄰細胞的表現量分離程度較高，且 UMI 密度接近；取捨是分配到細胞的組織轉錄本比例較低。
-
-| 比較項目 | MCseg | Space Ranger v4 | 如何解讀 |
-| --- | --- | --- | --- |
-| 互斥細胞譜系標記的共表現率 | **0.49%** | 0.67% | MCseg 的細胞譜系混合較少；p = 0.010 |
-| 相鄰細胞表現量分離程度（NED） | **0.727** | 0.712 | MCseg 的表現量分離程度較高；p = 0.008 |
-| 遮罩內的 UMI 密度 | 11.6 UMIs/µm² | 11.7 UMIs/µm² | 轉錄本密度接近 |
-| 分配到細胞的組織轉錄本比例（FTC） | 73.7% | **93.4%** | Space Ranger 保留較高比例的組織轉錄本 |
-
-這些是**從轉錄本評估分割與歸屬結果的指標**，不是完整細胞邊界準確度的直接測試。多數 CRC 區域沒有配對的完整細胞參考邊界。結果呈現表現量分離與轉錄本捕獲之間的取捨，不能解讀為某一方法全面勝出。兩項 p 值均來自 15 個配對 ROI 的 sign-flip permutation test。
-
-### 同一流程能否應用於其他組織？
-
-固定流程在新鮮冷凍乳癌資料中產生 **96,876 個細胞**，未重新執行架構搜尋。這顯示流程可應用於不同組織與保存條件，但不代表已證實在乳癌資料中優於 Space Ranger 或其他方法。
-
-<details>
-<summary>完整評估數值、開發基準與限制</summary>
-
-**2Cseg 是什麼？** 它是研究者定義的雙直徑 Cellpose 基準流程，使用 Optuna 調整參數，用來檢驗「搜尋流程組成」是否比「在固定架構內調參」帶來改善。這項方法開發比較與上方的 Space Ranger 比較不同。
-
-以下數值取自 2026 年 9 月 18 日文章稿件。各項評估的資料與條件不同，不應合併解讀為單一整體效能排名。
-
-| 評估 | 文章結果 | 解讀範圍 |
-| --- | --- | --- |
-| **LUAD：固定參數，6 個開發 ROI** | PQ **0.472 ± 0.072**；Optuna 調參的 2Cseg 為 **0.432 ± 0.037** | PQ 絕對增加 0.040，約 9% 相對提升；這些 ROI 參與了方法開發 |
-| **LUAD：參考引導校準** | PQ **0.554 ± 0.063** | 使用 Xenium 遮罩逐 ROI 選擇擴張策略與距離的上限分析，不代表日常部署效能 |
-| **CRC：專家審閱的 ENACT 參考** | MCseg 與 ENACT 的 micro-F1 分別為 **0.805、0.723** | 僅比較兩方法共同涵蓋的 **10,275** 個參考細胞；MCseg 涵蓋全部 20,991 個參考中心點的 65.1% |
-| **CRC：轉錄本品質，15 個 ROI** | MCseg 與 Space Ranger 的 NED 為 **0.727 vs 0.712**；互斥細胞譜系共表現率為 **0.49% vs 0.67%** | sign-flip p 分別為 0.008、0.010；UMI 密度接近（**11.6 vs 11.7 UMIs/µm²**），但轉錄本捕獲比例較低（**0.737 vs 0.934**） |
-| **新鮮冷凍乳癌：固定流程** | **96,876** 個細胞、FTC **0.514**、每個細胞 UMI 中位數 **1,502**、NED **0.519** | 未重新搜尋架構的跨組織應用，不代表已證實在乳癌資料中優於其他方法 |
-
-**指標解讀。** PQ 同時考量邊界吻合程度與偵測完整性。FTC 表示組織 UMI 中被分配至細胞遮罩的比例。NED 衡量相鄰遮罩間的表現量分離程度，不是絕對幾何準確度。NED 較高或細胞譜系混合較少，均不足以單獨證明分割較好；UMI 密度接近也不等於轉錄本捕獲量相同。
-
-**驗證範圍。** LUAD 幾何結果屬於開發集估計。CRC 專家審閱區域與 15 個 CRC ROI 不重疊，但來自同一組織切片；其參考中心點最初由 StarDist 偵測，再經人工審閱。跨組織驗證仍有限，擴張設定會受組織形態與影像尺度影響。相關資料見[結果範例](docs/usage.md#example-results)與 [analysis](analysis/) 目錄。
-
-</details>
-
 ## 方法與設定
 
 保留的流程結合 CLAHE 前處理、不同影像表示與直徑設定下的多輪 Cellpose `cpsam` 推論、依優先順序整合遮罩、可選的轉錄本密度補救，以及 Voronoi 約束邊界擴張。應用程式提供較精簡的配置，也能開啟額外輪次，使用七輪流程。
@@ -196,7 +156,7 @@ uv run msseg-segment --help
 
 MCseg 的多輪整合分割使用 **Cellpose `cpsam`**。各輪差異在影像表示、直徑與細胞機率閾值（cell-probability threshold），並非混合不同模型家族。七輪配置包含三輪不同直徑、一輪 hematoxylin 輸入，以及三輪額外 `cpsam` 推論。[`_load_primary_model`](backend/src/segmentation/cellpose_runner.py) 載入器會在執行紀錄中寫入實際模型權重路徑。
 
-為便於重現，請保留分析版本、環境、實際模型權重與生效設定。上述研究結果取自文章，本次 README 更新未重新執行科學分析。
+為便於重現，請保留分析版本、環境、實際模型權重與生效設定。
 
 ## 重現性
 
@@ -222,11 +182,11 @@ MCseg 的多輪整合分割使用 **Cellpose `cpsam`**。各輪差異在影像�
 
 ## 引用
 
-若使用 MCseg，請引用以下稿件：
+方法設計、效能評估與適用限制請參閱以下稿件；若使用 MCseg，請引用此文章：
 
 > Chan, C.-R., Chang, N.-W., Wang, C.-Y., Tan, H.-Y., and Lin, S.-J. (2026). **MCseg: AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics.** Manuscript.
 
-Chan 與 Chang 為共同第一作者。文章規劃先發表於 bioRxiv，正式上線並取得 DOI 後再更新為預印本引用。
+Chan 與 Chang 為共同第一作者。文章規劃先發表於 bioRxiv。預印本連結與 DOI 將於公開後更新，目前先提供稿件引用。
 
 ## 支援與授權
 

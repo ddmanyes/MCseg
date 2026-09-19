@@ -7,11 +7,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](pyproject.toml)
 
-**MCseg (Multiple Cellpose Segmentation)** is a local, no-code platform for turning **Visium HD H&E images and 2-µm expression bins into cell-level spatial transcriptomic data**. It connects ROI selection, cell segmentation, transcript attribution, quality control, clustering, cell-type annotation, spatial visualization, and export in one web interface. A CLI supports scripted whole-slide processing.
+**MCseg (Multiple Cellpose Segmentation)** is a local, no-code platform for turning **Visium HD H&E images and 2-µm expression bins into cell-level spatial transcriptomic data**. It connects ROI selection, cell segmentation, transcript attribution, quality control, clustering, cell-type annotation, spatial visualization, and export in one web interface. A CLI supports scripted whole-slide processing. Users can inspect segmentation masks and adjust parameters for their tissue. For method design, performance evaluation, and limitations, see the [research manuscript](#citation).
 
 An AI agent helped search candidate workflows during method development. **Routine analysis runs the retained workflow locally: no AI-agent search, external language-model API, or Xenium reference data is required.** Initial installation and model downloads require internet access.
 
-[Desktop installation](#desktop-installation-windows-and-macos) · [Quick start](#quick-start) · [Workflow](#workflow) · [Research results](#research-results) · [CLI](#command-line-use) · [User guide](docs/usage.md) · [Reproducibility](#reproducibility) · [Citation](#citation)
+[Desktop installation](#desktop-installation-windows-and-macos) · [Quick start](#quick-start) · [Workflow](#workflow) · [CLI](#command-line-use) · [User guide](docs/usage.md) · [Reproducibility](#reproducibility) · [Citation](#citation)
 
 ## Workflow
 
@@ -57,10 +57,10 @@ Desktop packages include the MCseg interface, backend application files, and the
 
 | Platform | Desktop package | Architecture |
 | --- | --- | --- |
-| Windows 10/11 | [0.2.0 legacy installer](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_x64-setup.exe); clean 0.2.1 build pending | Intel/AMD x64 |
+| Windows 10/11 | [Download Windows installer (v0.2.0)](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_x64-setup.exe) | Intel/AMD x64 |
 | macOS 12+ | [mcseg_0.2.1_aarch64.dmg (pre-release)](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) | Apple Silicon (M-series) |
 
-**Release status:** [Desktop 0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1) provides the cleaned macOS package with [SHA-256](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.sha256) and [build provenance](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.build.json). It passed build, payload, ad-hoc signature, and static credential checks; fresh-machine installation and full analysis remain unverified. Windows 0.2.1 has not yet been built. The historical Windows 0.2.0 package still contains developer input-path defaults; select your own paths before use. The older macOS 0.2.0 package bundled developer analysis state and is superseded by this candidate.
+**Release status:** [Desktop 0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1) provides the cleaned macOS package with [SHA-256](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.sha256) and [build provenance](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.build.json). It passed build, payload, ad-hoc signature, and static credential checks; fresh-machine installation and full analysis remain unverified. Windows currently provides v0.2.0. On first use, select your own input and output paths instead of the bundled developer defaults; an updated Windows installer is not yet available. The older macOS 0.2.0 package bundled developer analysis state and is superseded by this candidate.
 
 Desktop versioning is separate from the source/Python package version (`0.8.0`). GitHub's “Source code” archives are not desktop installers. The listed macOS package is for Apple Silicon; an Intel Mac installer is not listed here.
 
@@ -144,46 +144,6 @@ uv run msseg-segment --help
 
 See [all options and PowerShell examples](docs/usage.md#cli-no-ui-whole-slide-pipeline).
 
-## Research results
-
-### How does MCseg compare with Space Ranger?
-
-In **15 colorectal cancer ROIs**, the manuscript compared MCseg with **Space Ranger v4 cell segmentation and transcript assignment**. MCseg showed less co-expression of markers from mutually exclusive cell lineages and greater expression separation between neighboring cells, with similar UMI density. The tradeoff was a lower fraction of tissue transcripts assigned to cells.
-
-| What was measured? | MCseg | Space Ranger v4 | What it means |
-| --- | --- | --- | --- |
-| Co-expression of mutually exclusive lineage markers | **0.49%** | 0.67% | Less lineage mixing in MCseg; p = 0.010 |
-| Expression separation between neighboring cells (NED) | **0.727** | 0.712 | Higher separation in MCseg; p = 0.008 |
-| UMI density within masks | 11.6 UMIs/µm² | 11.7 UMIs/µm² | Similar transcript density |
-| Fraction of tissue transcripts assigned to cells (FTC) | 73.7% | **93.4%** | Space Ranger retained a larger fraction of tissue transcripts |
-
-These are **transcript-derived measures of the segmentation and assignment outputs**, not a direct test of whole-cell boundary accuracy. Matched whole-cell reference boundaries were unavailable for most CRC regions. The results describe a tradeoff between expression separation and transcript capture, rather than an overall winner. The two p-values are from paired sign-flip permutation tests across the 15 ROIs.
-
-### Can the workflow be used on another tissue?
-
-The fixed workflow produced **96,876 cells** in fresh-frozen breast cancer without a new architecture search. This demonstrates application to a different tissue and preservation condition; it does not establish superiority over Space Ranger or other methods in breast cancer.
-
-<details>
-<summary>Full benchmark results, development baselines, and limitations</summary>
-
-**What is 2Cseg?** It is the study's researcher-defined, two-diameter Cellpose baseline, with parameters optimized using Optuna. It tests whether workflow-composition search improves on parameter tuning within a fixed architecture. It is separate from the Space Ranger comparison above.
-
-The following results are reported in the September 18, 2026 manuscript. They describe different evaluation settings and should not be interpreted as a single overall performance ranking.
-
-| Evaluation | Reported result | Interpretation |
-| --- | --- | --- |
-| **LUAD: fixed parameters, 6 development ROIs** | PQ **0.472 ± 0.072**, versus **0.432 ± 0.037** for Optuna-tuned 2Cseg | +0.040 absolute PQ (about 9% relative); these ROIs contributed to development |
-| **LUAD: reference-guided calibration** | PQ **0.554 ± 0.063** | Upper-bound analysis: expansion strategy and distance selected per ROI using Xenium masks; not routine deployment performance |
-| **CRC: expert-reviewed ENACT reference** | Micro-F1 **0.805 vs 0.723** for MCseg vs ENACT | Comparison restricted to **10,275 jointly covered reference cells**; MCseg covered 65.1% of all 20,991 reference centroids |
-| **CRC: transcript-derived quality, 15 ROIs** | NED **0.727 vs 0.712**; lineage-exclusive co-expression **0.49% vs 0.67%**, MCseg vs Space Ranger | Sign-flip p = 0.008 and 0.010, respectively; similar UMI density (**11.6 vs 11.7 UMIs/µm²**), but lower transcript capture (**0.737 vs 0.934**) |
-| **Fresh-frozen breast cancer: fixed workflow** | **96,876 cells**, FTC **0.514**, median **1,502 UMIs/cell**, NED **0.519** | Transfer without a new architecture search; not evidence of superiority in breast cancer |
-
-**How to read these metrics.** PQ combines boundary agreement and detection completeness. FTC measures the fraction of tissue UMIs assigned to masks. NED measures expression separation between neighboring masks; it is not an absolute measure of geometric accuracy. Higher NED or lower lineage mixing alone does not establish a better segmentation, and similar UMI density does not imply equal transcript capture.
-
-**Scope of validation.** LUAD geometric results are development-set estimates. The expert-reviewed CRC region is non-overlapping with the 15 CRC ROIs but comes from the same tissue section; its reference centroids originated from StarDist before manual review. Cross-tissue testing is limited, and expansion settings remain sensitive to tissue morphology and image scale. See [example results](docs/usage.md#example-results) and the [analysis directory](analysis/) for supporting material.
-
-</details>
-
 ## Method and configuration
 
 The retained workflow combines CLAHE preprocessing, multiple Cellpose `cpsam` passes across image representations and diameter settings, priority-based mask integration, optional transcript-density rescue, and Voronoi-constrained boundary expansion. The application exposes a shorter configuration and optional passes for the seven-pass workflow.
@@ -196,7 +156,7 @@ Configuration lives in [`config/pipeline.yaml`](config/pipeline.yaml) and [`conf
 
 MCseg uses Cellpose **`cpsam`** for its multi-pass ensemble. The passes vary image representation, diameter, and cell-probability threshold rather than combining different model families. The seven-pass configuration consists of three diameter-based passes, one hematoxylin pass, and three additional `cpsam` passes. The [`_load_primary_model`](backend/src/segmentation/cellpose_runner.py) loader records the resolved model-weight path in the run log.
 
-For reproducibility, retain the analysis revision, environment, actual model weights, and effective run configuration. The scientific results above are manuscript-reported values, not results rerun for this README.
+For reproducibility, retain the analysis revision, environment, actual model weights, and effective run configuration.
 
 ## Reproducibility
 
@@ -222,11 +182,11 @@ The manuscript states that processed AnnData objects and segmentation masks will
 
 ## Citation
 
-If you use MCseg, please cite the manuscript:
+For method design, performance evaluation, and limitations, refer to the manuscript below. If you use MCseg, please cite it:
 
 > Chan, C.-R., Chang, N.-W., Wang, C.-Y., Tan, H.-Y., and Lin, S.-J. (2026). **MCseg: AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics.** Manuscript.
 
-Chan and Chang contributed equally. A bioRxiv preprint is planned; the citation will be updated after posting and DOI assignment.
+Chan and Chang contributed equally. A bioRxiv preprint is planned. The preprint link and DOI will be added after it is publicly posted; until then, this entry refers to the manuscript.
 
 ## Support and license
 
