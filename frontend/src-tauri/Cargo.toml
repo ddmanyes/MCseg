@@ -1,6 +1,6 @@
 [package]
 name = "mcseg"
-version = "0.2.1"
+version = "0.2.2"
 description = "MCseg — Visium HD 空間轉錄體分析平台桌面殼（Tauri）"
 authors = ["ddmanyes"]
 license = "MIT"

@@ -121,7 +121,8 @@ def color_deconvolution_he(img: np.ndarray) -> np.ndarray:
         if norm > 0:
             he_matrix[i] /= norm
 
-    stains = (od.reshape(-1, 3) @ np.linalg.inv(he_matrix).T
+    # Stain vectors are rows: OD = C @ M, so C = OD @ inv(M).
+    stains = (od.reshape(-1, 3) @ np.linalg.inv(he_matrix)
               ).reshape(img.shape[:2] + (3,))
     hema = np.clip(stains[:, :, 0], 0, None)
     h_max = np.percentile(hema, 99.5)
