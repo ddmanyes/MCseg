@@ -15,6 +15,9 @@ APP="$TARGET_DIR/release/bundle/macos/mcseg.app"
 LAYOUT=$(mktemp -d)
 trap 'rm -rf "$LAYOUT"' EXIT
 ditto "$APP" "$LAYOUT/mcseg.app"
+# Seal the complete resource bundle; this is ad-hoc integrity signing, not notarization.
+codesign --force --sign - "$LAYOUT/mcseg.app"
+codesign --verify --deep --strict "$LAYOUT/mcseg.app"
 ln -s /Applications "$LAYOUT/Applications"
 cp "$SRC_TAURI_DIR/../../LICENSE" "$LAYOUT/LICENSE"
 mkdir -p "$TARGET_DIR/release/bundle/dmg"

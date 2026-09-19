@@ -20,7 +20,7 @@ bash src-tauri/binaries/fetch-uv.sh 0.12.5
 npm run tauri:build
 ```
 
-The macOS build creates the App with Tauri, then a verified compressed DMG with `hdiutil`. It does not automate Finder or require icon-layout scripting.
+The macOS build creates the App with Tauri, then a verified compressed DMG with `hdiutil`. It seals the complete App with a local ad-hoc signature and verifies it before creating the image. This is not Developer ID signing or Apple notarization. It does not automate Finder or require icon-layout scripting.
 
 ### Windows (PowerShell)
 
