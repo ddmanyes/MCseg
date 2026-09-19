@@ -1,6 +1,6 @@
 # Desktop build and release verification
 
-Desktop version **0.2.1** cleans the distribution payload. It does not change the segmentation model or scientific benchmark values. The source package still uses its own 0.8.0 version.
+Desktop version **0.2.2** keeps the 0.2.1 distribution-payload cleanup and adds the H&E color-deconvolution fix (see `releases/0.2.2.md`). It does not change the segmentation model or scientific benchmark values. The source package still uses its own 0.8.0 version.
 
 ## Build requirements
 
