@@ -49,7 +49,7 @@ uv run msseg-segment \
 
 | Task | Command flags |
 |------|---------------|
-| **CRC 7-pass** (with cpsam) | `--tissue crc --cpsam` |
+| **CRC 7-pass** (extra cpsam passes) | `--tissue crc --cpsam` |
 | **LUAD 4-pass** (fast) | `--tissue luad` |
 | **Skip BTF crop** (reuse existing he_crop.tif) | `--he-crop path/to/he_crop.tif` |
 | **Crop a sub-region** from BTF | `--btf image.btf --crop-y0 4635 --crop-y1 18599 --btf-col0 45752 --btf-col1 55840` |
@@ -76,7 +76,7 @@ uv run python -m backend.src.cli.segment --help
   --out DIR             Output directory (required)
 
   --tissue {crc,luad,default}   Tissue preset (default: crc)
-  --cpsam               Enable cpsam (7-pass; significantly longer runtime)
+  --cpsam               Enable three extra cpsam passes (7-pass; longer runtime)
   --no-gpu              Force CPU mode
   --batch-size N        Cellpose batch size (default 2)
   --tile-size PX        Tile size (default 1024)
@@ -349,7 +349,7 @@ For the desktop package, launch MCseg from the Windows Start menu or macOS Appli
 3. Click **Preview** on one ROI to verify cell outlines before committing to a full run.
 4. Click **Run All ROIs** — outputs `segmentation_masks.npy` per ROI.
 
-> **Whole-slide segmentation (no ROI):** the **Run Full Segmentation** action segments the entire slide via tiled MCseg v2 (MPS-safe: tile=1024, batch≤2, cpsam disabled), writing `full_image_segmentation_masks.npy`. A 6 GB in-memory cap guards against oversized slides — beyond that, use ROI mode (or the [CLI](#cli-no-ui-whole-slide-pipeline), which tile-reads the BTF without the cap). This produces the mask only; counting and analysis remain per-ROI in the UI.
+> **Whole-slide segmentation (no ROI):** the **Run Full Segmentation** action segments the entire slide via tiled MCseg v2 (MPS-safe: tile=1024, batch≤2, additional cpsam passes disabled), writing `full_image_segmentation_masks.npy`. A 6 GB in-memory cap guards against oversized slides — beyond that, use ROI mode (or the [CLI](#cli-no-ui-whole-slide-pipeline), which tile-reads the BTF without the cap). This produces the mask only; counting and analysis remain per-ROI in the UI.
 
 ### Step 4 — Stage 2: RNA Counting
 

@@ -22,7 +22,7 @@ An AI agent helped search candidate workflows during method development. **Routi
 <details>
 <summary>Figure source and model terminology</summary>
 
-This figure is cropped from the supplied manuscript artwork without resampling or changing panel content. The original artwork contains the label “spsam”; see the [implementation note](#implementation-and-manuscript-provenance) for the current `cpsam` loader and the distinction from the manuscript's model description. Crop provenance is recorded in [figure-source.md](docs/figure-source.md).
+This figure is cropped from the supplied manuscript artwork without resampling or changing panel content. The original artwork contains the typographical label “spsam”, which refers to `cpsam`; see the [model implementation](#model-implementation). Crop provenance is recorded in [figure-source.md](docs/figure-source.md).
 
 </details>
 
@@ -148,7 +148,7 @@ uv run msseg-segment \
   --cpsam
 ```
 
-This runs segmentation, bin attribution, cell-matrix aggregation, and CellTypist annotation. Add `--export-xenium` for an Explorer bundle, `--skip-celltypist` to omit annotation, or `--no-gpu` for CPU execution. Supplying only `--btf` and `--out` runs segmentation alone. `--cpsam` enables the extra passes in the seven-pass configuration; it does not identify which weights the primary loader uses.
+This runs segmentation, bin attribution, cell-matrix aggregation, and CellTypist annotation. Add `--export-xenium` for an Explorer bundle, `--skip-celltypist` to omit annotation, or `--no-gpu` for CPU execution. Supplying only `--btf` and `--out` runs segmentation alone. `--cpsam` enables three additional passes for the seven-pass configuration. Both the primary and additional passes use `cpsam`.
 
 ```bash
 uv run msseg-segment --help
@@ -158,15 +158,17 @@ See [all options and PowerShell examples](docs/usage.md#cli-no-ui-whole-slide-pi
 
 ## Method and configuration
 
-The retained workflow combines CLAHE preprocessing, multiple Cellpose passes across image representations and diameter settings, priority-based mask integration, optional transcript-density rescue, and Voronoi-constrained boundary expansion. The application exposes a shorter configuration and optional passes for the seven-pass workflow.
+The retained workflow combines CLAHE preprocessing, multiple Cellpose `cpsam` passes across image representations and diameter settings, priority-based mask integration, optional transcript-density rescue, and Voronoi-constrained boundary expansion. The application exposes a shorter configuration and optional passes for the seven-pass workflow.
 
 Transcript attribution maps bin centroids into image/mask coordinates and sums their counts into a sparse cell × gene matrix. Correct registration, pixel scale, and ROI offsets are essential. The application's RNA-counting stage can additionally expand masks through `rna_counting.dilation_px`; this changes the attribution geometry and must be recorded when comparing results or reproducing a benchmark.
 
 Configuration lives in [`config/pipeline.yaml`](config/pipeline.yaml) and [`config/profiles/`](config/profiles/). Tissue profiles provide starting values; pipeline and runtime settings can override them. Review the final masks and effective parameters for each dataset.
 
-### Implementation and manuscript provenance
+### Model implementation
 
-The September 18 manuscript describes four `cyto3` passes plus three `cpsam` passes. The current repository's [`_load_primary_model`](backend/src/segmentation/cellpose_runner.py) instead calls `CellposeModel(gpu=use_gpu)` and records the resolved weight path; its Cellpose 4 implementation notes identify the primary model as `cpsam`. The historical model names therefore cannot establish which weights produced an individual benchmark run. Reproducing the manuscript requires matching the analysis revision, environment, actual model weights, and run configuration. The scientific results above are manuscript-reported values, not results rerun for this README.
+MCseg uses Cellpose **`cpsam`** for its multi-pass ensemble. The passes vary image representation, diameter, and cell-probability threshold rather than combining different model families. The seven-pass configuration consists of three diameter-based passes, one hematoxylin pass, and three additional `cpsam` passes. The [`_load_primary_model`](backend/src/segmentation/cellpose_runner.py) loader records the resolved model-weight path in the run log.
+
+For reproducibility, retain the analysis revision, environment, actual model weights, and effective run configuration. The scientific results above are manuscript-reported values, not results rerun for this README.
 
 ## Reproducibility
 

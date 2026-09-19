@@ -6,4 +6,4 @@
 - Output: `fig1_development_deployment.png`, 3276 × 2136 pixels.
 - Processing: removal of outer whitespace only; no resizing, resampling, generative editing, or modification of panels, labels, colors, tissue images, or segmentation overlays.
 - Validation: decoded output RGB pixels equal the corresponding original pixel rectangle exactly.
-- The original artwork's “spsam” label is preserved. The README explains the terminology and implementation/manuscript discrepancy separately.
+- The original artwork's “spsam” label is preserved. The README identifies this as a typographical label for `cpsam`.
