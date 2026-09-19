@@ -1,5 +1,7 @@
 # MCseg
 
+**English** | [繁體中文](README_zh.md)
+
 ### AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -9,7 +11,7 @@
 
 An AI agent helped search candidate workflows during method development. **Routine analysis runs the retained workflow locally: no AI-agent search, external language-model API, or Xenium reference data is required.** Initial installation and model downloads require internet access.
 
-[Desktop installation](#desktop-installation-windows-and-macos) · [Quick start](#quick-start) · [中文](README_zh.md) · [Workflow](#workflow) · [Research results](#research-results) · [CLI](#command-line-use) · [User guide](docs/usage.md) · [Reproducibility](#reproducibility) · [Citation](#citation)
+[Desktop installation](#desktop-installation-windows-and-macos) · [Quick start](#quick-start) · [Workflow](#workflow) · [Research results](#research-results) · [CLI](#command-line-use) · [User guide](docs/usage.md) · [Reproducibility](#reproducibility) · [Citation](#citation)
 
 ## Workflow
 
@@ -39,7 +41,7 @@ See the [interface tour](docs/usage.md#interface-tour), [step-by-step guide](doc
 
 ## Research results
 
-The following results are reported in the September 18 manuscript. They describe different evaluation settings and should not be interpreted as a single overall performance ranking.
+The following results are reported in the September 18, 2026 manuscript. They describe different evaluation settings and should not be interpreted as a single overall performance ranking.
 
 | Evaluation | Reported result | Interpretation |
 | --- | --- | --- |
@@ -184,7 +186,7 @@ For reproducibility, retain the analysis revision, environment, actual model wei
 
 The agent-guided development loop adapted the AutoResearch approach: researchers chose candidate operations, reference data, scoring, prompts, and execution limits; the agent proposed and evaluated executable workflows, and researchers reviewed the retained configuration. The development templates are separate from routine analysis and require their own API setup. Their presence alone does not establish a complete archive of every historical search run.
 
-For a reproducible run, retain the Git revision, resolved dependencies, model-weight identity, input dataset and coordinates, effective segmentation/counting settings, and logs. The repository package retains the historical name `msseg`.
+For a reproducible run, retain the Git revision, resolved dependencies, model-weight identity, input dataset and coordinates, effective segmentation/counting settings, and logs. The repository package retains the historical name `msseg`. New installations from the current source or the cleaned macOS 0.2.1 package start with empty input paths and no selected ROIs; configure your own dataset before analysis. Existing installations may retain previously saved settings.
 
 ### Data availability
 
