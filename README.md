@@ -39,22 +39,6 @@ This figure is cropped from the supplied manuscript artwork without resampling o
 
 See the [interface tour](docs/usage.md#interface-tour), [step-by-step guide](docs/usage.md#usage-guide), and [output structure](docs/usage.md#output-structure).
 
-## Research results
-
-The following results are reported in the September 18, 2026 manuscript. They describe different evaluation settings and should not be interpreted as a single overall performance ranking.
-
-| Evaluation | Reported result | Interpretation |
-| --- | --- | --- |
-| **LUAD: fixed parameters, 6 development ROIs** | PQ **0.472 ± 0.072**, versus **0.432 ± 0.037** for Optuna-tuned 2Cseg | +0.040 absolute PQ (about 9% relative); these ROIs contributed to development |
-| **LUAD: reference-guided calibration** | PQ **0.554 ± 0.063** | Upper-bound analysis: expansion strategy and distance selected per ROI using Xenium masks; not routine deployment performance |
-| **CRC: expert-reviewed ENACT reference** | Micro-F1 **0.805 vs 0.723** for MCseg vs ENACT | Comparison restricted to **10,275 jointly covered reference cells**; MCseg covered 65.1% of all 20,991 reference centroids |
-| **CRC: transcript-derived quality, 15 ROIs** | NED **0.727 vs 0.712**; lineage-exclusive co-expression **0.49% vs 0.67%**, MCseg vs Space Ranger | Sign-flip p = 0.008 and 0.010, respectively; similar UMI density (**11.6 vs 11.7 UMIs/µm²**), but lower transcript capture (**0.737 vs 0.934**) |
-| **Fresh-frozen breast cancer: fixed workflow** | **96,876 cells**, FTC **0.514**, median **1,502 UMIs/cell**, NED **0.519** | Transfer without a new architecture search; not evidence of superiority in breast cancer |
-
-**How to read these metrics.** PQ combines boundary agreement and detection completeness. FTC measures the fraction of tissue UMIs assigned to masks. NED measures expression separation between neighboring masks; it is not an absolute measure of geometric accuracy. Higher NED or lower lineage mixing alone does not establish a better segmentation, and similar UMI density does not imply equal transcript capture.
-
-**Scope of validation.** LUAD geometric results are development-set estimates. The expert-reviewed CRC region is non-overlapping with the 15 CRC ROIs but comes from the same tissue section; its reference centroids originated from StarDist before manual review. Cross-tissue testing is limited, and expansion settings remain sensitive to tissue morphology and image scale. See [example results](docs/usage.md#example-results) and the [analysis directory](analysis/) for supporting material.
-
 ## Quick start
 
 ### Inputs and requirements
@@ -159,6 +143,46 @@ uv run msseg-segment --help
 ```
 
 See [all options and PowerShell examples](docs/usage.md#cli-no-ui-whole-slide-pipeline).
+
+## Research results
+
+### How does MCseg compare with Space Ranger?
+
+In **15 colorectal cancer ROIs**, the manuscript compared MCseg with **Space Ranger v4 cell segmentation and transcript assignment**. MCseg showed less co-expression of markers from mutually exclusive cell lineages and greater expression separation between neighboring cells, with similar UMI density. The tradeoff was a lower fraction of tissue transcripts assigned to cells.
+
+| What was measured? | MCseg | Space Ranger v4 | What it means |
+| --- | --- | --- | --- |
+| Co-expression of mutually exclusive lineage markers | **0.49%** | 0.67% | Less lineage mixing in MCseg; p = 0.010 |
+| Expression separation between neighboring cells (NED) | **0.727** | 0.712 | Higher separation in MCseg; p = 0.008 |
+| UMI density within masks | 11.6 UMIs/µm² | 11.7 UMIs/µm² | Similar transcript density |
+| Fraction of tissue transcripts assigned to cells (FTC) | 73.7% | **93.4%** | Space Ranger retained a larger fraction of tissue transcripts |
+
+These are **transcript-derived measures of the segmentation and assignment outputs**, not a direct test of whole-cell boundary accuracy. Matched whole-cell reference boundaries were unavailable for most CRC regions. The results describe a tradeoff between expression separation and transcript capture, rather than an overall winner. The two p-values are from paired sign-flip permutation tests across the 15 ROIs.
+
+### Can the workflow be used on another tissue?
+
+The fixed workflow produced **96,876 cells** in fresh-frozen breast cancer without a new architecture search. This demonstrates application to a different tissue and preservation condition; it does not establish superiority over Space Ranger or other methods in breast cancer.
+
+<details>
+<summary>Full benchmark results, development baselines, and limitations</summary>
+
+**What is 2Cseg?** It is the study's researcher-defined, two-diameter Cellpose baseline, with parameters optimized using Optuna. It tests whether workflow-composition search improves on parameter tuning within a fixed architecture. It is separate from the Space Ranger comparison above.
+
+The following results are reported in the September 18, 2026 manuscript. They describe different evaluation settings and should not be interpreted as a single overall performance ranking.
+
+| Evaluation | Reported result | Interpretation |
+| --- | --- | --- |
+| **LUAD: fixed parameters, 6 development ROIs** | PQ **0.472 ± 0.072**, versus **0.432 ± 0.037** for Optuna-tuned 2Cseg | +0.040 absolute PQ (about 9% relative); these ROIs contributed to development |
+| **LUAD: reference-guided calibration** | PQ **0.554 ± 0.063** | Upper-bound analysis: expansion strategy and distance selected per ROI using Xenium masks; not routine deployment performance |
+| **CRC: expert-reviewed ENACT reference** | Micro-F1 **0.805 vs 0.723** for MCseg vs ENACT | Comparison restricted to **10,275 jointly covered reference cells**; MCseg covered 65.1% of all 20,991 reference centroids |
+| **CRC: transcript-derived quality, 15 ROIs** | NED **0.727 vs 0.712**; lineage-exclusive co-expression **0.49% vs 0.67%**, MCseg vs Space Ranger | Sign-flip p = 0.008 and 0.010, respectively; similar UMI density (**11.6 vs 11.7 UMIs/µm²**), but lower transcript capture (**0.737 vs 0.934**) |
+| **Fresh-frozen breast cancer: fixed workflow** | **96,876 cells**, FTC **0.514**, median **1,502 UMIs/cell**, NED **0.519** | Transfer without a new architecture search; not evidence of superiority in breast cancer |
+
+**How to read these metrics.** PQ combines boundary agreement and detection completeness. FTC measures the fraction of tissue UMIs assigned to masks. NED measures expression separation between neighboring masks; it is not an absolute measure of geometric accuracy. Higher NED or lower lineage mixing alone does not establish a better segmentation, and similar UMI density does not imply equal transcript capture.
+
+**Scope of validation.** LUAD geometric results are development-set estimates. The expert-reviewed CRC region is non-overlapping with the 15 CRC ROIs but comes from the same tissue section; its reference centroids originated from StarDist before manual review. Cross-tissue testing is limited, and expansion settings remain sensitive to tissue morphology and image scale. See [example results](docs/usage.md#example-results) and the [analysis directory](analysis/) for supporting material.
+
+</details>
 
 ## Method and configuration
 
