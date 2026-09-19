@@ -6,6 +6,14 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# powershell -File does not turn a thrown error into a non-zero exit code, so
+# a failed sidecar fetch or bundle step used to surface as "npm run" success
+# with no installer produced. Fail loudly instead.
+trap {
+    Write-Host "[build-windows] FAILED: $_" -ForegroundColor Red
+    exit 1
+}
+
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw "The Windows installer must be built on Windows."
 }
@@ -25,6 +33,10 @@ $env:CARGO_TARGET_DIR = Join-Path $srcTauriDir "target"
 if (-not (Test-Path -LiteralPath $uvSidecar)) {
     Write-Host "[build-windows] Windows uv sidecar is missing; downloading it."
     & (Join-Path $scriptDir "fetch-uv.ps1") -Version $UvVersion
+}
+
+if (-not (Test-Path -LiteralPath $uvSidecar)) {
+    throw "uv sidecar is still missing after the fetch step: $uvSidecar"
 }
 
 if (-not (Test-Path -LiteralPath $tauriCli)) {

@@ -13,7 +13,10 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $binariesDir = Split-Path -Parent $scriptDir
 $destination = Join-Path $binariesDir "binaries\uv-x86_64-pc-windows-msvc.exe"
-$tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
+# uv publishes bare version tags (0.12.5), not v-prefixed ones. Prepending
+# "v" here made every Windows sidecar fetch return 404. fetch-uv.sh always
+# used the bare form, which is why only this Windows port was broken.
+$tag = if ($Version.StartsWith("v")) { $Version.Substring(1) } else { $Version }
 $asset = "uv-x86_64-pc-windows-msvc.zip"
 $baseUrl = "https://github.com/astral-sh/uv/releases/download/$tag"
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mcseg-uv-" + [guid]::NewGuid().ToString("N"))
