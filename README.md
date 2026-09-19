@@ -71,10 +71,10 @@ Desktop packages include the MCseg interface, backend application files, and the
 
 | Platform | Desktop package | Architecture |
 | --- | --- | --- |
-| Windows 10/11 | `mcseg_0.2.0_x64-setup.exe` | Intel/AMD x64 |
-| macOS 12+ | `mcseg_0.2.0_aarch64.dmg` | Apple Silicon (M-series) |
+| Windows 10/11 | [mcseg_0.2.0_x64-setup.exe](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_x64-setup.exe) | Intel/AMD x64 |
+| macOS 12+ | [mcseg_0.2.0_aarch64.dmg](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_aarch64.dmg) | Apple Silicon (M-series) |
 
-**Getting the installer:** these desktop packages have been prepared by the maintainer. Check [GitHub Releases](https://github.com/ddmanyes/MCseg/releases) for attached installers, or obtain the package from the project maintainer. As of September 19, 2026, the existing GitHub releases have no installer assets attached; GitHub's “Source code” archives are not desktop installers. The desktop package version (`0.2.0`) is distinct from the source package/release version (`0.8.0`). The listed macOS package is for Apple Silicon; an Intel Mac installer is not listed here.
+**Getting the installer:** download the package for your system from the links above or the [v0.8.0 release assets](https://github.com/ddmanyes/MCseg/releases/tag/v0.8.0). [SHA-256 checksums](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/MCseg-desktop-0.2.0-SHA256SUMS.txt) are provided for file verification. GitHub's “Source code” archives are not desktop installers. The desktop package version (`0.2.0`) is distinct from the source package/release version (`0.8.0`): these previously built desktop packages were attached on September 19, 2026, and are not rebuilds of the `v0.8.0` source tag. The listed macOS package is for Apple Silicon; an Intel Mac installer is not listed here.
 
 #### Windows
 
