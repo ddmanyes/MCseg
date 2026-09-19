@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>MCseg — 啟動中</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    background: #12141a; color: #e6e8ef;
+  }
+  .card { width: 480px; padding: 32px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .sub { font-size: 13px; color: #9aa0ae; margin: 0 0 24px; }
+  .steps { list-style: none; margin: 0 0 20px; padding: 0; }
+  .steps li {
+    display: flex; align-items: center; gap: 10px; padding: 8px 0;
+    font-size: 14px; color: #6b7280;
+  }
+  .steps li.active { color: #e6e8ef; }
+  .steps li.done { color: #4ade80; }
+  .steps li.error { color: #f87171; }
+  .mark { width: 16px; text-align: center; flex-shrink: 0; }
+  .bar-track {
+    height: 4px; border-radius: 2px; background: #262a35; overflow: hidden; margin-bottom: 8px;
+  }
+  .bar-fill {
+    height: 100%; background: #6366f1; width: 8%;
+    animation: indeterminate 1.4s ease-in-out infinite;
+  }
+  @keyframes indeterminate {
+    0% { transform: translateX(-100%); width: 30%; }
+    50% { width: 55%; }
+    100% { transform: translateX(220%); width: 30%; }
+  }
+  .msg { font-size: 12px; color: #9aa0ae; min-height: 16px; }
+  details { margin-top: 16px; }
+  summary { font-size: 12px; color: #6b7280; cursor: pointer; }
+  #log {
+    margin-top: 8px; max-height: 180px; overflow-y: auto; padding: 10px;
+    background: #0b0d12; border-radius: 6px; font: 11px/1.5 "SF Mono", Menlo, monospace;
+    color: #9aa0ae; white-space: pre-wrap;
+  }
+  #retry {
+    display: none; margin-top: 16px; padding: 8px 16px; border-radius: 6px; border: none;
+    background: #6366f1; color: white; font-size: 13px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>MCseg 正在準備分析環境</h1>
+    <p class="sub">首次啟動需要下載並安裝分析引擎，之後啟動會快很多</p>
+
+    <ol class="steps" id="steps">
+      <li data-step="check_backend" class="active"><span class="mark">○</span>檢查既有分析引擎</li>
+      <li data-step="python_env"><span class="mark">○</span>初始化 Python 與生信環境</li>
+      <li data-step="start_engine"><span class="mark">○</span>啟動 MCseg 運算引擎</li>
+    </ol>
+
+    <div class="bar-track"><div class="bar-fill" id="bar"></div></div>
+    <p class="msg" id="msg">正在檢查...</p>
+
+    <details>
+      <summary>顯示詳細日誌</summary>
+      <div id="log"></div>
+    </details>
+
+    <button id="retry">重試</button>
+  </div>
+
+  <script>
+    const stepsEl = document.getElementById('steps');
+    const msgEl = document.getElementById('msg');
+    const logEl = document.getElementById('log');
+    const barEl = document.getElementById('bar');
+    const retryBtn = document.getElementById('retry');
+
+    function setStep(step, status) {
+      const li = stepsEl.querySelector(`[data-step="${step}"]`);
+      if (!li) return;
+      li.classList.remove('active', 'done', 'error');
+      li.classList.add(status);
+      li.querySelector('.mark').textContent = status === 'done' ? '✓' : status === 'error' ? '✕' : '●';
+    }
+
+    function appendLog(line) {
+      logEl.textContent += line + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function onError(message) {
+      barEl.style.animation = 'none';
+      barEl.style.background = '#f87171';
+      barEl.style.width = '100%';
+      msgEl.textContent = message || '發生錯誤，請查看詳細日誌';
+      retryBtn.style.display = 'inline-block';
+    }
+
+    // Tauri v2 注入的全域 API（tauri.conf.json app.withGlobalTauri: true）
+    const { event, core } = window.__TAURI__;
+
+    event.listen('bootstrap://step', (e) => setStep(e.payload.step, e.payload.status));
+    event.listen('bootstrap://message', (e) => { msgEl.textContent = e.payload.message; });
+    event.listen('bootstrap://log', (e) => appendLog(e.payload.line));
+    event.listen('bootstrap://error', (e) => onError(e.payload.message));
+    // bootstrap://ready 由 Rust 端在確認 127.0.0.1:8001 健康檢查通過後發出，
+    // 拿到後直接把「這個視窗」導向後端，boot-ui 的任務到此結束。
+    event.listen('bootstrap://ready', () => {
+      window.location.href = 'http://127.0.0.1:8001';
+    });
+
+    retryBtn.addEventListener('click', () => {
+      retryBtn.style.display = 'none';
+      barEl.style.animation = '';
+      barEl.style.background = '#6366f1';
+      logEl.textContent = '';
+      core.invoke('run_bootstrap');
+    });
+
+    // 頁面載入即觸發：Rust 端會先做健康檢查，backend 已存在就直接發
+    // bootstrap://ready 跳過整套流程；否則才真的跑 uv 環境安裝。
+    core.invoke('run_bootstrap').catch((err) => onError(String(err)));
+  </script>
+</body>
+</html>

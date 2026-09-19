@@ -29,6 +29,7 @@ from backend.src.api import (
     roi,
     segmentation,
     spatial,
+    system,
 )
 
 logger = logging.getLogger("pipeline.main")
@@ -71,11 +72,16 @@ app.include_router(analysis.router,      prefix="/api/analysis",    tags=["Stage
 app.include_router(spatial.router,       prefix="/api/spatial",     tags=["Stage 3.5: Spatial Explorer"])
 app.include_router(export.router,        prefix="/api/export",      tags=["Stage 4: Export"])
 app.include_router(registration.router,  prefix="/api/registration",tags=["Alignment QC"])
+app.include_router(system.router,        prefix="/api/system",      tags=["System"])
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.8.0"}
+    # ⚠️ "service": "mcseg" 是打包版桌面殼（Tauri）用來判斷「port 8001 上
+    # 回應的到底是不是我們自己的後端」的依據——單看 status=="ok" 分辨不出
+    # 是我方行程還是別的軟體剛好也用同一個 port。詳見
+    # docs/brainstorming/tauri_desktop_packaging.md Phase 2。
+    return {"status": "ok", "version": "0.8.0", "service": "mcseg"}
 
 
 @app.get("/api/config")

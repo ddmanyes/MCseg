@@ -9,7 +9,7 @@
 
 An AI agent helped search candidate workflows during method development. **Routine analysis runs the retained workflow locally: no AI-agent search, external language-model API, or Xenium reference data is required.** Initial installation and model downloads require internet access.
 
-[Desktop installation](#desktop-installation-windows-and-macos) · [Quick start](#quick-start) · [Workflow](#workflow) · [Research results](#research-results) · [CLI](#command-line-use) · [User guide](docs/usage.md) · [Reproducibility](#reproducibility) · [Citation](#citation)
+[Desktop installation](#desktop-installation-windows-and-macos) · [Quick start](#quick-start) · [中文](README_zh.md) · [Workflow](#workflow) · [Research results](#research-results) · [CLI](#command-line-use) · [User guide](docs/usage.md) · [Reproducibility](#reproducibility) · [Citation](#citation)
 
 ## Workflow
 
@@ -198,10 +198,10 @@ If you use MCseg, please cite the manuscript:
 
 > Chan, C.-R., Chang, N.-W., Wang, C.-Y., Tan, H.-Y., and Lin, S.-J. (2026). **MCseg: AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics.** Manuscript.
 
-Chan and Chang contributed equally. Publication details will be updated when available.
+Chan and Chang contributed equally. A bioRxiv preprint is planned; the citation will be updated after posting and DOI assignment.
 
 ## Support and license
 
 For usage details, see the [user guide](docs/usage.md); for problems, [open an issue](https://github.com/ddmanyes/MCseg/issues) with your OS, Git revision, package versions, command/settings, and relevant logs.
 
-MCseg is released under the [MIT License](LICENSE).
+MCseg is released under the [MIT License](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) and the [desktop build and verification guide](docs/desktop-build.md).

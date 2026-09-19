@@ -3,24 +3,18 @@ global:
   log_level: INFO
   tissue: CRC
   tissue_profile: crc       # 參照 config/profiles/crc.yaml（換組織只需改此行）
+# Select input data and output location in Data Setup before running analysis.
 paths:
-  data_root: /Volumes/SSD/plan_a/tissue sample/CRC
-  he_image: /Volumes/SSD/plan_a/tissue sample/CRC/visium/official_v4/Visium_HD_Human_Colon_Cancer_tissue_image.btf
-  binned_002: /Volumes/SSD/plan_a/tissue sample/CRC/visium/official_v4/binned_outputs/binned_outputs/square_002um
-  binned_008: /Volumes/SSD/plan_a/tissue sample/CRC/visium/official_v4/binned_outputs/binned_outputs/square_008um
-  xenium_outs: /Volumes/SSD/plan_a/tissue sample/CRC/xenium/official_v1_addon/outs
+  data_root: ""
+  he_image: ""
+  binned_002: ""
+  binned_008: ""
+  xenium_outs: ""
   masks_dir: results/masks
   output_dir: results/analysis
   export_dir: results/export
   figure_dir: figures
-rois:
-- name: test
-  tissue: CRC
-  x: 48128
-  y: 12657
-  width_px: 1491
-  height_px: 1210
-  pixel_size_um: 0.2737
+rois: []
 segmentation:
   mcseg_v2:
     # ⚠️ 只放**跨組織通用**的設定。組織相關參數（直徑／Voronoi／CLAHE／
