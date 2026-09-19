@@ -1,697 +1,205 @@
-# MCseg: End-to-End Visium HD Spatial Transcriptomics Analysis with AI-Optimised Ensemble-Based Cell Segmentation
+# MCseg
+
+### AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](pyproject.toml)
 
-✅ No-code web UI · ✅ Custom ROI from gigapixel BTF · ✅ End-to-end analysis (QC → UMAP → annotation) · ✅ Multi-ROI merge · ✅ Interactive spatial gene explorer · ✅ Xenium Explorer export · ✅ GPU optional
+**MCseg (Multiple Cellpose Segmentation)** is a local, no-code platform for turning **Visium HD H&E images and 2-µm expression bins into cell-level spatial transcriptomic data**. It connects ROI selection, cell segmentation, transcript attribution, quality control, clustering, cell-type annotation, spatial visualization, and export in one web interface. A CLI supports scripted whole-slide processing.
 
-**MCseg** is a no-code, end-to-end analysis platform for 10x Genomics **Visium HD** (2 µm resolution) spatial transcriptomics data. Starting from a raw gigapixel BTF image, MCseg covers the complete workflow: custom ROI cropping, high-fidelity cell segmentation, RNA counting, downstream analysis (QC → UMAP → cell-type annotation), and one-click export to Xenium Explorer or Loupe Browser — all through a web interface requiring no programming.
+An AI agent helped search candidate workflows during method development. **Routine analysis runs the retained workflow locally: no AI-agent search, external language-model API, or Xenium reference data is required.** Initial installation and model downloads require internet access.
 
-Its core segmentation engine, **MCseg**, was developed through the **AutoResearch** paradigm — an AI-autonomous architecture search over ~80 evaluation cycles — yielding a seven-pass Cellpose ensemble with Voronoi-constrained boundary expansion. Against Xenium Prime ground truth in LUAD tissue, MCseg achieves **PQ = 0.554 ± 0.064** — a **+28% improvement** over the optimised dual-diameter baseline **2Cseg** (PQ 0.432 ± 0.037). In CRC, MCseg matches Space Ranger's transcript capture (UMI density 11.6 vs 11.7 UMI/µm²) while maintaining higher transcriptional boundary purity (NED 0.727 vs 0.712, p = 0.026). GPU is optional; full CPU fallback is supported.
+[Desktop installation](#desktop-installation-windows-and-macos) · [Quick start](#quick-start) · [Workflow](#workflow) · [Research results](#research-results) · [CLI](#command-line-use) · [User guide](docs/usage.md) · [Reproducibility](#reproducibility) · [Citation](#citation)
+
+## Workflow
 
 <p align="center">
-  <img src="docs/fig1a_pipeline.png" width="820" alt="MCseg pipeline overview">
+  <img src="docs/fig1_development_deployment.png" width="1000" alt="MCseg development and deployment: a researcher-defined library and Xenium-scored AI-agent search lead to a retained segmentation workflow; a local no-code interface connects image import, segmentation, RNA counting, analysis, and export. H&E, MCseg masks, and Xenium reference boundaries appear at right.">
 </p>
 
----
+**Development and deployment are separate.** (a) Researchers define the operation library, reference data, objective, and execution constraints; an agent proposes and evaluates candidates, and researchers review the retained workflow. (b) Users run the local platform on their own images and spatial expression data. (c) Representative H&E, MCseg masks, and Xenium reference boundaries. Xenium boundaries are computational references, not manually drawn whole-cell ground truth.
 
-## Contents
+<details>
+<summary>Figure source and model terminology</summary>
 
-[Quick Start](#quick-start) · [Pipeline Overview](#pipeline-overview) · [CLI (No-UI)](#cli-no-ui-whole-slide-pipeline) · [Interface Tour](#interface-tour) · [Example Results](#example-results) · [Output Structure](#output-structure) · [Usage Guide](#usage-guide) · [Algorithm](#mcseg-algorithm) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Citation](#citation) · [License](#license)
+This figure is cropped from the supplied manuscript artwork without resampling or changing panel content. The original artwork contains the label “spsam”; see the [implementation note](#implementation-and-manuscript-provenance) for the current `cpsam` loader and the distinction from the manuscript's model description. Crop provenance is recorded in [figure-source.md](docs/figure-source.md).
 
----
+</details>
 
-## Quick Start
+| Step | What you do | Main result |
+| --- | --- | --- |
+| Set up data | Select H&E and matching Space Ranger outputs | Validated input paths |
+| Select regions | Draw ROIs, or use the whole-slide CLI | Image crops and spatial coordinates |
+| Segment cells | Run the multi-pass ensemble and constrained expansion | Cell masks |
+| Attribute expression | Assign spatial bins to masks and aggregate counts | Cell × gene AnnData matrix |
+| Analyze | Filter cells, compute PCA/UMAP/Leiden, and annotate with CellTypist | Cell profiles and labels |
+| Explore and export | Inspect spatial expression and export results | AnnData, Xenium Explorer, or Loupe Browser outputs |
 
-### System Requirements
+See the [interface tour](docs/usage.md#interface-tour), [step-by-step guide](docs/usage.md#usage-guide), and [output structure](docs/usage.md#output-structure).
 
-| Component         | Minimum                          | Recommended                     | Notes                                                                                                            |
-| ----------------- | -------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **OS**      | macOS 12, Windows 10, Ubuntu 20.04 | macOS 13+ / Windows 11 / Ubuntu 22.04 | All three platforms fully supported                                                                         |
-| **CPU**     | 4-core, any modern x86-64 or ARM | Apple Silicon (M1/M2/M3) or AMD/Intel | Apple Silicon → MPS; NVIDIA → CUDA GPU acceleration                                                        |
-| **RAM**     | 8 GB                             | 16 GB+                          | Cellpose loads full ROI crops into memory; very large ROIs (>2000×2000 px) or multi-ROI runs benefit from 32 GB |
-| **Storage** | 15 GB free                       | 30 GB+ free                     | ~8 GB for Python env (torch, cellpose); remainder for data & results                                             |
-| **Python**  | 3.10                             | 3.11                            | Managed by `uv`; do not use system Python                                                                      |
-| **Node.js** | v18                              | v20 LTS                         | For frontend (Vite + React); CLI mode does not require Node.js                                                   |
-| **GPU**     | — (CPU fallback)                | NVIDIA CUDA 12.x or Apple MPS   | GPU reduces segmentation time: ~30 min (4-pass) / ~55 min (7-pass) on CPU → ~5–10 / ~15–25 min with CUDA/MPS  |
+## Research results
 
-### Prerequisites
+The following results are reported in the September 18 manuscript. They describe different evaluation settings and should not be interpreted as a single overall performance ranking.
 
-**macOS (Homebrew recommended):**
+| Evaluation | Reported result | Interpretation |
+| --- | --- | --- |
+| **LUAD: fixed parameters, 6 development ROIs** | PQ **0.472 ± 0.072**, versus **0.432 ± 0.037** for Optuna-tuned 2Cseg | +0.040 absolute PQ (about 9% relative); these ROIs contributed to development |
+| **LUAD: reference-guided calibration** | PQ **0.554 ± 0.063** | Upper-bound analysis: expansion strategy and distance selected per ROI using Xenium masks; not routine deployment performance |
+| **CRC: expert-reviewed ENACT reference** | Micro-F1 **0.805 vs 0.723** for MCseg vs ENACT | Comparison restricted to **10,275 jointly covered reference cells**; MCseg covered 65.1% of all 20,991 reference centroids |
+| **CRC: transcript-derived quality, 15 ROIs** | NED **0.727 vs 0.712**; lineage-exclusive co-expression **0.49% vs 0.67%**, MCseg vs Space Ranger | Sign-flip p = 0.008 and 0.010, respectively; similar UMI density (**11.6 vs 11.7 UMIs/µm²**), but lower transcript capture (**0.737 vs 0.934**) |
+| **Fresh-frozen breast cancer: fixed workflow** | **96,876 cells**, FTC **0.514**, median **1,502 UMIs/cell**, NED **0.519** | Transfer without a new architecture search; not evidence of superiority in breast cancer |
+
+**How to read these metrics.** PQ combines boundary agreement and detection completeness. FTC measures the fraction of tissue UMIs assigned to masks. NED measures expression separation between neighboring masks; it is not an absolute measure of geometric accuracy. Higher NED or lower lineage mixing alone does not establish a better segmentation, and similar UMI density does not imply equal transcript capture.
+
+**Scope of validation.** LUAD geometric results are development-set estimates. The expert-reviewed CRC region is non-overlapping with the 15 CRC ROIs but comes from the same tissue section; its reference centroids originated from StarDist before manual review. Cross-tissue testing is limited, and expansion settings remain sensitive to tissue morphology and image scale. See [example results](docs/usage.md#example-results) and the [analysis directory](analysis/) for supporting material.
+
+## Quick start
+
+### Inputs and requirements
+
+Prepare an H&E image and its **matching** Space Ranger Visium HD outputs:
+
+- H&E image, typically a tiled BigTIFF (`.btf`, `.tif`, or `.tiff`).
+- `tissue_positions.parquet` and `filtered_feature_bc_matrix.h5` for the **2-µm bins**.
+- The associated spatial metadata needed by the selected workflow. Separately scanned images require registration before transcript attribution; see [image formats and alignment](docs/usage.md#supported-image-formats).
+
+Source installation uses **Python ≥3.10**, **uv**, and **Node.js/npm** for the web UI. CLI-only use does not require Node.js. Plan for at least 16 GB RAM and additional memory for large images; actual memory and disk needs depend on the data and installed dependencies. The manuscript analyses used Apple Silicon with MPS. CPU execution is supported, but CPU runtime was not systematically benchmarked; the reported geometric runs took approximately 20–40 min per ROI with MPS.
+
+### Desktop installation (Windows and macOS)
+
+Desktop packages include the MCseg interface, backend application files, and the `uv` environment manager. **You do not need to install Python, Node.js, Rust, or uv manually.** On first launch, the app downloads and prepares its Python/PyTorch/Cellpose dependencies. It is not an offline installer: keep the computer online and allow at least 15 GB of free disk space for setup, plus space for your datasets and results.
+
+| Platform | Desktop package | Architecture |
+| --- | --- | --- |
+| Windows 10/11 | `mcseg_0.2.0_x64-setup.exe` | Intel/AMD x64 |
+| macOS 12+ | `mcseg_0.2.0_aarch64.dmg` | Apple Silicon (M-series) |
+
+**Getting the installer:** these desktop packages have been prepared by the maintainer. Check [GitHub Releases](https://github.com/ddmanyes/MCseg/releases) for attached installers, or obtain the package from the project maintainer. As of September 19, 2026, the existing GitHub releases have no installer assets attached; GitHub's “Source code” archives are not desktop installers. The desktop package version (`0.2.0`) is distinct from the source package/release version (`0.8.0`). The listed macOS package is for Apple Silicon; an Intel Mac installer is not listed here.
+
+#### Windows
+
+1. Double-click **`mcseg_0.2.0_x64-setup.exe`** and follow the installation wizard.
+2. If Microsoft Defender SmartScreen reports an unrecognized app, verify that the installer came from the MCseg maintainer before selecting **More info → Run anyway**, when available under your system policy.
+3. Launch **MCseg** from the Start menu. Leave the setup window open while it prepares the environment and starts the analysis engine.
+4. When initialization completes, the main interface opens. Select your data and follow the [usage guide](docs/usage.md#usage-guide).
+
+#### macOS (Apple Silicon)
+
+1. Open **`mcseg_0.2.0_aarch64.dmg`**, then drag **MCseg** into **Applications**.
+2. Launch the app from Applications. If macOS blocks an unnotarized build, first verify its source, then use **System Settings → Privacy & Security → Open Anyway**, if offered, and confirm the prompt.
+3. Keep the Mac online and the setup window open while the Python environment and dependencies are prepared.
+4. The main interface opens when initialization finishes. Subsequent launches reuse the prepared environment.
+
+#### First-launch troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| Setup appears stalled | Expand the setup log; check connectivity, free disk space, and whether packages are still downloading. Resolve the reported error before choosing **Retry**. |
+| Port 8001 is already occupied | Stop your other MCseg/backend session, or identify the unrelated application using the port before proceeding. |
+| Installer does not match the computer | Check x64 Windows versus Apple Silicon macOS; use source installation for other environments. |
+
+### Install from source
+
+For developers, CLI users, or systems without a matching desktop package:
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and [Node.js](https://nodejs.org/), then clone onto a local native filesystem (APFS on macOS, NTFS on Windows, or a native Linux filesystem):
 
 ```bash
-# Install Homebrew if not present
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install Node.js (latest LTS)
-brew install node
-```
-
-**Linux (Ubuntu/Debian):**
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-```
-
-**Windows (PowerShell, run as Administrator):**
-
-```powershell
-# Install Node.js (winget, built into Windows 10/11)
-winget install OpenJS.NodeJS.LTS
-
-# Install uv
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-### Installation
-
-**macOS / Linux:**
-
-```bash
-# 1. Install uv (Python package manager)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source ~/.zshrc   # or restart your terminal — required for uv to be in PATH
-
-# 2. Clone and install
 git clone https://github.com/ddmanyes/MCseg.git
 cd MCseg
-uv sync           # skip this step if your drive is ExFAT — see note below
-
-# 3. Install frontend dependencies
-cd frontend && npm install && cd ..
-
-# 4. Launch (also handles Python env setup)
-bash start.sh
-```
-
-**Windows (PowerShell):**
-
-```powershell
-# 1. Restart PowerShell after installing uv so it is in PATH
-
-# 2. Clone and install
-git clone https://github.com/ddmanyes/MCseg.git
-cd MCseg
-
-# If your drive is NTFS (C:\, D:\ etc.):
 uv sync
-
-# If your drive is ExFAT (external SSD, e.g. K:\):
-$env:UV_LINK_MODE = "copy"; uv sync
-
-# 3. Install frontend dependencies
-cd frontend; npm install; cd ..
-
-# 4a. One-click launch (recommended, equivalent to macOS start.sh)
-powershell -ExecutionPolicy Bypass -File start.ps1
-
-# 4b. Or launch manually (two terminals)
-# Terminal 1:
-uv run uvicorn backend.main:app --port 8001
-# Terminal 2:
-cd frontend; npm run dev
+npm --prefix frontend install
 ```
 
-Open **[http://localhost:3000](http://localhost:3000)** in your browser.
-
-> [!NOTE]
-> **bash users:** replace `source ~/.zshrc` with `source ~/.bashrc`.
-
-> [!IMPORTANT]
-> **ExFAT / external drive users (macOS only):** skip `uv sync` in step 2 and run `bash start.sh` directly — it creates `.venv` as a symlink to `~/.venvs/msseg` (APFS) before installing, avoiding resource-fork corruption.
-> **ExFAT / external drive users (Windows):** use `$env:UV_LINK_MODE = "copy"; uv sync` instead of plain `uv sync` — this prevents hardlink failures on non-NTFS volumes. If `.venv` appears as a 1 KB file after `uv sync`, delete it with `cmd /c "attrib -H .venv && del .venv"` then re-run with `UV_LINK_MODE=copy`.
-
----
-
-## Pipeline Overview
-
-| Stage                | Function                                                           | Key Output                            |
-| -------------------- | ------------------------------------------------------------------ | ------------------------------------- |
-| Data Setup           | Auto-scan and validate raw data                                    | `state.json`                        |
-| Stage 0: ROI Extract | Crop ROI from Gigapixel BTF                                        | `he_crop.tif`, `adata_002um.h5ad` |
-| Stage 1: MCseg    | Multi-pass ensemble segmentation (4–7 passes) + Voronoi expansion | `segmentation_masks.npy`            |
-| Stage 2: RNA Count   | Assign Visium HD bins to cells                                     | `cellpose_cells.h5ad`               |
-| Stage 3: Analysis    | QC → Normalise → PCA → UMAP → Leiden                           | `umap_computed.h5ad`                |
-| Stage 3.5: Explorer  | Interactive spatial gene expression viewer                         | PNG export                            |
-| Stage 4: Export      | Xenium Explorer / Loupe Browser format                             | `experiment.xenium`, zarr archives  |
-
----
-
-## CLI (No-UI) Whole-Slide Pipeline
-
-For batch processing, HPC clusters, or scripted pipelines, MSseg provides a **command-line interface (CLI)** that runs the full whole-slide pipeline without opening the web interface — **segmentation → RNA counting → cell-type annotation** in a single command:
-
-1. **Crop** H&E from the raw BTF (or load an existing `he_crop.tif`)
-2. **Segment** the whole slide with tiled MCseg v2 (4-pass, or 7-pass with `--cpsam`) → `mcseg_mask.npy`
-3. **Bin attribution** / RNA counting (when `--tp` + `--h5` are supplied) → `bin_attribution.parquet`
-4. **Aggregate** cells×genes matrix with centroids → `cells.h5ad`
-5. **CellTypist** annotation (unless `--skip-celltypist`) → `celltypist_labels.csv` (also written back into `cells.h5ad`)
-6. **Xenium Explorer** export (only with `--export-xenium`) → `xenium_explorer/`
-
-Steps 3–5 run automatically once `--tp`/`--h5` are provided; pass only `--btf`/`--out` for segmentation-only.
-
-### Basic syntax
-
-After `uv sync`, the `msseg-segment` command is available directly:
-
-```powershell
-# Windows (PowerShell) — short form
-uv run msseg-segment `
-    --btf  "K:\path\to\image.btf" `
-    --tp   "K:\path\to\tissue_positions.parquet" `
-    --h5   "K:\path\to\filtered_feature_bc_matrix.h5" `
-    --out  "K:\path\to\output_dir\" `
-    --tissue crc `
-    --cpsam
-```
+Start the backend from the repository root:
 
 ```bash
-# macOS / Linux — short form
+uv run uvicorn backend.main:app --host 127.0.0.1 --port 8001
+```
+
+In a second terminal, from the same repository root:
+
+```bash
+npm --prefix frontend run dev
+```
+
+Open **[http://localhost:3000](http://localhost:3000)**, select your data, and follow the [usage guide](docs/usage.md#usage-guide). The same commands work in PowerShell. Initial dependency and model downloads can take time.
+
+<details>
+<summary>Launcher scripts and external drives</summary>
+
+The repository also provides `start.sh` and `start.ps1`. Inspect them before use: the current macOS shell launcher recreates the repository environment as a symlink to `~/.venvs/msseg` and terminates processes listening on ports 8001/3000. The two-terminal commands above make those steps unnecessary on a native filesystem.
+
+For ExFAT external drives, prefer keeping the checkout and Python environment on the system disk while reading data from the external drive. Windows ExFAT installations may require `UV_LINK_MODE=copy`; see [troubleshooting](docs/usage.md#troubleshooting).
+
+</details>
+
+## Command-line use
+
+The executable retains its existing name, **`msseg-segment`**.
+
+```bash
 uv run msseg-segment \
-    --btf  "/Volumes/SSD/image.btf" \
-    --tp   "/Volumes/SSD/tissue_positions.parquet" \
-    --h5   "/Volumes/SSD/filtered_feature_bc_matrix.h5" \
-    --out  "/Volumes/SSD/output/" \
-    --tissue crc \
-    --cpsam
+  --btf /path/to/image.btf \
+  --tp /path/to/tissue_positions.parquet \
+  --h5 /path/to/filtered_feature_bc_matrix.h5 \
+  --out /path/to/output \
+  --tissue crc \
+  --cpsam
 ```
 
-> Alternatively, use the module form: `uv run python -m backend.src.cli.segment ...`
-
-### Common recipes
-
-| Task | Command flags |
-|------|---------------|
-| **CRC 7-pass** (with cpsam) | `--tissue crc --cpsam` |
-| **LUAD 4-pass** (fast) | `--tissue luad` |
-| **Skip BTF crop** (reuse existing he_crop.tif) | `--he-crop path/to/he_crop.tif` |
-| **Crop a sub-region** from BTF | `--btf image.btf --crop-y0 4635 --crop-y1 18599 --btf-col0 45752 --btf-col1 55840` |
-| **Skip CellTypist** | `--skip-celltypist` |
-| **Export to Xenium Explorer** | `--export-xenium` (requires `--tp` + `--h5`) |
-| **CPU only** | `--no-gpu` |
-| **Custom diameters** | `--dia-small 11 --dia-mid 15 --dia-large 20` |
-
-### All options
-
-```
-uv run python -m backend.src.cli.segment --help
-
-  --btf PATH            Raw BigTIFF (.btf) path
-  --he-crop PATH        Pre-cropped he_crop.tif (skip BTF crop step)
-
-  --crop-y0 PX          Crop start row (BTF full-image coordinates, default 0)
-  --crop-y1 PX          Crop end row (-1 = full image)
-  --btf-col0 PX         Crop start col (BTF full-image coordinates, default 0)
-  --btf-col1 PX         Crop end col (-1 = full image)
-
-  --tp PATH             tissue_positions.parquet path
-  --h5 PATH             filtered_feature_bc_matrix.h5 path
-  --out DIR             Output directory (required)
-
-  --tissue {crc,luad,default}   Tissue preset (default: crc)
-  --cpsam               Enable cpsam (7-pass; significantly longer runtime)
-  --no-gpu              Force CPU mode
-  --batch-size N        Cellpose batch size (default 2)
-  --tile-size PX        Tile size (default 1024)
-  --overlap PX          Tile overlap (default 128)
-  --dia-small/mid/large PX      Override ensemble diameters
-  --voronoi-d PX        Override Voronoi expansion distance
-  --cellprob THRESH     Override cellprob_threshold
-
-  --celltypist-model MODEL      CellTypist model (default: Human_Colorectal_Cancer.pkl)
-  --skip-celltypist     Skip CellTypist
-
-  --export-xenium       Export a Xenium Explorer bundle (requires --tp + --h5)
-```
-
-### Output files
-
-```
-<out>/
-├── he_crop.tif               ← Cropped H&E image
-├── mcseg_mask.npy            ← MCseg v2 cell mask (int32, H×W)
-├── bin_attribution.parquet   ← barcode → cell_id mapping
-├── cells.h5ad                ← cells × genes matrix (raw counts, centroids, celltypist labels)
-├── celltypist_labels.csv     ← cell_id → celltypist label
-└── xenium_explorer/          ← Xenium Explorer bundle (only with --export-xenium)
-```
-
-> [!TIP]
-> CLI supports **checkpoint resumption**: if an output file already exists, that step is automatically skipped — you can interrupt and re-run at any time.
-
-> [!NOTE]
-> The CLI and Web UI use **exactly the same `cellpose_runner.py` engine** and read their
-> tissue defaults from the **same `config/profiles/{tissue}.yaml`** files, so `--tissue crc`
-> and the Web UI's CRC profile are guaranteed identical (enforced by
-> `test_preset_matches_profile_yaml`). Any per-ROI override applied in the Web UI
-> translates directly to `--dia-mid` / `--voronoi-d` CLI flags.
-
----
-
-## Interface Tour
-
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/sample/Operation%20interface/stage1_steup.png" width="400" alt="Data Setup"><br>
-      <sub><b>① Data Setup</b> — scan BTF + binned matrices, set output dir</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/sample/Operation%20interface/stage2_ROI.png" width="400" alt="ROI Definition"><br>
-      <sub><b>② ROI Definition</b> — draw regions on H&E overview</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/sample/Operation%20interface/stage3_seg.png" width="400" alt="MCseg Segmentation"><br>
-      <sub><b>③ MCseg Segmentation</b> — multi-pass ensemble + preview</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/sample/Operation%20interface/stage4_count.png" width="400" alt="RNA Counting"><br>
-      <sub><b>④ RNA Counting</b> — assign Visium HD bins to cells</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/sample/Operation%20interface/stage5_umap.png" width="400" alt="UMAP Analysis"><br>
-      <sub><b>⑤ UMAP / Leiden</b> — multi-resolution cluster explorer</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/sample/Operation%20interface/stage5_annotation.png" width="400" alt="Cell-type Annotation"><br>
-      <sub><b>⑥ Cell-type Annotation</b> — Celltypist auto-labelling</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/sample/Operation%20interface/stage6_explore.png" width="400" alt="Spatial Explorer"><br>
-      <sub><b>⑦ Spatial Explorer</b> — interactive gene expression viewer</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/sample/Operation%20interface/stage7_output.png" width="400" alt="Export"><br>
-      <sub><b>⑧ Export</b> — spatial analysis results; Xenium Explorer / Loupe Browser export on same page</sub>
-    </td>
-  </tr>
-</table>
-
----
-
-## Example Results
-
-### Cell-type mapping on Visium HD (LUAD, Tumor Boundary ROI)
-
-<p align="center">
-  <img src="docs/fig2h.png" width="700" alt="Cell-type map — LUAD tumor boundary, MCseg + Celltypist">
-</p>
-
-> Cell types resolved by MCseg + Celltypist on LUAD tumor boundary ROI — T/B Lymphocyte, Club Epithelial, Plasma Cell, B Cell, SPP1⁺ Macrophage overlaid on H&E.
-
-### Spatial AT2 Pneumocyte detection overlaid on H&E
-
-<p align="center">
-  <img src="docs/fig_spatial_at2.png" width="500" alt="AT2 Pneumocyte (blue outlines, n=326, 30%) on H&E">
-</p>
-
-> AT2 Pneumocytes (SFTPC+, blue outlines, n = 326, 30%) detected directly on the H&E image — no GPU required.
-
-### Transcript attribution in CRC
-
-> In CRC (15 ROIs), MCseg matches Space Ranger's per-cell RNA capture (UMI density 11.6 vs 11.7 UMI/µm²) while achieving higher transcriptional boundary purity (NED 0.727 vs 0.712, p = 0.026). In a tertiary lymphoid structure, MCseg resolved **four** functional immune populations vs **three** with Space Ranger, with 44% more cells (636 vs 440).
-
-### QC filtering (Stage 3)
-
-<p align="center">
-  <img src="docs/sample/result/qc_violin.png" width="780" alt="QC violin plots: UMI, genes per cell, % mitochondrial">
-</p>
-
-> Violin plots showing per-cell QC metrics after MCseg segmentation — dashed lines indicate configurable thresholds.
-
-### UMAP, marker genes and spatial cell-type map
-
-<table>
-  <tr>
-    <td align="center" width="25%">
-      <img src="docs/sample/result/result_umap.png" width="200" alt="UMAP annotated"><br>
-      <sub>UMAP coloured by Celltypist annotation</sub>
-    </td>
-    <td align="center" width="25%">
-      <img src="docs/sample/result/result_dotplot.png" width="200" alt="Marker gene dotplot"><br>
-      <sub>Marker gene dotplot per cluster</sub>
-    </td>
-    <td align="center" width="25%">
-      <img src="docs/sample/result/result_heatmap.png" width="200" alt="Top marker gene heatmap"><br>
-      <sub>Top marker gene heatmap</sub>
-    </td>
-    <td align="center" width="25%">
-      <img src="docs/sample/result/result_spatial_filled_1.png" width="200" alt="Spatial cell-type map"><br>
-      <sub>Spatial cell-type map overlaid on H&E</sub>
-    </td>
-  </tr>
-</table>
-
-### Export to Xenium Explorer
-
-MCseg outputs a ready-to-load Xenium Explorer bundle (`experiment.xenium` + zarr archives). The screenshots below show CRC data loaded directly into Xenium Explorer 4.1.1 after MCseg export.
-
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/sample/result/xenium_capture/xenium_2.png" width="400" alt="H&E image with MCseg cell boundaries in Xenium Explorer"><br>
-      <sub>H&E image with MCseg cell boundaries</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/sample/result/xenium_capture/xenium_5.png" width="400" alt="Cell-type annotation groups in Xenium Explorer"><br>
-      <sub>Cell-type groups (Celltypist) — interactive cell info popup</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/sample/result/xenium_capture/xenium_3.png" width="400" alt="Transcript dot visualisation in Xenium Explorer"><br>
-      <sub>Transcript dot overlay ( SCGB1A1)</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/sample/result/xenium_capture/xenium_4.png" width="400" alt="Gene-specific transcript density in Xenium Explorer"><br>
-      <sub>Gene-specific transcript density</sub>
-    </td>
-  </tr>
-</table>
-
-> **Export bundle structure** (`<output_dir>/export/`):
->
-> ```
-> experiment.xenium
-> morphology.ome.tif
-> cells.zarr.zip
-> transcripts.zarr.zip
-> cell_feature_matrix.zarr.zip
-> analysis.zarr.zip
-> analysis_summary.html
-> ```
-
----
-
-## Output Structure
-
-After a complete run, your output directory will contain:
-
-```text
-<output_dir>/
-├── analysis/
-│   ├── roi/
-│   │   └── {roi_name}/
-│   │       ├── he_crop.tif                  ← H&E crop (Stage 0)
-│   │       ├── adata_002um.h5ad             ← 2 µm bin matrix (Stage 0)
-│   │       ├── segmentation_masks.npy       ← MCseg cell masks (Stage 1)
-│   │       ├── segmentation_masks.tif       ← Visualisation overlay (Stage 1)
-│   │       ├── cellpose_cells.h5ad          ← Cell × gene matrix (Stage 2)
-│   │       ├── cellpose_polygons.json       ← Cell boundary polygons (Stage 2)
-│   │       └── transcripts_roi.csv          ← Per-cell transcript table (Stage 2)
-│   ├── merged_all_rois.h5ad                 ← Multi-ROI merged AnnData (Stage 3, merge mode)
-│   ├── qc_preprocessed.h5ad                ← Post-QC AnnData (Stage 3)
-│   ├── umap_computed.h5ad                   ← UMAP + Leiden clusters (Stage 3)
-│   ├── combined_cellpose_polygons.json      ← Merged polygons (Stage 3, merge mode)
-│   └── combined_transcripts.csv            ← Merged transcripts (Stage 3, merge mode)
-└── export/
-    └── xenium/
-        └── {roi_name}/
-            ├── experiment.xenium            ← Load this in Xenium Explorer
-            ├── morphology.ome.tif
-            ├── cells.zarr.zip
-            ├── transcripts.zarr.zip
-            ├── cell_feature_matrix.zarr.zip
-            ├── analysis.zarr.zip
-            └── analysis_summary.html
-```
-
----
-
-## Usage Guide
-
-After launching (`bash start.sh`), open **[http://localhost:3000](http://localhost:3000)** and follow the steps below.
-
-> *Timings below are approximate, measured on **Apple M2 CPU, 16 GB RAM**, ROI ~1500 × 1200 px. GPU (Apple MPS or NVIDIA CUDA) reduces Stage 1 to ~2–3 min/ROI.*
-
-### Step 1 — Data Setup
-
-1. Click **Browse** to select your Visium HD sample folder (the root containing `spatial/` and `binned_outputs/`).
-2. Click **Scan** — MCseg auto-detects the H&E image (`.btf` / `.tif`), 2 µm and 8 µm binned matrices.
-3. Verify that all three files are found (green checkmarks), then click **Apply** to register them.
-4. Set the **Output Directory** where results (`roi/`, `analysis/`) will be written, then click **Save**.
-
-> **Data layout expected:**
->
-> ```
-> <sample>/
-> ├── spatial/
-> │   └── tissue_hires_image.btf          ← gigapixel H&E
-> └── binned_outputs/
->     ├── square_002um/filtered_feature_bc_matrix/
->     └── square_008um/filtered_feature_bc_matrix/
-> ```
-
-### Step 2 — Stage 0: ROI Extraction (~1 min/ROI)
-
-1. In the **Add ROI** form, fill in:
-   - **Name** — a unique identifier (e.g. `roi1`)
-   - **Tissue** — `crc` or `luad` (sets the matching parameter profile for this ROI)
-   - **x / y / width / height** — region in full-resolution pixels (1 px = 0.2737 µm)
-2. Click **Add** to register the ROI; repeat for all regions of interest.
-3. Click **Run ROI Extraction** — MCseg tile-reads the BTF and crops `he_crop.tif` + `adata_002um.h5ad` per ROI.
-
-### Step 3 — Stage 1: MCseg Segmentation (~30 min/ROI on CPU · ~2–3 min with GPU · default 4-pass config)
-
-1. Review the default parameters (pre-filled from the tissue profile):
-   | Parameter                   | Default         | Notes                                                           |
-   | --------------------------- | --------------- | --------------------------------------------------------------- |
-   | `dia_small / mid / large` | 13 / 17 / 22 px | cell diameter sweep (one model, three diameters)                |
-   | `voronoi_distance`        | 9 px            | Voronoi expansion cap                                           |
-   | `use_hematoxylin`         | true            | adds H-channel passes                                           |
-   | `use_cpsam`               | false           | enable for complex/dense tissue (+3 passes, ~50–60 min on CPU) |
-   | `use_transcript_rescue`   | true            | fills in cells missed by morphology                             |
-   | `use_gpu`                 | true            | MPS / CUDA; falls back to CPU                                   |
-
-   When `use_cpsam` is enabled, the cpsam 7-pass spec is independently tunable (paper Pass 5/6/7):
-
-   | Parameter               | Default | Notes                                        |
-   | ----------------------- | ------- | -------------------------------------------- |
-   | `dia_cpsam_auto`      | 0 (auto)| Pass 5/7 diameter; 0 = Cellpose auto (~30 px)|
-   | `dia_cpsam_small`     | 16 px   | Pass 6 fixed diameter                        |
-   | `cellprob_cpsam_auto` | -1.0    | Pass 5 (CLAHE-RGB, auto dia)                 |
-   | `cellprob_cpsam_small`| -3.0    | Pass 6 (CLAHE-RGB, dia=16)                   |
-   | `cellprob_cpsam_hema` | -1.0    | Pass 7 (Hematoxylin, auto dia)               |
-2. (Optional) Expand **ROI Overrides** to tune parameters per individual ROI (all parameters above, including the cpsam 7-pass spec).
-3. Click **Preview** on one ROI to verify cell outlines before committing to a full run.
-4. Click **Run All ROIs** — outputs `segmentation_masks.npy` per ROI.
-
-> **Whole-slide segmentation (no ROI):** the **Run Full Segmentation** action segments the entire slide via tiled MCseg v2 (MPS-safe: tile=1024, batch≤2, cpsam disabled), writing `full_image_segmentation_masks.npy`. A 6 GB in-memory cap guards against oversized slides — beyond that, use ROI mode (or the [CLI](#cli-no-ui-whole-slide-pipeline), which tile-reads the BTF without the cap). This produces the mask only; counting and analysis remain per-ROI in the UI.
-
-### Step 4 — Stage 2: RNA Counting (~2–3 min/ROI)
-
-1. Check the ROI list — each row shows whether a segmentation mask and count result exist.
-2. Click **Run All** (or per-ROI **Run**) — each 2 µm bin is assigned to the nearest cell mask with a 6 px dilation.
-3. Output: `cellpose_cells.h5ad` (cells × genes sparse matrix).
-
-### Step 5 — Stage 3: Analysis (~3–5 min)
-
-The analysis stage runs four sequential sub-steps:
-
-| Sub-step    | Button                              | Output                         |
-| ----------- | ----------------------------------- | ------------------------------ |
-| 1. QC       | **Run QC**                    | QC histograms; filtered cells  |
-| 2. UMAP     | **Run UMAP**                  | PCA → UMAP → Leiden clusters |
-| 3. Heatmap  | **Run Heatmap**               | Top marker gene heatmap        |
-| 4. Annotate | **Run Annotate** (Celltypist) | Automated cell-type labels     |
-
-Run each sub-step in order; results are visualised inline. Click **Apply Labels** after annotation to write cluster names back to the h5ad.
-
-### Step 6 — Spatial Explorer (`✦`)
-
-Interactive spatial gene expression viewer — available after Stage 3 completes.
-
-1. Select an ROI from the dropdown.
-2. Search for a gene or choose a preset panel (Immune/Tumor, Hair Follicle, etc.).
-3. Switch between **Contour** (cell outlines) and **Set** (dot overlay) modes.
-4. Export the current view as PNG.
-
-### Step 7 — Stage 4: Export (~2–5 min/ROI)
-
-The export page provides both result visualisation and format conversion:
-
-**Visualisation tabs** (review before exporting):
-
-| Tab     | Content                                  |
-| ------- | ---------------------------------------- |
-| Spatial | Colour-coded cluster map overlaid on H&E |
-| UMAP    | Dimensionality reduction plot            |
-| Dotplot | Marker gene expression per cluster       |
-| Heatmap | Top gene heatmap                         |
-
-**Export formats:**
-
-| Target          | Output                                                       | Use for                             |
-| --------------- | ------------------------------------------------------------ | ----------------------------------- |
-| Xenium Explorer | Xenium-native bundle (`experiment.xenium` + zarr archives) | Load directly in Xenium Explorer 4+ |
-| Loupe Browser   | `.cloupe` file + barcode CSV with cluster labels           | 10x Genomics Loupe Browser          |
-
-Files are saved to `<output_dir>/export/xenium/{roi_name}/`.
-
----
-
-## MCseg Algorithm
-
-```text
-1. CLAHE preprocessing (clip=3.0, tile=8×8) + Hematoxylin extraction
-2. Multi-pass detection (4–7 passes depending on options):
-   · cpsam @ 13/17/22 px on CLAHE-RGB (3 passes, always)
-   · cpsam @ 17 px on Hematoxylin channel (1 pass, use_hematoxylin=true by default)
-   · cpsam @ auto / 16 px / hematoxylin (up to 3 passes, use_cpsam=false by default)
-3. Ensemble merging (IoU overlap threshold < 15%)
-4. Voronoi boundary expansion (d=9 px for CRC — the value used in the paper
-   benchmark; d=8 px for LUAD — see `config/profiles/`)
-5. Quality filtering (20–6000 px²)
-```
-
-> **On the model name.** Earlier revisions of this document described passes 1–4 as
-> `cyto3`. That was inaccurate: `cellpose 4.0.1+` removed the `model_type` argument
-> (it logs `model_type argument is not used in v4.0.1+` and ignores it) and always
-> loads the `pretrained_model` default, `cpsam`. The `cyto3` weights were never
-> present in the environment these results were produced in.
->
-> What the ensemble varies is therefore **diameter and cellprob threshold, not the
-> model** — `diameter` is still honoured (it rescales the image to the model's 30 px
-> cell size), so the multi-diameter ensemble works as described. All existing results
-> were produced by `cpsam`. The actual weight path is written to the run log on every
-> model load.
-
-See [Supplementary Note 1](analysis/supplementary/Supplementary_Note_1.md) for full algorithm specification.
-
----
-
-## Supported Image Formats
-
-| Format | Description | Notes |
-|--------|-------------|-------|
-| `.btf` / `.tif` / `.tiff` | H&E image from Visium HD SpaceRanger | Must be a tiled BigTIFF; compressed tiles are **not** supported |
-| `.ndpi` | Hamamatsu NanoZoomer | Has its own pyramid; thumbnails and low-zoom views read from pyramid levels |
-| `.svs` | Aperio | Same as above |
-| `.mrxs` | 3DHISTECH | Same as above |
-
-Reading is dispatched by `open_slide()` in `backend/src/utils/slide_reader.py`, built on
-`tifffile` — neither openslide nor tiffslide is required (the former needs `brew install` /
-a Windows DLL, the latter is incompatible with this project's `tifffile 2026.2.24`).
-
-### ⚠️ NDPI/SVS require registration first
-
-NDPI/SVS files are usually **separately scanned** high-resolution images that share **no
-coordinate system** with the Visium slide:
-
-| | Pixel size |
-|---|---|
-| Hamamatsu 40x | ~0.226 µm/px |
-| Visium HD fullres | 0.2737 µm/px |
-
-So after segmenting on such an image, RNA bins will not land in the right place. Two options:
-
-1. **Supply a Loupe alignment JSON** (recommended): re-align the image in Loupe Browser and
-   point `alignment.extra_alignment_json` at the resulting JSON. The composed homography then
-   maps bins exactly (see "Alignment and coordinate systems").
-2. **Estimate via the alignment panel**: Stage 0's "Alignment Check" estimates the residual
-   shift/affine; apply it manually after reviewing the residual. `alignment.enabled` defaults
-   to `false` — a wrong correction applied silently is worse than no correction at all.
-
----
-
-## Configuration
-
-All parameters are managed in `config/pipeline.yaml`. Switch tissue type with one line:
-
-```yaml
-global:
-  tissue_profile: crc   # or: luad
-```
-
----
-
-## Testing
+This runs segmentation, bin attribution, cell-matrix aggregation, and CellTypist annotation. Add `--export-xenium` for an Explorer bundle, `--skip-celltypist` to omit annotation, or `--no-gpu` for CPU execution. Supplying only `--btf` and `--out` runs segmentation alone. `--cpsam` enables the extra passes in the seven-pass configuration; it does not identify which weights the primary loader uses.
 
 ```bash
-uv sync --extra dev            # installs pytest-asyncio + httpx (required for API tests)
-uv run pytest backend/tests/ -v
+uv run msseg-segment --help
 ```
 
-> **ExFAT / external drive (macOS):** `uv run` rebuilds the env and can clobber the `.venv`
-> symlink. Clean resource-fork junk first, then run pytest against the venv directly:
->
-> ```bash
-> find . -name '._*' -delete && find ~/.venvs/msseg -name '._*' -delete
-> .venv/bin/python -m pytest backend/tests/ -v
-> ```
+See [all options and PowerShell examples](docs/usage.md#cli-no-ui-whole-slide-pipeline).
 
----
+## Method and configuration
 
-## Troubleshooting
+The retained workflow combines CLAHE preprocessing, multiple Cellpose passes across image representations and diameter settings, priority-based mask integration, optional transcript-density rescue, and Voronoi-constrained boundary expansion. The application exposes a shorter configuration and optional passes for the seven-pass workflow.
 
-| Issue                                       | Cause                           | Solution                                                                                                                                           |
-| ------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `uv: command not found` after install     | Shell profile not reloaded      | Run `source ~/.zshrc` (zsh) or `source ~/.bashrc` (bash), or restart terminal                                                                  |
-| Backend fails to start (`address in use`) | Previous process still running  | `start.sh` auto-kills ports 8001/3000; or run `lsof -ti:8001,3000 \| xargs kill -9` manually                                                    |
-| `uv sync` fails on ExFAT drive            | Resource-fork file corruption   | `start.sh` handles this automatically; if running manually: `rm -rf .venv && mkdir -p ~/.venvs/msseg && ln -s ~/.venvs/msseg .venv && uv sync` |
-| Out-of-memory during segmentation           | ROI too large for available RAM | Reduce ROI size, or decrease `batch_size` (default 4 → try 2 or 1)                                                                              |
-| Slow segmentation                           | CPU mode                        | Enable GPU: set `use_gpu: true` in Stage 1 UI or `pipeline.yaml`                                                                               |
-| Too few cells detected                      | `cellprob_threshold` too high | Lower to `-2.0` or `-3.0` in Stage 1 UI                                                                                                        |
-| Fragmented small cells                      | `min_size` too low            | Increase `min_size` (e.g., 50 px²) in Stage 1 UI                                                                                                |
-| Low bin assignment rate                     | Voronoi gaps not filled         | Set `rna_counting.dilation_px: 6` in `pipeline.yaml` (default is 6)                                                                            |
-| CLI: `.venv` file error on Windows          | ExFAT symlink from macOS        | Run `cmd /c "attrib -H K:\...\MSseg\.venv && del K:\...\MSseg\.venv"` then `$env:UV_LINK_MODE="copy"; uv sync`                                 |
-| CLI: `zarr < 3 not supported`               | tifffile version conflict       | Run `uv pip install "tifffile==2023.12.9"` inside the MSseg venv                                                                                |
-| macOS `._*` file errors                   | ExFAT external drive            | Pipeline auto-filters; manually:`find . -name "._*" -delete`                                                                                     |
+Transcript attribution maps bin centroids into image/mask coordinates and sums their counts into a sparse cell × gene matrix. Correct registration, pixel scale, and ROI offsets are essential. The application's RNA-counting stage can additionally expand masks through `rna_counting.dilation_px`; this changes the attribution geometry and must be recorded when comparing results or reproducing a benchmark.
 
----
+Configuration lives in [`config/pipeline.yaml`](config/pipeline.yaml) and [`config/profiles/`](config/profiles/). Tissue profiles provide starting values; pipeline and runtime settings can override them. Review the final masks and effective parameters for each dataset.
 
-## Citation
+### Implementation and manuscript provenance
 
-If you use MCseg in your research, please cite:
-
-> Chan, C.-R.\*, Chang, N.-W.\*, Wang, C.-Y., Tan, H.-Y.†, Lin, S.-J.† MCseg: End-to-end Visium HD spatial transcriptomics analysis with AI-optimised ensemble-based cell segmentation. *Bioinformatics* (under review), 2026.
-
----
+The September 18 manuscript describes four `cyto3` passes plus three `cpsam` passes. The current repository's [`_load_primary_model`](backend/src/segmentation/cellpose_runner.py) instead calls `CellposeModel(gpu=use_gpu)` and records the resolved weight path; its Cellpose 4 implementation notes identify the primary model as `cpsam`. The historical model names therefore cannot establish which weights produced an individual benchmark run. Reproducing the manuscript requires matching the analysis revision, environment, actual model weights, and run configuration. The scientific results above are manuscript-reported values, not results rerun for this README.
 
 ## Reproducibility
 
-Analysis scripts and data for the paper are provided in the [`analysis/`](analysis/) directory:
+| Resource | Contents |
+| --- | --- |
+| [`analysis/scripts/`](analysis/scripts/) | Benchmark analyses and figure scripts |
+| [`analysis/data/`](analysis/data/) | Committed metrics and summary tables |
+| [`analysis/supplementary/`](analysis/supplementary/) | Supplementary notes and tables; check their revision against the manuscript |
+| [`docs/autoResearch/`](docs/autoResearch/) | Development prompt, runner, and starter templates |
+| [`backend/src/`](backend/src/) | Deployed analysis implementation |
 
-```text
-analysis/
-├── scripts/
-│   ├── analysis/     # Core analysis pipeline (01–08)
-│   └── figures/      # Figure generation scripts (fig1–fig4, suppfigs)
-├── data/             # Per-ROI metrics CSV files
-└── supplementary/    # Supplementary Note 1, Table S1, Table S2
-```
+The agent-guided development loop adapted the AutoResearch approach: researchers chose candidate operations, reference data, scoring, prompts, and execution limits; the agent proposed and evaluated executable workflows, and researchers reviewed the retained configuration. The development templates are separate from routine analysis and require their own API setup. Their presence alone does not establish a complete archive of every historical search run.
 
-> **Manuscript**: The full manuscript will be linked here upon publication. Preprint / DOI to be added.
+For a reproducible run, retain the Git revision, resolved dependencies, model-weight identity, input dataset and coordinates, effective segmentation/counting settings, and logs. The repository package retains the historical name `msseg`.
 
-### AI-Autonomous Discovery (AutoResearch)
+### Data availability
 
-MCseg was developed using the **AutoResearch** paradigm ([Karpathy, 2026](https://github.com/karpathy/autoresearch)) — an AI-autonomous architecture search framework in which an agent iteratively proposed, implemented, and scored complete segmentation pipelines against Xenium ground truth over ~80 cycles, converging on the multi-model ensemble without human intervention. Candidate architectures were evaluated using the Anthropic Claude API (`claude-sonnet-4-5`). To our knowledge, MCseg is the first cell-segmentation method developed through AI-autonomous architecture search.
+- **LUAD:** paired Visium HD and Xenium Prime data from the 10x Genomics dataset portal; six development ROIs.
+- **CRC:** [GEO GSE280318](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE280318); 15 transcript-benchmark ROIs and a separate expert-reviewed ENACT region from the same section.
+- **Breast cancer:** public fresh-frozen Visium HD data from the 10x Genomics dataset portal, used for fixed-workflow transfer.
 
-Templates for adapting this paradigm to your own segmentation problem are provided in [`docs/autoResearch/`](docs/autoResearch/):
+The manuscript states that processed AnnData objects and segmentation masks will be deposited in Zenodo. A public deposit identifier and manuscript DOI are not yet provided here.
 
-| File                                                          | Description                                        |
-| ------------------------------------------------------------- | -------------------------------------------------- |
-| [`README.md`](docs/autoResearch/README.md)                     | Overview and adaptation guide                      |
-| [`program.md`](docs/autoResearch/program.md)                   | Agent task specification template                  |
-| [`segment_template.py`](docs/autoResearch/segment_template.py) | Sandbox starter script (MCseg helpers included) |
-| [`run_agent.py`](docs/autoResearch/run_agent.py)               | Agent runner using the Anthropic API               |
+## Citation
 
-### Data Availability
+If you use MCseg, please cite the manuscript:
 
-| Dataset       | Source                                                                                   |
-| ------------- | ---------------------------------------------------------------------------------------- |
-| LUAD (6 ROIs) | 10x Genomics public demo data + Xenium Prime co-registration                             |
-| CRC (15 ROIs) | 10x Genomics + GEO[GSE280318](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE280318) |
+> Chan, C.-R., Chang, N.-W., Wang, C.-Y., Tan, H.-Y., and Lin, S.-J. (2026). **MCseg: AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics.** Manuscript.
 
----
+Chan and Chang contributed equally. Publication details will be updated when available.
 
-## License
+## Support and license
 
-MIT License — © 2026 詹麒儒 (Chan Chi Ru). See [LICENSE](LICENSE).
+For usage details, see the [user guide](docs/usage.md); for problems, [open an issue](https://github.com/ddmanyes/MCseg/issues) with your OS, Git revision, package versions, command/settings, and relevant logs.
+
+MCseg is released under the [MIT License](LICENSE).
