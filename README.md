@@ -9,7 +9,7 @@
 
 An AI agent helped search candidate workflows during method development. **Routine analysis runs the retained workflow locally: no AI-agent search, external language-model API, or Xenium reference data is required.** Initial installation and model downloads require internet access.
 
-[Desktop installation](#desktop-installation-windows-and-macos) · [Quick start](#quick-start) · [Workflow](#workflow) · [Research results](#research-results) · [CLI](#command-line-use) · [User guide](docs/usage.md) · [Reproducibility](#reproducibility) · [Citation](#citation)
+[Desktop installation](#desktop-installation-windows-and-macos) · [Quick start](#quick-start) · [中文](README_zh.md) · [Workflow](#workflow) · [Research results](#research-results) · [CLI](#command-line-use) · [User guide](docs/usage.md) · [Reproducibility](#reproducibility) · [Citation](#citation)
 
 ## Workflow
 
@@ -71,10 +71,12 @@ Desktop packages include the MCseg interface, backend application files, and the
 
 | Platform | Desktop package | Architecture |
 | --- | --- | --- |
-| Windows 10/11 | [mcseg_0.2.0_x64-setup.exe](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_x64-setup.exe) | Intel/AMD x64 |
-| macOS 12+ | [mcseg_0.2.0_aarch64.dmg](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_aarch64.dmg) | Apple Silicon (M-series) |
+| Windows 10/11 | [0.2.0 legacy installer](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_x64-setup.exe); clean 0.2.1 build pending | Intel/AMD x64 |
+| macOS 12+ | [mcseg_0.2.1_aarch64.dmg (pre-release)](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) | Apple Silicon (M-series) |
 
-**Getting the installer:** download the package for your system from the links above or the [v0.8.0 release assets](https://github.com/ddmanyes/MCseg/releases/tag/v0.8.0). [SHA-256 checksums](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/MCseg-desktop-0.2.0-SHA256SUMS.txt) are provided for file verification. GitHub's “Source code” archives are not desktop installers. The desktop package version (`0.2.0`) is distinct from the source package/release version (`0.8.0`): these previously built desktop packages were attached on September 19, 2026, and are not rebuilds of the `v0.8.0` source tag. The listed macOS package is for Apple Silicon; an Intel Mac installer is not listed here.
+**Release status:** [Desktop 0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1) provides the cleaned macOS package with [SHA-256](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.sha256) and [build provenance](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.build.json). It passed build, payload, ad-hoc signature, and static credential checks; fresh-machine installation and full analysis remain unverified. Windows 0.2.1 has not yet been built. The historical Windows 0.2.0 package still contains developer input-path defaults; select your own paths before use. The older macOS 0.2.0 package bundled developer analysis state and is superseded by this candidate.
+
+Desktop versioning is separate from the source/Python package version (`0.8.0`). GitHub's “Source code” archives are not desktop installers. The listed macOS package is for Apple Silicon; an Intel Mac installer is not listed here.
 
 #### Windows
 
@@ -85,7 +87,7 @@ Desktop packages include the MCseg interface, backend application files, and the
 
 #### macOS (Apple Silicon)
 
-1. Open **`mcseg_0.2.0_aarch64.dmg`**, then drag **MCseg** into **Applications**.
+1. Open **`mcseg_0.2.1_aarch64.dmg`**, then drag **MCseg** into **Applications**.
 2. Launch the app from Applications. If macOS blocks an unnotarized build, first verify its source, then use **System Settings → Privacy & Security → Open Anyway**, if offered, and confirm the prompt.
 3. Keep the Mac online and the setup window open while the Python environment and dependencies are prepared.
 4. The main interface opens when initialization finishes. Subsequent launches reuse the prepared environment.
@@ -198,10 +200,10 @@ If you use MCseg, please cite the manuscript:
 
 > Chan, C.-R., Chang, N.-W., Wang, C.-Y., Tan, H.-Y., and Lin, S.-J. (2026). **MCseg: AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics.** Manuscript.
 
-Chan and Chang contributed equally. Publication details will be updated when available.
+Chan and Chang contributed equally. A bioRxiv preprint is planned; the citation will be updated after posting and DOI assignment.
 
 ## Support and license
 
 For usage details, see the [user guide](docs/usage.md); for problems, [open an issue](https://github.com/ddmanyes/MCseg/issues) with your OS, Git revision, package versions, command/settings, and relevant logs.
 
-MCseg is released under the [MIT License](LICENSE).
+MCseg is released under the [MIT License](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) and the [desktop build and verification guide](docs/desktop-build.md).

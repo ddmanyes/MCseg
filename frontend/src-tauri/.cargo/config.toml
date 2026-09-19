@@ -1,0 +1,2 @@
+# For external drives, set CARGO_TARGET_DIR to a directory on a native filesystem.
+# No developer-specific absolute paths are stored in this configuration.

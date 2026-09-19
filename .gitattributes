@@ -1,0 +1,2 @@
+# Preserve upstream formatting in generated third-party license texts.
+THIRD_PARTY_NOTICES.md -whitespace

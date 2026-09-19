@@ -1,22 +1,14 @@
-# AI-Autonomous Segmentation Discovery (AutoResearch Template)
+# Agent-guided workflow search templates
 
-This directory contains the prompt template, agent runner, and starter script used to develop **MCseg v2** via AI-autonomous architecture search, as described in:
+These files illustrate the development loop behind MCseg. Researchers define candidate operations, reference data, scoring, prompts, and execution constraints; an agent proposes and evaluates workflow variants, followed by researcher review. Routine MCseg use runs the retained cpsam workflow locally and does not invoke this agent or require an external language-model API.
 
-> *MCseg: End-to-End Visium HD Analysis with AI-Optimised Ensemble Cell Segmentation*
+The templates here are an adaptation starting point, not a complete archive of every historical search run. The configured API model in the example runner should not be treated as evidence of the model used in every manuscript experiment.
 
-## Overview
-
-MCseg v2 was discovered over ~80 overnight cycles using a Claude Opus agent that iteratively proposed, implemented, and evaluated cell segmentation architectures against Xenium single-molecule ground truth (AP@0.5). The agent operated within a strictly sandboxed environment—it could only modify a single Python script—and received the current best implementation, full experiment history, and a distilled research memory at each iteration.
-
-The key insight: by constraining the search to a single evaluable file with a fixed scoring function, the agent could explore bold architectural changes (multi-model ensembles, custom preprocessing, novel boundary strategies) without human guidance, converging on a configuration unlikely to emerge from manual intuition.
-
-## Files
-
-| File | Description |
-|------|-------------|
-| `program.md` | Human-readable task specification given to the agent at setup |
-| `run_agent.py` | Agent runner — the main loop that calls Claude API and executes experiments |
-| `segment_template.py` | Starter segmentation script (the sandbox file the agent modifies) |
+| File | Purpose |
+| --- | --- |
+| `program.md` | Example task specification |
+| `run_agent.py` | Development loop that calls an external API and executes candidates |
+| `segment_template.py` | Starter workflow to adapt to your reference data |
 
 ## How to Adapt for Your Own Segmentation Problem
 
@@ -70,15 +62,6 @@ export ANTHROPIC_API_KEY=your_key_here
 
 ## Citation
 
-If you use this framework in your work, please cite:
+Chan, C.-R., Chang, N.-W., Wang, C.-Y., Tan, H.-Y., and Lin, S.-J. (2026). **MCseg: AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics.** Manuscript.
 
-```
-Chan, C.-R. (詹麒儒), et al. MCseg: End-to-End Visium HD Analysis with
-AI-Optimised Ensemble Cell Segmentation. Bioinformatics (under review), 2026.
-```
-
-And the original AutoResearch concept:
-```
-Karpathy A. AutoResearch: AI agents running research on single-GPU nanochat training automatically.
-GitHub 2026. https://github.com/karpathy/autoresearch
-```
+The planned bioRxiv reference will be added after posting and DOI assignment. See also the original [AutoResearch project](https://github.com/karpathy/autoresearch).

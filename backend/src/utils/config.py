@@ -44,19 +44,45 @@ def load_state() -> dict[str, Any]:
         return {}
 
 
-def save_state(updates: dict[str, Any]) -> None:
-    """
-    將動態狀態寫入 state.json（原子寫入，防止寫到一半損壞）。
-    只傳入需要更新的部分，其餘已有狀態不受影響。
-    """
-    state = load_state()
-    state = _deep_merge(state, updates)
+def _write_state(state: dict[str, Any]) -> None:
+    """原子寫入整份 state 到 state.json（防止寫到一半損壞）。"""
     _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = _STATE_PATH.with_suffix(".tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
     tmp_path.replace(_STATE_PATH)  # 原子替換，防止寫到一半損壞
+
+
+def save_state(updates: dict[str, Any]) -> None:
+    """
+    將動態狀態寫入 state.json（原子寫入，防止寫到一半損壞）。
+    只傳入需要更新的部分，其餘已有狀態不受影響。
+
+    ⚠️ 深合併語意：巢狀 dict 會與既有值遞迴合併，只適合「只想更新某幾個
+    子欄位」的情境。若呼叫端需要「整份取代」某個 key（例如要支援清空、
+    或刪除某個子 key），深合併是錯的——刪掉的 key 因為沒出現在 updates
+    裡，會被誤判為未變更而繼續殘留。這種情況請改用 save_state_key()。
+    """
+    state = load_state()
+    state = _deep_merge(state, updates)
+    _write_state(state)
     logger.info(f"已更新 state.json：{list(updates.keys())}")
+
+
+def save_state_key(key: str, value: Any) -> None:
+    """
+    整份取代 state.json 裡的單一頂層 key（不經 _deep_merge）。
+
+    修復背景：`roi_seg_overrides` 曾經由 save_state({"roi_seg_overrides": body})
+    寫入,深合併會讓「清空全部覆寫」(body={}) 或「刪除單一 ROI 的覆寫」
+    (body 少一個既有 key) 都失效——回應仍是成功,但後端參數其實沒變
+    (見 docs/brainstorming/tauri_desktop_packaging.md Phase 0)。
+    這個函式改為整份取代該 key 的值,符合「清空/刪除」的預期語意。
+    """
+    state = load_state()
+    state[key] = value
+    _write_state(state)
+    logger.info(f"已整份取代 state.json 的 '{key}'")
 
 
 def _load_profile(profile_name: str) -> dict[str, Any]:

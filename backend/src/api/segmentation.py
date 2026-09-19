@@ -12,7 +12,7 @@ import numpy as np
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel, Field
 
-from backend.src.utils.config import load_config, load_state, resolve_path, save_state
+from backend.src.utils.config import load_config, load_state, resolve_path, save_state_key
 from backend.src.utils.logging import set_current_stage
 
 router = APIRouter()
@@ -253,7 +253,7 @@ async def run_segmentation(
         config = load_config()
         config = _apply_overrides(config, params)
         overrides = params.roi_overrides or {}
-        save_state({"roi_seg_overrides": overrides})
+        save_state_key("roi_seg_overrides", overrides)
         config["_roi_overrides"] = overrides
         config["_target_roi"] = params.target_roi
         _task_status["status"] = "running"
@@ -436,7 +436,7 @@ async def put_roi_overrides(body: dict):
         if invalid_fields:
             return {"status": "error", "message": f"ROI '{roi_name}' 包含未知欄位：{invalid_fields}"}
 
-    save_state({"roi_seg_overrides": body})
+    save_state_key("roi_seg_overrides", body)
     return {"status": "ok"}
 
 

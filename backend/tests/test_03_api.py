@@ -23,6 +23,9 @@ class TestHealthEndpoints:
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "ok"
+        # 桌面殼（Tauri）靠這個欄位分辨 port 8001 上回應的是不是我們自己的
+        # 後端，而不是別的軟體剛好用了同一個 port——回歸測試釘住不能被拿掉。
+        assert data["service"] == "mcseg"
 
     async def test_config(self, client):
         r = await client.get("/api/config")
@@ -49,12 +52,24 @@ class TestDataApi:
         if "xenium_outs" in status:
             assert set(status["xenium_outs"]) >= {"path", "configured"}
 
-    async def test_data_status_configured(self, client):
-        """CRC 資料已設定 → configured = True"""
-        r = await client.get("/api/data/status")
-        status = r.json()["data"]
+    async def test_data_status_configured(self, client, monkeypatch):
+        """Configuration status depends on selected inputs, not developer data."""
+        from backend.src.api import data as data_api
+        monkeypatch.setattr(data_api, "load_config", lambda: {"paths": {
+            "he_image": "/example/image.btf", "binned_002": "/example/square_002um",
+        }})
+        status = (await client.get("/api/data/status")).json()["data"]
         assert status["he_image"]["configured"] is True
         assert status["binned_002"]["configured"] is True
+
+    async def test_fresh_install_has_no_selected_inputs_or_rois(self, client, monkeypatch, tmp_path):
+        from backend.src.utils import config
+        monkeypatch.setattr(config, "_STATE_PATH", tmp_path / "state.json")
+        status = (await client.get("/api/data/status")).json()["data"]
+        assert all(not item["configured"] for item in status.values())
+        cfg = config.load_config()
+        assert cfg["rois"] == []
+        assert cfg.get("roi_seg_overrides", {}) == {}
 
     async def test_browse_home(self, client):
         """GET /api/data/browse?path=~ 回傳目錄列表"""
@@ -104,9 +119,7 @@ class TestStageStatusApis:
 
     @pytest.mark.parametrize("endpoint", [
         "/api/segmentation/status",
-        "/api/zarr/status",
-        "/api/conditions/status",
-        "/api/proseg/status",
+        "/api/count/status",
         "/api/analysis/status",
     ])
     async def test_stage_status(self, client, endpoint):
