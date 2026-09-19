@@ -11,7 +11,7 @@ __pycache__/
 .claude/
 results/
 figures/
-release/
+/release/
 !analysis/scripts/figures/
 config/state.json
 *.zarr
