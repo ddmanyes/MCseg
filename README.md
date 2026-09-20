@@ -57,16 +57,16 @@ Desktop packages include the MCseg interface, backend application files, and the
 
 | Platform | Desktop package | Architecture |
 | --- | --- | --- |
-| Windows 10/11 | [Download Windows installer (v0.2.0)](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_x64-setup.exe) | Intel/AMD x64 |
+| Windows 10/11 | [Download Windows installer (0.2.2)](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe) | Intel/AMD x64 |
 | macOS 12+ | [mcseg_0.2.1_aarch64.dmg (pre-release)](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) | Apple Silicon (M-series) |
 
-**Release status:** [Desktop 0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1) provides the cleaned macOS package with [SHA-256](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.sha256) and [build provenance](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.build.json). It passed build, payload, ad-hoc signature, and static credential checks; fresh-machine installation and full analysis remain unverified. Windows currently provides v0.2.0. On first use, select your own input and output paths instead of the bundled developer defaults; an updated Windows installer is not yet available. The older macOS 0.2.0 package bundled developer analysis state and is superseded by this candidate.
+**Release status:** [Desktop 0.2.2](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.2) is the current Windows package, with [SHA-256](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.sha256) and [build provenance](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.build.json). It corrects the H&E colour deconvolution: a redundant inverse transpose collapsed Hematoxylin concentration to zero for most stain mixtures, and that channel feeds segmentation, so results differ from 0.2.0. Build and payload checks passed, and installation plus first launch were verified on Windows 11 — the installed backend matches the build source byte for byte, and the app starts with empty input paths and no selected ROIs. **No sample analysis was run**, so the corrected deconvolution has not been exercised on real tissue end to end; run your own small ROI before relying on output. macOS is not built at 0.2.2: [mcseg_0.2.1_aarch64.dmg](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) from [desktop-v0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1) remains the macOS candidate and also contains this correction, but its fresh-machine installation and full analysis are unverified. The 0.2.0 packages under [v0.8.0](https://github.com/ddmanyes/MCseg/releases/tag/v0.8.0) predate the correction and bundled developer analysis state; they are superseded.
 
 Desktop versioning is separate from the source/Python package version (`0.8.0`). GitHub's “Source code” archives are not desktop installers. The listed macOS package is for Apple Silicon; an Intel Mac installer is not listed here.
 
 #### Windows
 
-1. Double-click **`mcseg_0.2.0_x64-setup.exe`** and follow the installation wizard.
+1. Double-click **`mcseg_0.2.2_x64-setup.exe`** and follow the installation wizard.
 2. If Microsoft Defender SmartScreen reports an unrecognized app, verify that the installer came from the MCseg maintainer before selecting **More info → Run anyway**, when available under your system policy.
 3. Launch **MCseg** from the Start menu. Leave the setup window open while it prepares the environment and starts the analysis engine.
 4. When initialization completes, the main interface opens. Select your data and follow the [usage guide](docs/usage.md#usage-guide).
@@ -170,7 +170,7 @@ For reproducibility, retain the analysis revision, environment, actual model wei
 
 The agent-guided development loop adapted the AutoResearch approach: researchers chose candidate operations, reference data, scoring, prompts, and execution limits; the agent proposed and evaluated executable workflows, and researchers reviewed the retained configuration. The development templates are separate from routine analysis and require their own API setup. Their presence alone does not establish a complete archive of every historical search run.
 
-For a reproducible run, retain the Git revision, resolved dependencies, model-weight identity, input dataset and coordinates, effective segmentation/counting settings, and logs. The repository package retains the historical name `msseg`. New installations from the current source or the cleaned macOS 0.2.1 package start with empty input paths and no selected ROIs; configure your own dataset before analysis. Existing installations may retain previously saved settings.
+For a reproducible run, retain the Git revision, resolved dependencies, model-weight identity, input dataset and coordinates, effective segmentation/counting settings, and logs. The repository package retains the historical name `msseg`. New installations from the current source, the Windows 0.2.2 package, or the cleaned macOS 0.2.1 package start with empty input paths and no selected ROIs; configure your own dataset before analysis. Existing installations may retain previously saved settings.
 
 ### Data availability
 

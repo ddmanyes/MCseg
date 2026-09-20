@@ -57,16 +57,16 @@ AI 代理協助方法開發階段的候選流程搜尋。**日常分析在本機
 
 | 平台 | 桌面安裝包 | 處理器架構 |
 | --- | --- | --- |
-| Windows 10/11 | [下載 Windows 安裝檔（v0.2.0）](https://github.com/ddmanyes/MCseg/releases/download/v0.8.0/mcseg_0.2.0_x64-setup.exe) | Intel／AMD x64 |
+| Windows 10/11 | [下載 Windows 安裝檔（0.2.2）](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe) | Intel／AMD x64 |
 | macOS 12+ | [mcseg_0.2.1_aarch64.dmg（預發行版）](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) | Apple Silicon（M 系列） |
 
-**發行狀態：**[桌面版 0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1) 提供清理後的 macOS 安裝包、[SHA-256 校驗檔](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.sha256)與[建置來源紀錄](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg.build.json)。此安裝包已通過建置、內容檢查、ad-hoc 簽章完整性及靜態憑證掃描；尚未驗證乾淨機器上的首次安裝與完整分析流程。Windows 目前提供 v0.2.0。首次使用請重新選取自己的資料與輸出路徑，取代安裝包內的開發用預設值；新版 Windows 安裝包尚待發布。舊版 macOS 0.2.0 曾包含開發分析狀態，已由此候選版本取代。
+**發行狀態：**[桌面版 0.2.2](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.2) 是目前的 Windows 安裝包，附[SHA-256 校驗檔](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.sha256)與[建置來源紀錄](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.build.json)。此版修正 H&E 色彩解卷積：原本多餘的逆矩陣轉置會把多數染色組合的 Hematoxylin 濃度壓成零，而該通道是分割的輸入，因此結果與 0.2.0 不同。建置與內容檢查均通過，並已在 Windows 11 實機驗證安裝與首次啟動——安裝後的後端與建置來源逐位元相同，啟動時輸入路徑與 ROI 選取均為空。**但未執行範例分析**，修正後的解卷積尚未在真實組織上跑過完整流程；請先以自己的小 ROI 驗證再依賴其輸出。macOS 未建置 0.2.2：[mcseg_0.2.1_aarch64.dmg](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg)（[desktop-v0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1)）仍是 macOS 候選版且同樣含此修正，但其乾淨機器安裝與完整分析尚未驗證。[v0.8.0](https://github.com/ddmanyes/MCseg/releases/tag/v0.8.0) 底下的 0.2.0 安裝包早於此修正、且包含開發分析狀態，已被取代。
 
 桌面版與原始碼／Python 套件（`0.8.0`）使用不同版本編號。GitHub 的「Source code」壓縮檔不是桌面安裝包。此處的 macOS 安裝包僅適用於 Apple Silicon，未提供 Intel Mac 安裝檔。
 
 #### Windows
 
-1. 雙擊 **`mcseg_0.2.0_x64-setup.exe`**，依安裝精靈完成安裝。
+1. 雙擊 **`mcseg_0.2.2_x64-setup.exe`**，依安裝精靈完成安裝。
 2. 若 Microsoft Defender SmartScreen 顯示無法辨識的應用程式，先確認安裝檔來自 MCseg 維護者，再於系統政策允許時選擇 **其他資訊 → 仍要執行**。
 3. 從開始功能表啟動 **MCseg**。環境建立與分析引擎啟動期間，請保持初始化視窗開啟。
 4. 初始化完成後會開啟主介面。選取自己的資料，再依[操作指南](docs/usage.md#usage-guide)開始分析。
@@ -170,7 +170,7 @@ MCseg 的多輪整合分割使用 **Cellpose `cpsam`**。各輪差異在影像�
 
 代理引導的開發迴圈參考 AutoResearch 方法：研究者選定候選操作、參考資料、評分方式、提示詞與執行限制，由代理提出並評估可執行流程，再由研究者審查保留的配置。開發範本與日常分析分開，執行範本需要另行設定 API；提供範本不代表已完整封存每次歷史搜尋紀錄。
 
-重現分析時，請保留 Git 版本、解析後的依賴、模型權重識別資訊、輸入資料與座標、生效的分割／計數參數，以及執行紀錄。專案套件沿用歷史名稱 `msseg`。以目前原始碼或清理後的 macOS 0.2.1 安裝包全新安裝時，預設輸入路徑與 ROI 選取為空，請先設定自己的資料；既有安裝可能保留先前儲存的設定。
+重現分析時，請保留 Git 版本、解析後的依賴、模型權重識別資訊、輸入資料與座標、生效的分割／計數參數，以及執行紀錄。專案套件沿用歷史名稱 `msseg`。以目前原始碼、Windows 0.2.2 安裝包或清理後的 macOS 0.2.1 安裝包全新安裝時，預設輸入路徑與 ROI 選取為空，請先設定自己的資料；既有安裝可能保留先前儲存的設定。
 
 ### 資料取得
 
