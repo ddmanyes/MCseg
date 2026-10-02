@@ -4,14 +4,19 @@
 
 ### AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics
 
+[![bioRxiv preprint](https://img.shields.io/badge/bioRxiv-2026.09.20.752837-b31b1b)](https://doi.org/10.64898/2026.09.20.752837)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](pyproject.toml)
 
-**MCseg (Multiple Cellpose Segmentation)** is a local, no-code platform for turning **Visium HD H&E images and 2-µm expression bins into cell-level spatial transcriptomic data**. It connects ROI selection, cell segmentation, transcript attribution, quality control, clustering, cell-type annotation, spatial visualization, and export in one web interface. A CLI supports scripted whole-slide processing. Users can inspect segmentation masks and adjust parameters for their tissue. For method design, performance evaluation, and limitations, see the [research manuscript](#citation).
+**MCseg (Multiple Cellpose Segmentation)** helps spatial transcriptomics researchers turn **Visium HD H&E images and 2-µm expression bins into cell-level spatial transcriptomic data** through a local, no-code interface. It connects ROI selection, cell segmentation, transcript attribution, quality control, clustering, cell-type annotation, spatial visualization, and export in one web interface. A CLI supports scripted whole-slide processing. Users can inspect segmentation masks and adjust parameters for their tissue. For method design, performance evaluation, and limitations, see the [bioRxiv preprint](https://doi.org/10.64898/2026.09.20.752837).
 
 An AI agent helped search candidate workflows during method development. **Routine analysis runs the retained workflow locally: no AI-agent search, external language-model API, or Xenium reference data is required.** Initial installation and model downloads require internet access.
 
-[Desktop installation](#desktop-installation-windows-and-macos) · [Quick start](#quick-start) · [Workflow](#workflow) · [CLI](#command-line-use) · [User guide](docs/usage.md) · [Reproducibility](#reproducibility) · [Citation](#citation)
+**[Read the paper](https://doi.org/10.64898/2026.09.20.752837) · [Download & install](#desktop-installation-windows-and-macos) · [Usage guide](docs/usage.md) · [Cite MCseg](#citation)**
+
+[Quick start](#quick-start) · [Workflow](#workflow) · [CLI](#command-line-use) · [Reproducibility](#reproducibility)
+
+**Before your first analysis:** Windows 0.2.2 includes the H&E correction but has not been validated on real tissue end to end. The macOS 0.2.1 installer does not include the correction; macOS users should [install from current source](#install-from-source). See the [release status](#desktop-installation-windows-and-macos) before choosing a download.
 
 ## Workflow
 
@@ -55,14 +60,16 @@ Source installation uses **Python ≥3.10**, **uv**, and **Node.js/npm** for the
 
 Desktop packages include the MCseg interface, backend application files, and the `uv` environment manager. **You do not need to install Python, Node.js, Rust, or uv manually.** On first launch, the app downloads and prepares its Python/PyTorch/Cellpose dependencies. It is not an offline installer: keep the computer online and allow at least 15 GB of free disk space for setup, plus space for your datasets and results.
 
-| Platform | Desktop package | Architecture |
+| Platform | Installation path | Status |
 | --- | --- | --- |
-| Windows 10/11 | [Download Windows installer (0.2.2)](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe) | Intel/AMD x64 |
-| macOS 12+ | [mcseg_0.2.1_aarch64.dmg (pre-release, **without** the H&E correction)](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) | Apple Silicon (M-series) |
+| Windows 10/11, Intel/AMD x64 | [Download installer 0.2.2](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe) | Includes the H&E correction; installation and first launch verified on Windows 11 |
+| macOS, Apple Silicon | [Install from current source](#install-from-source) | The published 0.2.1 DMG lacks the H&E correction; no corrected macOS installer is available |
 
-**Release status:** [Desktop 0.2.2](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.2) is the current Windows package, with [SHA-256](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.sha256) and [build provenance](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.build.json). It corrects the H&E colour deconvolution: a redundant inverse transpose collapsed Hematoxylin concentration to zero for most stain mixtures, and that channel feeds segmentation, so results differ from 0.2.0. Build and payload checks passed, and installation plus first launch were verified on Windows 11 — the installed backend matches the build source byte for byte, and the app starts with empty input paths and no selected ROIs. **No sample analysis was run**, so the corrected deconvolution has not been exercised on real tissue end to end; run your own small ROI before relying on output. macOS is not built at 0.2.2, and the published [mcseg_0.2.1_aarch64.dmg](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) from [desktop-v0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1) does **not** contain this correction: its build provenance records source commit `f73665f`, which predates the fix. **No published macOS package currently contains the corrected deconvolution** — on macOS, build from current source until a 0.2.2 package is available. The 0.2.0 packages under [v0.8.0](https://github.com/ddmanyes/MCseg/releases/tag/v0.8.0) predate the correction and bundled developer analysis state; they are superseded.
+**Validation scope:** Windows 0.2.2 passed build, payload, installation, and first-launch checks. No real-tissue analysis was run as part of that release validation. Start with a small ROI and inspect the masks before a larger analysis. See [release details](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.2), [SHA-256](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.sha256), and [build provenance](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.build.json).
 
-Desktop versioning is separate from the source/Python package version (`0.8.0`). GitHub's “Source code” archives are not desktop installers. The listed macOS package is for Apple Silicon; an Intel Mac installer is not listed here.
+The H&E correction changes a segmentation input. Existing manuscript results have not been revalidated by these release checks; see [reproducibility](#reproducibility) before comparing results. Technical details are in the [deconvolution correction note](docs/color_deconvolution_fix.md).
+
+Desktop versions are separate from the source/Python package version (`0.8.0`). GitHub's “Source code” archives are not desktop installers. Release availability checked on October 2, 2026.
 
 #### Windows
 
@@ -73,10 +80,16 @@ Desktop versioning is separate from the source/Python package version (`0.8.0`).
 
 #### macOS (Apple Silicon)
 
-1. Open **`mcseg_0.2.1_aarch64.dmg`**, then drag **MCseg** into **Applications**.
-2. Launch the app from Applications. If macOS blocks an unnotarized build, first verify its source, then use **System Settings → Privacy & Security → Open Anyway**, if offered, and confirm the prompt.
-3. Keep the Mac online and the setup window open while the Python environment and dependencies are prepared.
-4. The main interface opens when initialization finishes. Subsequent launches reuse the prepared environment.
+Use the [source installation instructions](#install-from-source) below for the corrected workflow.
+
+<details>
+<summary>Historical desktop packages</summary>
+
+The [macOS 0.2.1 DMG](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) is an Apple Silicon pre-release built from `f73665f`. It does **not** include the H&E correction. It is retained for version tracking, not recommended for new analyses. No Intel Mac installer is listed.
+
+The 0.2.0 packages under [v0.8.0](https://github.com/ddmanyes/MCseg/releases/tag/v0.8.0) also predate the correction and bundled developer analysis state; they are superseded.
+
+</details>
 
 #### First-launch troubleshooting
 
@@ -160,6 +173,8 @@ For reproducibility, retain the analysis revision, environment, actual model wei
 
 ## Reproducibility
 
+**Manuscript analyses and the current application need to be distinguished.** The archived [LUAD benchmark script](analysis/scripts/analysis/08_luad_benchmark.py) retains the earlier H&E inverse-transpose formula, while the [current application](backend/src/segmentation/cellpose_runner.py) uses the corrected formula. The [correction record](docs/color_deconvolution_fix.md) reports no rerun of historical segmentation or model inference. Published benchmark values therefore do not validate the corrected application. Reproducing a manuscript result requires its analysis code and configuration; evaluating the corrected application requires a new run with its revision recorded.
+
 | Resource | Contents |
 | --- | --- |
 | [`analysis/scripts/`](analysis/scripts/) | Benchmark analyses and figure scripts |
@@ -174,19 +189,19 @@ For a reproducible run, retain the Git revision, resolved dependencies, model-we
 
 ### Data availability
 
-- **LUAD:** paired Visium HD and Xenium Prime data from the 10x Genomics dataset portal; six development ROIs.
+- **LUAD:** paired [post-Xenium Visium HD](https://www.10xgenomics.com/datasets/visium-hd-cytassist-gene-expression-human-lung-cancer-post-xenium-expt) and [Xenium Prime 5K](https://www.10xgenomics.com/cn/datasets/xenium-human-lung-cancer-post-xenium-technote) data from 10x Genomics (Experiment 2); six development ROIs.
 - **CRC:** [GEO GSE280318](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE280318); 15 transcript-benchmark ROIs and a separate expert-reviewed ENACT region from the same section.
-- **Breast cancer:** public fresh-frozen Visium HD data from the 10x Genomics dataset portal, used for fixed-workflow transfer.
+- **Breast cancer:** public [fresh-frozen human breast cancer Visium HD data](https://www.10xgenomics.com/datasets/visium-hd-cytassist-gene-expression-human-breast-cancer-fresh-frozen) from 10x Genomics, used for fixed-workflow transfer.
 
-The manuscript states that processed AnnData objects and segmentation masks will be deposited in Zenodo. A public deposit identifier and manuscript DOI are not yet provided here.
+The manuscript states that processed AnnData objects and segmentation masks will be deposited in Zenodo. A public Zenodo deposit identifier is not yet provided here; the preprint DOI is available in the [citation](#citation).
 
 ## Citation
 
-For method design, performance evaluation, and limitations, refer to the manuscript below. If you use MCseg, please cite it:
+For method design, performance evaluation, and limitations, refer to the bioRxiv preprint below. If you use MCseg, please cite it:
 
-> Chan, C.-R., Chang, N.-W., Wang, C.-Y., Tan, H.-Y., and Lin, S.-J. (2026). **MCseg: AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics.** Manuscript.
+> Chan, C.-R., Chang, N.-W., Wang, C.-Y., Tan, H.-Y., and Lin, S.-J. (2026). **MCseg: AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics.** *bioRxiv* [preprint]. [https://doi.org/10.64898/2026.09.20.752837](https://doi.org/10.64898/2026.09.20.752837).
 
-Chan and Chang contributed equally. A bioRxiv preprint is planned. The preprint link and DOI will be added after it is publicly posted; until then, this entry refers to the manuscript.
+Chan and Chang contributed equally. The preprint was posted on September 25, 2026; it has not been certified by peer review.
 
 ## Support and license
 

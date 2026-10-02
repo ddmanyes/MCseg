@@ -4,14 +4,19 @@
 
 ### AI 代理引導的工作流程搜尋，用於免寫程式的細胞分割與空間轉錄體轉錄本歸屬
 
+[![bioRxiv preprint](https://img.shields.io/badge/bioRxiv-2026.09.20.752837-b31b1b)](https://doi.org/10.64898/2026.09.20.752837)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](pyproject.toml)
 
-**MCseg（Multiple Cellpose Segmentation）** 是在本機執行的免寫程式分析平台，將 **Visium HD 的 H&E 影像與 2 µm 空間表現量網格（bins）轉成細胞層級的空間轉錄體資料**。平台以同一個網頁介面串接感興趣區域（ROI）選取、細胞分割、轉錄本歸屬、品質控制、分群、細胞型別註解、空間視覺化與結果匯出；也提供 CLI 進行全切片批次處理。使用者可檢視分割結果，依組織特性調整參數。方法設計、效能評估與適用限制請參閱[相關研究文章](#引用)。
+**MCseg（Multiple Cellpose Segmentation）** 協助空間轉錄體研究者透過本機免寫程式介面，將 **Visium HD 的 H&E 影像與 2 µm 空間表現量網格（bins）轉成細胞層級的空間轉錄體資料**。平台以同一個網頁介面串接感興趣區域（ROI）選取、細胞分割、轉錄本歸屬、品質控制、分群、細胞型別註解、空間視覺化與結果匯出；也提供 CLI 進行全切片批次處理。使用者可檢視分割結果，依組織特性調整參數。方法設計、效能評估與適用限制請參閱[bioRxiv 預印本](https://doi.org/10.64898/2026.09.20.752837)。
 
 AI 代理協助方法開發階段的候選流程搜尋。**日常分析在本機執行開發後保留的流程，不需要重新執行 AI 代理搜尋、使用外部語言模型 API，或提供 Xenium 參考資料。** 首次安裝與模型下載需要網路。
 
-[桌面安裝](#桌面安裝windows-與-macos) · [快速開始](#快速開始) · [工作流程](#工作流程) · [命令列](#命令列操作) · [操作指南（英文）](docs/usage.md) · [重現性](#重現性) · [引用](#引用)
+**[閱讀論文](https://doi.org/10.64898/2026.09.20.752837) · [下載與安裝](#桌面安裝windows-與-macos) · [操作指南（英文）](docs/usage.md) · [引用 MCseg](#引用)**
+
+[快速開始](#快速開始) · [工作流程](#工作流程) · [命令列](#命令列操作) · [重現性](#重現性)
+
+**首次分析前請注意：**Windows 0.2.2 已包含 H&E 修正，但尚未在真實組織上完成端到端驗證。macOS 0.2.1 安裝包不含此修正，macOS 使用者請[從目前原始碼安裝](#從原始碼安裝)。選擇下載版本前，請先閱讀[發行狀態](#桌面安裝windows-與-macos)。
 
 ## 工作流程
 
@@ -55,14 +60,16 @@ AI 代理協助方法開發階段的候選流程搜尋。**日常分析在本機
 
 桌面安裝包內含 MCseg 介面、後端程式與 `uv` 環境管理工具，**不需要自行安裝 Python、Node.js、Rust 或 uv**。首次啟動會下載並建立 Python／PyTorch／Cellpose 環境。這不是離線安裝包：請保持網路連線，預留至少 15 GB 可用磁碟空間供初始化使用，並額外保留資料與分析結果的空間。
 
-| 平台 | 桌面安裝包 | 處理器架構 |
+| 平台 | 安裝方式 | 狀態 |
 | --- | --- | --- |
-| Windows 10/11 | [下載 Windows 安裝檔（0.2.2）](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe) | Intel／AMD x64 |
-| macOS 12+ | [mcseg_0.2.1_aarch64.dmg（預發行版，**不含** H&E 修正）](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) | Apple Silicon（M 系列） |
+| Windows 10/11，Intel／AMD x64 | [下載安裝檔 0.2.2](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe) | 包含 H&E 修正；已在 Windows 11 驗證安裝與首次啟動 |
+| macOS，Apple Silicon | [從目前原始碼安裝](#從原始碼安裝) | 已發布的 0.2.1 DMG 不含 H&E 修正，目前沒有含修正的 macOS 安裝包 |
 
-**發行狀態：**[桌面版 0.2.2](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.2) 是目前的 Windows 安裝包，附[SHA-256 校驗檔](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.sha256)與[建置來源紀錄](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.build.json)。此版修正 H&E 色彩解卷積：原本多餘的逆矩陣轉置會把多數染色組合的 Hematoxylin 濃度壓成零，而該通道是分割的輸入，因此結果與 0.2.0 不同。建置與內容檢查均通過，並已在 Windows 11 實機驗證安裝與首次啟動——安裝後的後端與建置來源逐位元相同，啟動時輸入路徑與 ROI 選取均為空。**但未執行範例分析**，修正後的解卷積尚未在真實組織上跑過完整流程；請先以自己的小 ROI 驗證再依賴其輸出。macOS 未建置 0.2.2，且已發布的 [mcseg_0.2.1_aarch64.dmg](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg)（[desktop-v0.2.1](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.1)）**不含**此修正：其建置來源紀錄為 commit `f73665f`，早於本次修正。**目前沒有任何已發布的 macOS 安裝包含修正後的解卷積** —— macOS 請改由目前原始碼自行建置，直到 0.2.2 安裝包發布為止。[v0.8.0](https://github.com/ddmanyes/MCseg/releases/tag/v0.8.0) 底下的 0.2.0 安裝包早於此修正、且包含開發分析狀態，已被取代。
+**驗證範圍：**Windows 0.2.2 已通過建置、安裝包內容、安裝與首次啟動檢查，但此次發行驗證未執行真實組織分析。請先以小 ROI 檢查分割遮罩，再進行較大範圍的分析。詳見[發行資訊](https://github.com/ddmanyes/MCseg/releases/tag/desktop-v0.2.2)、[SHA-256 校驗檔](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.sha256)與[建置來源紀錄](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.2/mcseg_0.2.2_x64-setup.exe.build.json)。
 
-桌面版與原始碼／Python 套件（`0.8.0`）使用不同版本編號。GitHub 的「Source code」壓縮檔不是桌面安裝包。此處的 macOS 安裝包僅適用於 Apple Silicon，未提供 Intel Mac 安裝檔。
+H&E 修正會改變分割輸入；上述發行檢查並未重新驗證既有論文結果，比較結果前請閱讀[重現性](#重現性)。技術細節見[解卷積修正紀錄](docs/color_deconvolution_fix.md)。
+
+桌面版與原始碼／Python 套件（`0.8.0`）使用不同版本編號。GitHub 的「Source code」壓縮檔不是桌面安裝包。發行版本資訊核對日期：2026 年 10 月 2 日。
 
 #### Windows
 
@@ -73,10 +80,16 @@ AI 代理協助方法開發階段的候選流程搜尋。**日常分析在本機
 
 #### macOS（Apple Silicon）
 
-1. 開啟 **`mcseg_0.2.1_aarch64.dmg`**，將 **MCseg** 拖入 **Applications（應用程式）**。
-2. 從 Applications 啟動。若 macOS 阻擋未經公證的版本，先確認來源，再於系統提供此選項時使用 **系統設定 → 隱私權與安全性 → 強制打開**，並確認提示。
-3. 建立 Python 環境與下載依賴期間，請保持網路連線與初始化視窗開啟。
-4. 初始化完成後會開啟主介面；之後啟動會重用已建立的環境。
+請依下方[原始碼安裝步驟](#從原始碼安裝)使用含修正的流程。
+
+<details>
+<summary>歷史桌面安裝包</summary>
+
+[macOS 0.2.1 DMG](https://github.com/ddmanyes/MCseg/releases/download/desktop-v0.2.1/mcseg_0.2.1_aarch64.dmg) 是由 `f73665f` 建置的 Apple Silicon 預發行版，**不含 H&E 修正**。此處保留連結供版本追溯，不建議用於新分析。未列出 Intel Mac 安裝包。
+
+[v0.8.0](https://github.com/ddmanyes/MCseg/releases/tag/v0.8.0) 底下的 0.2.0 安裝包也早於修正，且包含開發分析狀態，已被取代。
+
+</details>
 
 #### 首次啟動疑難排解
 
@@ -160,6 +173,8 @@ MCseg 的多輪整合分割使用 **Cellpose `cpsam`**。各輪差異在影像�
 
 ## 重現性
 
+**論文分析與目前應用程式必須區分。** 封存的 [LUAD benchmark 腳本](analysis/scripts/analysis/08_luad_benchmark.py) 仍保留舊版 H&E 逆矩陣轉置公式，[目前應用程式](backend/src/segmentation/cellpose_runner.py) 則使用修正後的公式。[修正紀錄](docs/color_deconvolution_fix.md) 明確記載未重跑歷史分割或模型推論，因此已發表的基準數值不能視為修正版應用程式的驗證。重現論文結果需使用對應的分析程式與設定；評估修正版則需重新執行並記錄版本。
+
 | 資源 | 內容 |
 | --- | --- |
 | [`analysis/scripts/`](analysis/scripts/) | 基準分析與製圖腳本 |
@@ -174,19 +189,19 @@ MCseg 的多輪整合分割使用 **Cellpose `cpsam`**。各輪差異在影像�
 
 ### 資料取得
 
-- **LUAD：**10x Genomics dataset portal 的配對 Visium HD 與 Xenium Prime 資料；使用六個開發 ROI。
+- **LUAD：**10x Genomics 的配對 [post-Xenium Visium HD](https://www.10xgenomics.com/datasets/visium-hd-cytassist-gene-expression-human-lung-cancer-post-xenium-expt) 與 [Xenium Prime 5K](https://www.10xgenomics.com/cn/datasets/xenium-human-lung-cancer-post-xenium-technote) 資料（Experiment 2）；使用六個開發 ROI。
 - **CRC：**[GEO GSE280318](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE280318)；包含 15 個轉錄本評估 ROI，以及同一切片上另一個經專家審閱的 ENACT 區域。
-- **乳癌：**10x Genomics dataset portal 的公開新鮮冷凍 Visium HD 資料，用於固定流程的跨組織應用。
+- **乳癌：**10x Genomics 的公開[新鮮冷凍人類乳癌 Visium HD 資料](https://www.10xgenomics.com/datasets/visium-hd-cytassist-gene-expression-human-breast-cancer-fresh-frozen)，用於固定流程的跨組織應用。
 
-文章規劃將處理後的 AnnData 與分割遮罩存入 Zenodo。目前此處尚未提供公開典藏識別碼或文章 DOI。
+文章規劃將處理後的 AnnData 與分割遮罩存入 Zenodo。目前此處尚未提供公開的 Zenodo 典藏識別碼；預印本 DOI 請見[引用](#引用)。
 
 ## 引用
 
-方法設計、效能評估與適用限制請參閱以下稿件；若使用 MCseg，請引用此文章：
+方法設計、效能評估與適用限制請參閱以下 bioRxiv 預印本；若使用 MCseg，請引用此文章：
 
-> Chan, C.-R., Chang, N.-W., Wang, C.-Y., Tan, H.-Y., and Lin, S.-J. (2026). **MCseg: AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics.** Manuscript.
+> Chan, C.-R., Chang, N.-W., Wang, C.-Y., Tan, H.-Y., and Lin, S.-J. (2026). **MCseg: AI agent-guided workflow search for no-code cell segmentation and transcript attribution in spatial transcriptomics.** *bioRxiv* [preprint]. [https://doi.org/10.64898/2026.09.20.752837](https://doi.org/10.64898/2026.09.20.752837).
 
-Chan 與 Chang 為共同第一作者。文章規劃先發表於 bioRxiv。預印本連結與 DOI 將於公開後更新，目前先提供稿件引用。
+Chan 與 Chang 為共同第一作者。預印本於 2026 年 9 月 25 日公開，尚未經同儕審查認證。
 
 ## 支援與授權
 
